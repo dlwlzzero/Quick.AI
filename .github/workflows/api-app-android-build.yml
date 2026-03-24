@@ -1,8 +1,9 @@
 name: "Android Build - api-app"
 
 on:
+  workflow_dispatch:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - 'src/**'
       - 'api/**'
@@ -10,7 +11,7 @@ on:
       - 'nntrainer/**'
       - '.github/workflows/api-app-android-build.yml'
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - 'src/**'
       - 'api/**'
@@ -20,21 +21,22 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    if: "!contains(github.event.pull_request.title || '', '@')"
+    runs-on: [ code-linux ] 
     env:
       ANDROID_NDK: ${{ github.workspace }}/android-ndk-r26d
       NDK_VERSION: r26d
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
           submodules: recursive
           fetch-depth: 1
 
       - name: Cache Android NDK
         id: cache-ndk
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
           path: android-ndk-${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}-linux
@@ -46,12 +48,31 @@ jobs:
           unzip -q android-ndk-${NDK_VERSION}-linux.zip
           rm android-ndk-${NDK_VERSION}-linux.zip
 
+      - name: Install build tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake
+          pip install meson ninja
+
+      - name: Install Rust with Android target
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          . "$HOME/.cargo/env"
+          rustup target add aarch64-linux-android
+
       - name: Cache nntrainer Android build
         id: cache-nntrainer
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
           path: nntrainer/builddir
           key: nntrainer-android-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
+
+      - name: Add NDK and Cargo to PATH
+        run: |
+          echo "$ANDROID_NDK" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Fix meson install permissions
+        run: sudo chmod -R o+w /usr/local/lib/
 
       - name: Build api-app (Android)
         run: |
@@ -72,7 +93,7 @@ jobs:
           echo "All artifacts verified."
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: api-app-android-arm64-v8a
           path: |
