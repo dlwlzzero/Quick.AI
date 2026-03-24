@@ -1,0 +1,17 @@
+# Build directories (meson)
+builddir/
+builddir_x86/
+
+# NDK build outputs
+src/jni/libs/
+src/jni/obj/
+api/jni/libs/
+api/jni/obj/
+api-app/jni/libs/
+api-app/jni/obj/
+
+# Copied headers
+include/
+
+# res
+res/
