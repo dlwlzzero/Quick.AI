@@ -1,31 +1,44 @@
-name: "x86 Build - src"
+name: "x86 Build - src (nntrainer PR)"
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'nntrainer/**'
-      - '.github/workflows/src-x86-build.yml'
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
     paths:
       - 'src/**'
       - 'nntrainer/**'
-      - '.github/workflows/src-x86-build.yml'
+      - '.github/workflows/src-x86-build-nntrainer-pr.yml'
 
 jobs:
   build:
-    if: "!contains(github.event.pull_request.title || '', '@')"
+    if: contains(github.event.pull_request.title, '@')
     runs-on: [ code-linux ] 
 
     steps:
+      - name: Extract nntrainer PR number
+        id: extract-pr
+        run: |
+          NNTRAINER_PR=$(echo "${{ github.event.pull_request.title }}" | grep -oP '@\K[0-9]+$' || true)
+          if [ -z "$NNTRAINER_PR" ]; then
+            echo "No @number found at end of PR title, skipping"
+            exit 1
+          fi
+          echo "pr_number=${NNTRAINER_PR}" >> "$GITHUB_OUTPUT"
+          echo "Using nntrainer PR #${NNTRAINER_PR}"
+
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          submodules: recursive
           fetch-depth: 1
+
+      - name: Checkout nntrainer from upstream PR
+        run: |
+          rm -rf nntrainer
+          git clone --depth=1 --recurse-submodules https://github.com/nntrainer/nntrainer.git nntrainer
+          cd nntrainer
+          git fetch origin "pull/${{ steps.extract-pr.outputs.pr_number }}/head:nntrainer-pr"
+          git checkout nntrainer-pr
+          git submodule update --init --recursive
 
       - name: Install dependencies
         run: |
@@ -44,10 +57,11 @@ jobs:
         uses: actions/cache@v3
         with:
           path: nntrainer/builddir_x86
-          key: nntrainer-x86-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
+          key: nntrainer-pr-x86-${{ steps.extract-pr.outputs.pr_number }}-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
 
       - name: Build src (x86)
         env:
+          SKIP_SUBMODULE_UPDATE: "1"
           BUILD_JOBS: "1"
         run: |
           chmod +x src/build_x86.sh
@@ -65,7 +79,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: src-x86-linux
+          name: src-x86-linux-nntrainer-pr
           path: |
             src/builddir/quick_dot_ai
             src/builddir/libcausallm.so

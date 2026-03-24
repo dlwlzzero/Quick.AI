@@ -1,34 +1,47 @@
-name: "Android Build - src"
+name: "Android Build - src (nntrainer PR)"
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'nntrainer/**'
-      - '.github/workflows/src-android-build.yml'
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
     paths:
       - 'src/**'
       - 'nntrainer/**'
-      - '.github/workflows/src-android-build.yml'
+      - '.github/workflows/src-android-build-nntrainer-pr.yml'
 
 jobs:
   build:
-    if: "!contains(github.event.pull_request.title || '', '@')"
+    if: contains(github.event.pull_request.title, '@')
     runs-on: [ code-linux ] 
     env:
       ANDROID_NDK: ${{ github.workspace }}/android-ndk-r26d
       NDK_VERSION: r26d
 
     steps:
+      - name: Extract nntrainer PR number
+        id: extract-pr
+        run: |
+          NNTRAINER_PR=$(echo "${{ github.event.pull_request.title }}" | grep -oP '@\K[0-9]+$' || true)
+          if [ -z "$NNTRAINER_PR" ]; then
+            echo "No @number found at end of PR title, skipping"
+            exit 1
+          fi
+          echo "pr_number=${NNTRAINER_PR}" >> "$GITHUB_OUTPUT"
+          echo "Using nntrainer PR #${NNTRAINER_PR}"
+
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          submodules: recursive
           fetch-depth: 1
+
+      - name: Checkout nntrainer from upstream PR
+        run: |
+          rm -rf nntrainer
+          git clone --depth=1 --recurse-submodules https://github.com/nntrainer/nntrainer.git nntrainer
+          cd nntrainer
+          git fetch origin "pull/${{ steps.extract-pr.outputs.pr_number }}/head:nntrainer-pr"
+          git checkout nntrainer-pr
+          git submodule update --init --recursive
 
       - name: Cache Android NDK
         id: cache-ndk
@@ -60,7 +73,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: nntrainer/builddir
-          key: nntrainer-android-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
+          key: nntrainer-pr-android-${{ steps.extract-pr.outputs.pr_number }}-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
 
       - name: Add NDK and Cargo to PATH
         run: |
@@ -71,6 +84,8 @@ jobs:
         run: sudo chmod -R o+w /usr/local/lib/
 
       - name: Build src (Android)
+        env:
+          SKIP_SUBMODULE_UPDATE: "1"
         run: |
           chmod +x src/build_android.sh
           src/build_android.sh --clean
@@ -87,6 +102,6 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: src-android-arm64-v8a
+          name: src-android-arm64-v8a-nntrainer-pr
           path: src/jni/libs/arm64-v8a/
           retention-days: 7
