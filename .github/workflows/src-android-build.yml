@@ -1,14 +1,15 @@
 name: "Android Build - src"
 
 on:
+  workflow_dispatch:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - 'src/**'
       - 'nntrainer/**'
       - '.github/workflows/src-android-build.yml'
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - 'src/**'
       - 'nntrainer/**'
