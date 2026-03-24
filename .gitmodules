@@ -1,0 +1,3 @@
+[submodule "nntrainer"]
+	path = nntrainer
+	url = https://github.com/nntrainer/nntrainer.git
