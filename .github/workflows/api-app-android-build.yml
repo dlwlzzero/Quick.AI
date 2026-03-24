@@ -21,7 +21,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [ code-linux ] 
     env:
       ANDROID_NDK: ${{ github.workspace }}/android-ndk-r26d
       NDK_VERSION: r26d
