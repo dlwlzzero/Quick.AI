@@ -100,13 +100,22 @@ LOCAL_ALLOW_UNDEFINED_SYMBOLS := true
 LOCAL_MODULE := quick_dot_ai
 
 LOCAL_SRC_FILES := \
-    ../models/gauss-2.5/gauss2_5_causallm.cpp \
+    ../models/gauss-2.5/gauss2_5_causallm.cpp
+
+ifdef ENABLE_QNN
+LOCAL_SRC_FILES += ../models/gauss-3.6-qnn/quick_dot_ai_qnn.cpp \
+                   ../models/gauss-3.6-qnn/gauss3_6_qnn.cpp
+endif
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_LDLIBS := -llog -landroid
 
 LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/gauss-2.5
+
+ifdef ENABLE_QNN
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.6-qnn
+endif
 
 include $(BUILD_SHARED_LIBRARY)
 
@@ -124,10 +133,19 @@ LOCAL_CXXFLAGS += -std=c++17 -frtti
 LOCAL_MODULE := quick_dot_ai_static
 
 LOCAL_SRC_FILES := \
-    ../models/gauss-2.5/gauss2_5_causallm.cpp \
+    ../models/gauss-2.5/gauss2_5_causallm.cpp
+
+ifdef ENABLE_QNN
+LOCAL_SRC_FILES += ../models/gauss-3.6-qnn/quick_dot_ai_qnn.cpp \
+                   ../models/gauss-3.6-qnn/gauss3_6_qnn.cpp
+endif
 
 LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/gauss-2.5
+
+ifdef ENABLE_QNN
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.6-qnn
+endif
 
 include $(BUILD_STATIC_LIBRARY)
 
@@ -160,6 +178,10 @@ LOCAL_STATIC_LIBRARIES := tokenizers_c
 LOCAL_WHOLE_STATIC_LIBRARIES := quick_dot_ai_static
 
 LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/gauss-2.5
+
+ifdef ENABLE_QNN
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.6-qnn
+endif
 
 include $(BUILD_EXECUTABLE)
