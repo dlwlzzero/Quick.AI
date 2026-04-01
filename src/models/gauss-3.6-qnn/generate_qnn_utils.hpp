@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include <android_memory_allocator.hpp>
+#include "android_memory_allocator.hpp"
 #include <model.h>
 #include <tokenizers_cpp.h>
 

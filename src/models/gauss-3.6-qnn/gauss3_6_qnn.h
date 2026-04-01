@@ -10,7 +10,7 @@
 #ifndef __GAUSS_3_6_QNN_H__
 #define __GAUSS_3_6_QNN_H__
 
-#include <quick_dot_ai_qnn.h>
+#include "quick_dot_ai_qnn.h"
 
 namespace causallm {
 

@@ -8,7 +8,7 @@
  *         No modification to nntrainer's main.cpp is needed.
  */
 
-#include <gauss3_6_qnn.h>
+#include "gauss3_6_qnn.h"
 #include <llm_util.hpp>
 #include <model.h>
 
