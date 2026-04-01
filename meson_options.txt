@@ -1,0 +1,2 @@
+option('enable-qnn', type: 'boolean', value: true)
+option('enable-fp16', type: 'boolean', value: true)
