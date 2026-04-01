@@ -12,6 +12,7 @@ endif
 
 
 qnn_sources = [
+  meson.current_source_dir() / 'qnn_context.cpp',
   meson.current_source_dir() / 'qnn_rpc_manager.cpp',
 ]
 
