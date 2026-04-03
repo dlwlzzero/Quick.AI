@@ -1,2 +1,0 @@
-option('nntrainer_builddir', type: 'string', value: 'builddir',
-       description: 'Name of the nntrainer build directory (e.g. builddir_x86)')

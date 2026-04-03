@@ -425,7 +425,7 @@ template const int QNNContext::registerFactory<nntrainer::Layer>(
 #ifdef PLUGGABLE
 nntrainer::Context *create_qnn_context() {
   nntrainer::QNNContext *qnn_context = new nntrainer::QNNContext();
-  qnn_context->Global();
+  qnn_context->initializeOnce();
   return qnn_context;
 }
 

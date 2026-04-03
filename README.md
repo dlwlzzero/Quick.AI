@@ -1,21 +1,21 @@
 # Quick.AI⚡
 
-You can run your model with Quick.AI everywhere.
-Quick.AI is custom model extensions for [nntrainer](https://github.com/nntrainer/nntrainer) CausalLM application.
+Custom model extensions for [nntrainer](https://github.com/nntrainer/nntrainer) CausalLM application.
+
 Build your own CausalLM models as **self-registering plugins** — no modification to nntrainer's source code required.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  nntrainer/Applications/CausalLM (submodule)                 │
+│  nntrainer (submodule)                                       │
 │  ├── main.cpp + Factory singleton                            │
 │  │     ├── Qwen3ForCausalLM      (built-in)                  │
 │  │     ├── GptOssForCausalLM     (built-in)                  │
 │  │     └── ...                                               │
 │  │                                                           │
-│  src                                                         |
-│  ├── models            (standalone executable)               │
+│  quick-dot-ai (this repo)                                    │
+│  ├── quick_dot_ai            (standalone executable)         │
 │  │     └── Gauss2_5ForCausalLM ◄── statically linked (always │
 │  │                                 available, no LD_PRELOAD) │
 │  └── libquick_dot_ai.so          (plugin for LD_PRELOAD)     │
@@ -35,37 +35,41 @@ This means:
 ## Directory Structure
 
 ```
-Quick.AI/
+project-root/
 ├── nntrainer/                          # Shared nntrainer submodule (untouched)
-├── src/                       # CausalLM custom model extension
+├── meson.build                         # Unified root build (single project entry point)
+├── meson.options                       # Build options (platform, enable-qnn, etc.)
+├── build.sh                            # Unified build script (x86 + android)
+├── install_android.sh                  # Unified android device installation
+├── cross/
+│   └── android-aarch64.cross.in        # NDK cross-compilation template
+├── src/                                # CausalLM custom model extension
 │   ├── models/
 │   │   ├── meson.build                 # Lists model subdirectories
 │   │   ├── gauss-2.5/                  # Gauss-2.5 model implementation
 │   │   │   ├── gauss2_5_causallm.h
 │   │   │   ├── gauss2_5_causallm.cpp  # Includes __attribute__((constructor))
 │   │   │   └── meson.build
-│   │   └── gauss-3.6/                  # Gauss-3.6 model implementation
-│   │       ├── gauss3_6_causallm.h
-│   │       ├── gauss3_6_causallm.cpp
+│   │   └── qnn-transformer/           # QNN transformer model (android only)
+│   │       ├── qnn_transformer.cpp
 │   │       └── meson.build
 │   ├── res/gauss_2_5/                  # Gauss-2.5 model configuration
 │   │   ├── config.json
 │   │   ├── generation_config.json
 │   │   └── nntr_config.json
-│   ├── jni/                            # Android NDK build files
-│   │   ├── Android.mk
-│   │   └── Application.mk
-│   ├── meson.build                     # Meson build (x86/Linux)
-│   ├── build_x86.sh
-│   ├── build_android.sh
-│   └── install_android.sh
-├── api/                   # C API for deploying models
+│   └── meson.build                     # src subdir build
+├── qnn/                                # QNN context library (android only)
+│   ├── qnn_context.cpp
+│   ├── jni/                            # QNN SDK wrappers + RPC manager
+│   └── meson.build
+├── api/                                # C API for deploying models
 │   ├── quick_dot_ai_api.h
 │   ├── quick_dot_ai_api.cpp
-│   └── model_config.cpp
-├── api-app/          # API test application
-│   └── test_api.cpp
-└── ...
+│   ├── model_config.cpp
+│   └── meson.build
+└── api-app/                            # API test application
+    ├── test_api.cpp
+    └── meson.build
 ```
 
 ## How to Create a Custom Model
@@ -123,46 +127,80 @@ quick_dot_ai_inc += my_model_inc
 ```
 
 2. Add `subdir('my_model')` to `models/meson.build`
-3. Add source and include paths to `jni/Android.mk`
 
 ## Building
+
+All builds are driven by the unified `build.sh` script at the project root.
 
 ### x86 / Linux
 
 ```bash
-cd src
-./build_x86.sh
+# Build all targets (src + api + api-test)
+./build.sh
+
+# Build only src (model library + executable)
+./build.sh --target=src
+
+# Clean rebuild
+./build.sh --clean
 ```
 
 Two ways to run:
 
 ```bash
 # Standalone executable (recommended — custom models built in)
-LD_LIBRARY_PATH=../nntrainer/builddir_x86/nntrainer:../nntrainer/builddir_x86/api/ccapi:./builddir \
-  ./builddir/quick_dot_ai /path/to/model "Your prompt"
+LD_LIBRARY_PATH=nntrainer/builddir_x86/nntrainer:nntrainer/builddir_x86/api/ccapi:builddir_x86/src:builddir_x86/api \
+  builddir_x86/src/quick_dot_ai /path/to/model "Your prompt"
 
 # Plugin mode (inject into existing nntr_causallm via LD_PRELOAD)
-LD_PRELOAD=$(pwd)/builddir/libquick_dot_ai.so nntr_causallm /path/to/model
+LD_PRELOAD=$(pwd)/builddir_x86/src/libquick_dot_ai.so nntr_causallm /path/to/model
 ```
 
 ### Android (arm64-v8a)
 
 ```bash
-cd src
 export ANDROID_NDK=/path/to/android-ndk
-./build_android.sh
+
+# Build all targets
+./build.sh --platform=android
+
+# Build with QNN support (android only)
+./build.sh --platform=android --enable-qnn
+
+# Build only src
+./build.sh --platform=android --target=src
+
+# Install to device
 ./install_android.sh
 
 # Run on device
-adb shell /data/local/tmp/nntrainer/quick_dot_ai/run.sh /path/to/model
+adb shell /data/local/tmp/Quick.AI/run.sh /path/to/model
 ```
+
+### Build Options
+
+| Option | Default | Description |
+|---|---|---|
+| `--platform=x86\|android` | `x86` | Target platform |
+| `--target=src,api,api-test` | `all` | Comma-separated list of targets to build |
+| `--enable-qnn` | off | Enable QNN integration (android only) |
+| `--clean` | off | Clean rebuild from scratch |
+
+Meson options (set via `-D` or in `meson.options`):
+
+| Option | Default | Description |
+|---|---|---|
+| `platform` | `auto` | Target platform (`auto`, `x86`, `android`) |
+| `enable-qnn` | `false` | Build QNN context lib + qnn-transformer model (android only) |
+| `enable-fp16` | `true` | Enable FP16 support (effective on android/ARM only) |
+| `enable-api` | `true` | Build `libquick_dot_ai_api.so` |
+| `enable-api-test` | `true` | Build `quick_dot_ai_test` executable |
 
 ## Prerequisites
 
 - C++17 compiler
-- [Meson](https://mesonbuild.com/) >= 0.55.0 (for x86 build)
-- [Android NDK](https://developer.android.com/ndk) (for Android build)
+- [Meson](https://mesonbuild.com/) >= 0.55.0
+- [Ninja](https://ninja-build.org/)
+- [Android NDK](https://developer.android.com/ndk) (for android builds)
+- OpenBLAS (for x86 builds: `apt install libopenblas-dev`)
 - nntrainer dependencies (see nntrainer documentation)
-
-
-
