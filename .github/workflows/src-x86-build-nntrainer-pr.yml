@@ -7,6 +7,9 @@ on:
     paths:
       - 'src/**'
       - 'nntrainer/**'
+      - 'build.sh'
+      - 'meson.build'
+      - 'meson.options'
       - '.github/workflows/src-x86-build-nntrainer-pr.yml'
 
 jobs:
@@ -54,7 +57,7 @@ jobs:
 
       - name: Cache nntrainer x86 build
         id: cache-nntrainer
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: nntrainer/builddir_x86
           key: nntrainer-pr-x86-${{ steps.extract-pr.outputs.pr_number }}-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
@@ -64,24 +67,24 @@ jobs:
           SKIP_SUBMODULE_UPDATE: "1"
           BUILD_JOBS: "1"
         run: |
-          chmod +x src/build_x86.sh
-          src/build_x86.sh
+          chmod +x build.sh
+          ./build.sh --platform=x86 --target=src
 
       - name: Verify build artifacts
         run: |
           echo "Checking build outputs..."
-          ls -la src/builddir/
-          test -f src/builddir/quick_dot_ai
-          test -f src/builddir/libcausallm.so
-          test -f src/builddir/libquick_dot_ai.so
+          ls -la builddir_x86/src/
+          test -f builddir_x86/src/quick_dot_ai
+          test -f builddir_x86/src/libcausallm.so
+          test -f builddir_x86/src/libquick_dot_ai.so
           echo "All artifacts verified."
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: src-x86-linux-nntrainer-pr
           path: |
-            src/builddir/quick_dot_ai
-            src/builddir/libcausallm.so
-            src/builddir/libquick_dot_ai.so
+            builddir_x86/src/quick_dot_ai
+            builddir_x86/src/libcausallm.so
+            builddir_x86/src/libquick_dot_ai.so
           retention-days: 7

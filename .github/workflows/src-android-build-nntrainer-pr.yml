@@ -7,6 +7,10 @@ on:
     paths:
       - 'src/**'
       - 'nntrainer/**'
+      - 'build.sh'
+      - 'meson.build'
+      - 'meson.options'
+      - 'cross/**'
       - '.github/workflows/src-android-build-nntrainer-pr.yml'
 
 jobs:
@@ -45,7 +49,7 @@ jobs:
 
       - name: Cache Android NDK
         id: cache-ndk
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: android-ndk-${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}-linux
@@ -70,7 +74,7 @@ jobs:
 
       - name: Cache nntrainer Android build
         id: cache-nntrainer
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: nntrainer/builddir
           key: nntrainer-pr-android-${{ steps.extract-pr.outputs.pr_number }}-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
@@ -87,21 +91,21 @@ jobs:
         env:
           SKIP_SUBMODULE_UPDATE: "1"
         run: |
-          chmod +x src/build_android.sh
-          src/build_android.sh --clean
+          chmod +x build.sh
+          ./build.sh --platform=android --target=src --clean
 
       - name: Verify build artifacts
         run: |
           echo "Checking build outputs..."
-          ls -la src/jni/libs/arm64-v8a/
-          test -f src/jni/libs/arm64-v8a/libcausallm.so
-          test -f src/jni/libs/arm64-v8a/libquick_dot_ai.so
-          test -f src/jni/libs/arm64-v8a/quick_dot_ai_exe
+          ls -la builddir_android/src/
+          test -f builddir_android/src/libcausallm.so
+          test -f builddir_android/src/libquick_dot_ai.so
+          test -f builddir_android/src/quick_dot_ai
           echo "All artifacts verified."
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: src-android-arm64-v8a-nntrainer-pr
-          path: src/jni/libs/arm64-v8a/
+          path: builddir_android/src/
           retention-days: 7
