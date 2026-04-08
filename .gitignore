@@ -13,6 +13,7 @@ api-app/jni/obj/
 
 # Copied headers
 include/
+!qnn/jni/qnn/PAL/include/
 
 # res
 res/
