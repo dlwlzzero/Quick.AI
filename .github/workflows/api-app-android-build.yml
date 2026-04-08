@@ -44,7 +44,7 @@ jobs:
 
       - name: Cache Android NDK
         id: cache-ndk
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
           path: android-ndk-${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}-linux
@@ -69,7 +69,7 @@ jobs:
 
       - name: Cache nntrainer Android build
         id: cache-nntrainer
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
           path: nntrainer/builddir
           key: nntrainer-android-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
@@ -98,7 +98,7 @@ jobs:
           echo "All artifacts verified."
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: api-app-android-arm64-v8a
           path: |

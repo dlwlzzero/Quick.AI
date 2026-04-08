@@ -57,7 +57,7 @@ jobs:
 
       - name: Cache nntrainer x86 build
         id: cache-nntrainer
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
           path: nntrainer/builddir_x86
           key: nntrainer-pr-x86-${{ steps.extract-pr.outputs.pr_number }}-${{ hashFiles('nntrainer/**/*.cpp', 'nntrainer/**/*.h', 'nntrainer/meson.build') }}
@@ -80,7 +80,7 @@ jobs:
           echo "All artifacts verified."
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: src-x86-linux-nntrainer-pr
           path: |
