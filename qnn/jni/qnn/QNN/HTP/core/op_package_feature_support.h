@@ -152,8 +152,7 @@ API_EXPORT void add_package_per_channel_ops(std::set<std::string> &oset, const c
 // clean all op_pkg storage during process exit
 #define REGISTER_PACKAGE_PARAM_ORDERS()                                                                                \
     if (getPkgParamTmpMap().find(std::string(THIS_PKG_NAME_STR)) == getPkgParamTmpMap().end())                         \
-        getPkgParamTmpMap()[std::string(THIS_PKG_NAME_STR)] = &current_package_param_order_storage_map_func();         \
-    [[maybe_unused]] bool CTRICKS_PASTER(_CLEAN_PKG_PARAMS_, __LINE__) = (std::atexit(clearPkgStorage), true);
+        getPkgParamTmpMap()[std::string(THIS_PKG_NAME_STR)] = &current_package_param_order_storage_map_func();
 
 #define LIST_PACKAGE_AXIS_PARAMS(...)                                                                                  \
     [[maybe_unused]] static bool CTRICKS_PASTER(_PKG_AXIS_PARAMS_, __LINE__) =                                         \

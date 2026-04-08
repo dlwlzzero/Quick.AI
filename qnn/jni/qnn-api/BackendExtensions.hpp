@@ -15,7 +15,6 @@ class BackendExtensions final {
  public:
   BackendExtensions(BackendExtensionsConfigs backendExtensionsConfig,
                     void* backendLibHandle,
-                    qnn::tools::netrun::PerfProfile perfProfile,
                     bool debug_qnn                          = false,
                     QnnLog_Callback_t registeredLogCallback = nullptr,
                     QnnLog_Level_t qnnLogLevel              = QNN_LOG_LEVEL_ERROR);

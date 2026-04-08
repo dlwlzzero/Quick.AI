@@ -34,6 +34,7 @@ typedef enum {
   QNN_HTP_DEVICE_ARCH_V75     = 75,
   QNN_HTP_DEVICE_ARCH_V79     = 79,
   QNN_HTP_DEVICE_ARCH_V81     = 81,
+  QNN_HTP_DEVICE_ARCH_V85     = 85,
   QNN_HTP_DEVICE_ARCH_UNKNOWN = 0x7fffffff
 } QnnHtpDevice_Arch_t;
 
@@ -54,7 +55,14 @@ typedef struct {
   bool useSignedProcessDomain;
 } QnnHtpDevice_UseSignedProcessDomain_t;
 
-typedef void* QnnHtpDevice_UseCustomSetting_t;
+/**
+ * data struture to configure a device to running in Secure/normal Domain.
+ * running in secure process domain (SecurePD) is only supported in V81 and SecurePD is part of add-on SDK.
+ */
+typedef struct {
+  uint32_t deviceId;
+  bool useSecureProcessDomain;
+} QnnHtpDevice_UseSecureProcessDomain_t;
 
 /**
  * enum to list what custom configure is available.
@@ -63,8 +71,7 @@ typedef enum {
   QNN_HTP_DEVICE_CONFIG_OPTION_SOC      = 0,
   QNN_HTP_DEVICE_CONFIG_OPTION_ARCH     = 1,
   QNN_HTP_DEVICE_CONFIG_OPTION_SIGNEDPD = 2,
-  QNN_HTP_DEVICE_CONFIG_OPTION_CUSTOM   = 3,
-  QNN_HTP_DEVICE_CONFIG_OPTION_RESERVED = 0x7fff0000,
+  QNN_HTP_DEVICE_CONFIG_OPTION_SECUREPD = 3,
   QNN_HTP_DEVICE_CONFIG_OPTION_UNKNOWN  = 0x7fffffff
 } QnnHtpDevice_ConfigOption_t;
 
@@ -78,12 +85,10 @@ typedef struct {
     uint32_t socModel;
     // This field update the minimum HTP arch
     QnnHtpDevice_Minimum_Arch_t arch;
-    // This structure is used for enable/disable Signed/unsigned PD
+    // This structure is used for enabling/disabling Signed/unsigned PD
     QnnHtpDevice_UseSignedProcessDomain_t useSignedProcessDomain;
-    // This structure is used for enable Custom setting
-    QnnHtpDevice_UseCustomSetting_t useCustomSetting;
-    // Reserved for internal purposes
-    void* reserved;
+    // This structure is used for enabling Secure PD
+    QnnHtpDevice_UseSecureProcessDomain_t useSecureProcessDomain;
   };
 } QnnHtpDevice_CustomConfig_t;
 

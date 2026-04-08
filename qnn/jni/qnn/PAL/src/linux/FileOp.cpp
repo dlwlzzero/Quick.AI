@@ -354,3 +354,16 @@ std::string pal::FileOp::partsToString(const FilenamePartsType_t& filenameParts)
   }
   return path;
 }
+
+
+//---------------------------------------------------------------------------
+//    pal::FileOp::open
+//---------------------------------------------------------------------------
+int32_t pal::FileOp::open(const std::string& path, const AccessMode flags, FileMode mode) {
+  return ::open(path.c_str(), static_cast<int32_t>(flags), static_cast<uint32_t>(mode));
+}
+
+//---------------------------------------------------------------------------
+//    pal::FileOp::close
+//---------------------------------------------------------------------------
+int32_t pal::FileOp::close(const int32_t fd) { return ::close(fd); }

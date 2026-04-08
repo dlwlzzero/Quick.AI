@@ -1,6 +1,6 @@
 //==============================================================================
 //
-//  Copyright (c) 2022-2023 Qualcomm Technologies, Inc.
+//  Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 //  All Rights Reserved.
 //  Confidential and Proprietary - Qualcomm Technologies, Inc.
 //
@@ -55,6 +55,8 @@ typedef struct {
 typedef enum {
   QNN_HTP_MEM_QURT = 0,
   QNN_HTP_MEM_SHARED_BUFFER = 1,
+  QNN_HTP_MEM_WEIGHTS_BUFFER = 2,
+  QNN_HTP_MEM_SHARED_SPILLFILL_BUFFER = 3,
   QNN_HTP_MEM_UNDEFINED = 0x7FFFFFFF
 } QnnHtpMem_Type_t;
 
@@ -74,6 +76,8 @@ typedef struct {
   union {
     QnnHtpMem_QurtAddress_t qurtAddress;
     QnnHtpMem_SharedBufferConfig_t sharedBufferConfig;
+    QnnHtpMem_SharedBufferConfig_t weightsBufferConfig;
+    QnnHtpMem_SharedBufferConfig_t sharedSpillfillBufferConfig;
   };
 } QnnMemHtp_Descriptor_t;
 

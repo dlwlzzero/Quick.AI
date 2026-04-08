@@ -135,7 +135,7 @@ int QNNContext::init() {
 
   BackendExtensions *backend_extensions = new BackendExtensions(
       backend_extensions_config, qnn_data->m_backendLibraryHandle,
-      qnn::tools::netrun::PerfProfile::BURST, false, nullptr);
+      false, nullptr, QNN_LOG_LEVEL_ERROR);
   qnn_data->m_backendExtensions = backend_extensions;
 
   QnnBackend_Config_t **customConfigs{nullptr};
@@ -272,11 +272,12 @@ StatusCode QNNContext::createDevice() {
   auto qnn_data = getQnnData();
   QnnDevice_Config_t **deviceConfigs{nullptr};
   uint32_t configCount{0};
+  uint32_t socModel{0};
   auto backend_extensions = qnn_data->m_backendExtensions;
 
   if (nullptr != backend_extensions && backend_extensions->interface()) {
     if (!backend_extensions->interface()->beforeCreateDevice(&deviceConfigs,
-                                                             &configCount)) {
+                                                             &configCount, socModel)) {
       QNN_ERROR("Extensions Failure in beforeCreateDevice()");
       return StatusCode::FAILURE;
     }

@@ -1,6 +1,6 @@
 //==============================================================================
 //
-// Copyright (c) 2020 Qualcomm Technologies, Inc.
+// Copyright (c) Qualcomm Technologies, Inc.
 // All Rights Reserved.
 // Confidential and Proprietary - Qualcomm Technologies, Inc.
 //
@@ -44,9 +44,7 @@ class Deserializer;
 
 // some options flags (powers of 2) for calls to Tensor::allocate
 enum AllocOptions {
-    uncached_int8 = 0x1, // override MemoryClass to UnCached.
-    uncached_int16 = 0x2,
-    uncached_fp16 = 0x4
+    AllocOpts_packed = 0x1 // allocation will be packed
 };
 
 /*
@@ -227,6 +225,9 @@ class MemPoolRunTimeAccessor {
     // used to construct the ConstExtentDescriptor during prep
     // implementation in fa_alloc.h
     API_EXPORT fa::PoolDesc const *get_descriptor(unsigned pool_id) const;
+
+    // get the id of first DDR mempool
+    API_EXPORT unsigned get_first_ddr_pool_id() const;
 };
 
 } // namespace hnnx

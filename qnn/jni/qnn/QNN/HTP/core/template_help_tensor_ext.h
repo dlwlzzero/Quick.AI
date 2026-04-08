@@ -68,6 +68,9 @@ template <> inline constexpr uint8_t tensor_idx<TensorShape<4>> = 40;
 
 template <> inline constexpr uint8_t tensor_idx<F16CroutonTensor> = 41;
 template <> inline constexpr uint8_t tensor_idx<F16CroutonTensor_TCM> = 42;
+
+template <> inline constexpr uint8_t tensor_idx<PredicateTensor> = 43;
+
 // all tensor types supported in op package ops
 // clang-format off
 using AllTensors =
@@ -81,7 +84,9 @@ using AllTensors =
                    QUint8Crouton2x2Tensor_TCM, QUint8WideCroutonTensor, QUint8WideCroutonTensor_TCM,
                    QUint8WideCrouton2x2Tensor, QUint8WideCrouton2x2Tensor_TCM, QUint16CroutonTensor,
                    QUint16CroutonTensor_TCM, QInt32CroutonTensor, QInt32CroutonTensor_TCM, QInt32WideCroutonTensor,
-                   QInt32WideCroutonTensor_TCM, TensorShape<4>, F16CroutonTensor, F16CroutonTensor_TCM>;
+                   QInt32WideCroutonTensor_TCM, TensorShape<4>, F16CroutonTensor, F16CroutonTensor_TCM
+                   , PredicateTensor
+                   >;
 // clang-format on
 
 struct tensor_info {

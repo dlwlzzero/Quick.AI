@@ -24,7 +24,7 @@
 
 // GPU API Version values
 #define QNN_GPU_API_VERSION_MAJOR 3
-#define QNN_GPU_API_VERSION_MINOR 7
+#define QNN_GPU_API_VERSION_MINOR 12
 #define QNN_GPU_API_VERSION_PATCH 0
 
 // clang-format off

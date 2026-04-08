@@ -50,6 +50,7 @@ struct OpExtraAttrib : public OpExtraInfo {
     bool for_hlx : 1; // HVX op to be moved to HLX
     unsigned int num_scratch_outputs : 5;
     unsigned int self_slicing_op_nslices : 4; // 0 means just 1 slice; otherwise >= 2
+    unsigned int predicate_offset_sense : 24; // predicate_offset.23::sense.1
 
     // can construct from OpExtraInfo
     OpExtraAttrib() : OpExtraInfo() { clear_fields(); }
@@ -62,6 +63,7 @@ struct OpExtraAttrib : public OpExtraInfo {
         for_hlx = false;
         num_scratch_outputs = 0;
         self_slicing_op_nslices = 0;
+        predicate_offset_sense = 0;
     }
 };
 

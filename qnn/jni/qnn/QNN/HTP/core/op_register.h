@@ -27,60 +27,36 @@ namespace hnnx {
 PUSH_VISIBILITY(default)
 
 API_EXPORT OpFactory make_op_custom_internal(const std::string_view op_name_in, const std::string_view type_tag,
-                                             op_reg_parms const &opreg_parms, bool is_external = false);
+                                             op_reg_parms const &opreg_parms, bool is_external = false,
+                                             const std::string_view file_name = "");
 
 API_EXPORT OpFactory make_op_custom(const std::string_view op_name_in, std::string_view const type_tag,
-                                    op_reg_parms const &opreg_parms);
+                                    op_reg_parms const &opreg_parmsm, std::string_view const file_name = "");
 
 POP_VISIBILITY()
-template <bool IS_SIMPLE> struct item_return {
-};
 
-template <> struct item_return<false> {
+struct item_return {
     typedef op_reg_parms type;
-};
-
-template <> struct item_return<true> {
-    typedef simop_reg_parms type;
 };
 
 // parms_for is wrapped in this class to avoid if constexpr implementation since
 // the AUTOSAR checker doesn't evaluate if constexpr blocks properly
-template <bool IS_SIMPLE> class GetParms {
-  public:
-    template <typename Derived, int I> constexpr static typename item_return<IS_SIMPLE>::type get();
-    template <auto FP, int I> constexpr static typename item_return<IS_SIMPLE>::type get();
-};
-
 // LCOV_EXCL_START [SAFTYSWCCB-1736] constexprs resolved during compile time
 // used in pub/impl/ops_opts_registration_defs.h for internal ops with constexpr lvalue
-template <> class GetParms<false> {
+class GetParms {
   public:
-    template <typename Derived, int I> constexpr static typename item_return<false>::type get()
+    template <typename Derived, int I> constexpr static typename item_return::type get()
     {
         return op_reg_parms::parms_for<Derived, FlagCounter<Derived, I>::get()>();
     }
 
-    template <auto FP, int I> constexpr static typename item_return<false>::type get()
+    template <auto FP, int I> constexpr static typename item_return::type get()
     {
         using Derived = typename DerivedType<FP>::type;
         return op_reg_parms::parms_for<Derived, FlagCounter<Derived, I>::get()>();
     }
 };
 
-template <> class GetParms<true> {
-  public:
-    template <typename Derived, int I> constexpr static typename item_return<true>::type get()
-    {
-        return simop_reg_parms::parms_for_simple<Derived, FlagCounter<Derived, I>::get()>();
-    }
-
-    template <auto FP, int I> constexpr static typename item_return<true>::type get()
-    {
-        using Derived = typename DerivedType<FP>::type;
-        return simop_reg_parms::parms_for_simple<Derived, FlagCounter<Derived, I>::get()>();
-    }
-};
 //LCOV_EXCL_STOP
 
 } // namespace hnnx
@@ -97,8 +73,8 @@ template <auto, int> struct ModifiedDerivedType;
 // multiple times
 #define MDT(W, LINE)                                                                                                   \
     namespace fold {                                                                                                   \
-    template <> struct ModifiedDerivedType<W, LINE> : public ModifiedDerivedTypeParent {                               \
-        using Modified = typename DerivedType<W>::type;                                                                \
+    template <> struct ModifiedDerivedType<&W, LINE> : public ModifiedDerivedTypeParent {                              \
+        using Modified = typename DerivedType<&W>::type;                                                               \
     };                                                                                                                 \
     } //namespace fold
 
@@ -110,11 +86,12 @@ template <auto, int> struct ModifiedDerivedType;
 #ifndef OP_REG_COMPILE
 #define DEF_NATIVE_OP(F, OP, LINE) DEF_NATIVE_OP_NMVRT(F, F, OP, "", LINE)
 
-#define DEF_NATIVE_OP_NO_TCM_FOLDING(F, OP) DEF_NATIVE_OP_NMVRT_NO_TCM_FOLDING(F, F, OP, "")
+#define DEF_NATIVE_OP_NO_TCM_FOLDING(F, OP) DEF_NATIVE_OP_NMVRT_NO_TCM_FOLDING(&F, &F, OP, "")
 
 #define DEF_NATIVE_OP_NMVRT(F, W, OP, NMVRT, LINE)                                                                     \
     MDT(F, LINE)                                                                                                       \
-    APPEND_REG_OP_ELEM(W, THIS_PKG_NAME_STR "::" OP, TYPE_SUFFIX(OP, NMVRT, hnnx::ArgsTuples2<F>::inputTypeNames), LINE)
+    APPEND_REG_OP_ELEM(&W, THIS_PKG_NAME_STR "::" OP, TYPE_SUFFIX(OP, NMVRT, hnnx::ArgsTuples2<&F>::inputTypeNames),   \
+                       LINE)
 
 #define DEF_NATIVE_OP_NMVRT_NO_TCM_FOLDING(F, W, OP, NMVRT)                                                            \
     APPEND_REG_OP_ELEM_NO_TCM_FOLDING(W, THIS_PKG_NAME_STR "::" OP,                                                    \
@@ -136,9 +113,9 @@ template <auto, int> struct ModifiedDerivedType;
 
 // see register-op-tcm-folding.md
 #define REGISTER_OP_NO_TCM_FOLDING(F, STR)    DEF_NATIVE_OP_NO_TCM_FOLDING(F, STR)
-#define REGISTER_OP_WRAPPER(F, W, STR, NMVRT) DEF_NATIVE_OP_NMVRT_NO_TCM_FOLDING(F, W, STR, NMVRT)
+#define REGISTER_OP_WRAPPER(F, W, STR, NMVRT) DEF_NATIVE_OP_NMVRT_NO_TCM_FOLDING(&F, W, STR, NMVRT)
 
-#define REGISTER_OP_EXT(F, STR, NMVRT) REGISTER_OP_WRAPPER(F, F, STR, NMVRT)
+#define REGISTER_OP_EXT(F, STR, NMVRT) REGISTER_OP_WRAPPER(F, &F, STR, NMVRT)
 
 #define REGISTER_OP_HVX_EXT(F, STR, NMVRT)                                                                             \
     FLAGS_FOR_DT_NO_TCM_FOLDING(F, Flags::RESOURCE_HVX)                                                                \

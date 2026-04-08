@@ -71,8 +71,8 @@ static constexpr unsigned OP_EXTATTR_SELF_SLICING = 0x1; // 8 LSBs = # of slices
 // bits 30..24 tell you what it means
 // bit 31 tell you that you are are not the last one
 static constexpr unsigned OP_EXTATTR_PREDICATE = 0x2;
-// Getting the last 24 bits. It contains the index of the predicate condition
-static constexpr unsigned OP_PRED_CONDITION_INDEX_MASK = 0x00ffffff;
+// Getting the last 24 bits. It contains the predicate offset and the sense
+static constexpr unsigned OP_PRED_OFFSET_SENSE_MASK = 0x00ffffff;
 
 } // namespace hnnx
 

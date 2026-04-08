@@ -37,6 +37,7 @@
 #include "size_align_code.h"
 #include "deser_concurrent.h"
 #include "hexagon_nn_types.h"
+#include "conditional_default_deleter.h"
 
 namespace hnnx {
 class DMA_Manager;
@@ -54,8 +55,6 @@ using tensor_deserializer_fn = uptr_Tensor (*)(Deserz &);
 
 using deserialize_op_func = void *(*)(void *, Deserz &); // Allocation function
 using deserialize_dtor_func = void (*)(Graph *, void *); // Deallocation function
-class SimpleOpBase;
-using deserialize_make_unique = std::unique_ptr<SimpleOpBase> (*)();
 
 struct op_deserializer_fn {
     op_deserializer_fn(deserialize_op_func init_func_in, const size_align_code_t sizeal_in)
@@ -97,10 +96,11 @@ struct trick_stringview_lt {
 };
 
 using op_deserializer_map_t = std::map<std::string_view, std::pair<op_deserializer_fn, bool>, trick_stringview_lt>;
+using op_filename_map_t = std::map<std::string_view, std::string_view>;
 using tensor_deserializer_map_t = std::map<std::string_view, tensor_deserializer_fn, trick_stringview_lt>;
 using cexdesc_deserializer_map = std::map<std::string, ConstExtentDesc>;
 
-using const_extent_t = std::pair<hexagon_nn_wide_address_t, size_t>;
+using const_extent_t = std::pair<hexagon_nn_wide_address_t, uint64_t>;
 using weight_buf_deserializer_map = std::map<std::string, const_extent_t>;
 
 /**
@@ -425,19 +425,6 @@ class Deserializer : public Deserz {
     inline void deserialize_tensor_def(Tensor const *tensor_ptr) { tensorconn.tensor_def(*this, tensor_ptr); }
     inline void deserialize_tensor_ref(Tensor const *&where) { tensorconn.tensor_ref(*this, where); }
     inline void deserialize_tensor_refs(Tensor const **ptrs, unsigned n) { tensorconn.tensor_refs(*this, ptrs, n); }
-    inline void deserialize_pred_conditions(std::vector<uint32_t> &pred_cond_list)
-    {
-        // get the number of items in the vector
-        uint32_t num_of_objects = deserialize_uint32();
-        assert(num_of_objects <= UINT32_MAX);
-        if (num_of_objects > 0) {
-            pred_cond_list.resize(num_of_objects);
-
-            // TODO: remove this once we know how to update it at runtime
-            // Currently setting it to true
-            pred_cond_list.at(0) = 1;
-        }
-    }
     template <typename T> inline void deserialize_tensor_ref(T const *&where)
     {
         static_assert(std::is_base_of<Tensor, T>::value);
@@ -462,6 +449,8 @@ class Deserializer : public Deserz {
 
     constexpr bool is_shared_dynamic_tensor_shape_format() const { return shared_dynamic_tensor_shape; }
     void set_shared_dynamic_tensor_shape_format(const bool v = true) { shared_dynamic_tensor_shape = v; }
+
+    void set_shared_io_buffer(const bool v = true) { shared_io_buffer = v; }
 
     PUSH_WARNING()
     DISABLE_WARNING("-Wcast-qual", MSVC_NO_EQUIV)
@@ -489,11 +478,17 @@ class Deserializer : public Deserz {
     uint32_t crate_size_according_to_segments() const;
 
   protected:
+    ///
+    /// @brief Type for a unique readonly block-of-bytes (32b array)
+    ///
+    typedef std::unique_ptr<const uint32_t[], conditional_default_deleter<const uint32_t[]>> unique_readonly_blob_t;
+
     std::vector<void const *> objindex; // index of pointers to shape, etc.
     // the state of the 'tensor connectivity' deserialize engine.
     DeserTensorConn tensorconn;
     bool aligned_const_format_flag = false;
     bool shared_dynamic_tensor_shape = false;
+    bool shared_io_buffer = false;
 
     // this is used in 'deserialize_str', so it ideally should be in Deserz; but
     // it's pretty large; so, put it here and forbid calling deserialize_str
@@ -504,6 +499,13 @@ class Deserializer : public Deserz {
     // do the reference fixups on a segment. Return true if OK.
     // See Deserz::apply_segment_fixups for public API.
     static bool do_segment_fixups(runlist_fixup_state &seginfo, Deserz const &dctx0);
+
+    ///
+    /// @brief Function to load header part of constant extent section
+    /// @param [in] ptr Pointer to constant extent section
+    /// @return Unique readonly blob pointing to header
+    ///
+    unique_readonly_blob_t load_header(hexagon_nn_wide_address_const_t const addr);
 
   public:
     inline constexpr bool classic_format() const { return format_version == 0; }
@@ -537,15 +539,17 @@ class Deserializer : public Deserz {
     // and to do basic check.
     API_EXPORT std::vector<uint32_t> extract_const_extent_table(size_t posn_in_words);
     std::vector<uint32_t> extract_const_extent_table(hexagon_nn_wide_address_const_t weight_data,
-                                                     const size_t weight_size);
+                                                     const uint64_t weight_size);
     // given a destination char pointer, prefilled with \null, fills it in with the name of the const_extent
     // caller must provide destination of sufficient length
-    std::string name_from_weight_data(hexagon_nn_wide_address_const_t weight_data, const uint32_t weight_length);
+    std::string name_from_weight_data(hexagon_nn_wide_address_const_t weight_data, const uint64_t weight_length);
+
     // helper func for above. return -1 if name not present.
-    std::string get_name(hexagon_nn_wide_address_const_t weight_data, const uint32_t weight_length);
+    std::string get_name(hexagon_nn_wide_address_const_t weight_data, const uint64_t weight_length);
     // give a vector of weight_data buffers, stores them all in the appropriate map
     void store_named_weight_bufs(const hexagon_nn_wide_address_const_t *const buffers, const uint64_t *const lengths,
                                  const unsigned num_buffers);
+    void store_named_weight_bufs(std::vector<hexagon_nn_wide_iovec_t const *> const &named_weights);
     //
     // copy 'len' bytes of data at offset offs_bytes in the pickle into location dstp.
     // returns true if it's possible. You can maybe pass a DMA_Manager to have it queued...
@@ -553,7 +557,7 @@ class Deserializer : public Deserz {
     API_EXPORT bool extract_const_extent_data(uint64_t offs_bytes, size_t len, void *dstp, DMA_Manager *dma = nullptr);
     // same, using an external const_extent
     bool extract_const_extent_data(uint64_t offs_bytes, size_t len, void *dstp,
-                                   hexagon_nn_wide_address_const_t weight_data, const size_t weight_length);
+                                   hexagon_nn_wide_address_const_t weight_data, const uint64_t weight_length);
 
     // This extracts the 'objindex', when it is needed e.g. to 'patch' interfaces.
     // Must be done only after deserializing, and can only be done once.
@@ -708,7 +712,8 @@ PUSH_VISIBILITY(default)
  * @param[in] fn Deserialize function
  */
 API_EXPORT void deserialize_op_register(std::type_info const *tinf, const std::string_view type_tag,
-                                        const op_deserializer_fn &fn, bool is_external = false);
+                                        const op_deserializer_fn &fn, bool is_external = false,
+                                        std::string_view filename = "");
 /**
  * @brief register the deserialization function for each \ref Tensor
  * Since \ref Tensor derived classes are instantiated via templates, there

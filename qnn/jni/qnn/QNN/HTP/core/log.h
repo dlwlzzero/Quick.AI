@@ -12,8 +12,10 @@
 #include "weak_linkage.h"
 #include "macros_attribute.h"
 #include <cstdarg>
+#include <cstdint>
 #include <string>
 #include <chrono>
+//#include <fmt/format.h>
 
 #if !defined(__PRETTY_FUNCTION__) && !defined(__GNUC__)
 #define __FUNC_INFO__ __FUNCSIG__
@@ -116,51 +118,6 @@ void qnndsp_x86_log(const char *fmt, ...);
 }
 #endif
 
-/////////////////////////ENABLE_QNN_LOG
-#ifdef ENABLE_QNNDSP_LOG
-
-PUSH_VISIBILITY(default)
-#include "weak_linkage.h"
-
-API_FUNC_EXPORT API_C_FUNC void API_FUNC_NAME(SetLogCallback)(DspLogCallbackFunc cbFn, int logPriority);
-
-extern "C" {
-API_FUNC_EXPORT void qnndsp_log(int prio, const char *FMT, ...);
-
-API_FUNC_EXPORT void hv3_load_log_functions(decltype(SetLogCallback) **SetLogCallback_f);
-}
-POP_VISIBILITY()
-
-#define qnndsp_base_log(prio, cformat, ...) (void)(qnndsp_log(prio, cformat, ##__VA_ARGS__))
-
-#define _rawlog_(cformat, ...) (qnndsp_base_log(NN_LOG_ERRORLVL, cformat, __VA_ARGS__), GraphStatus::ErrorFatal)
-#define _okaylog_(cformat, ...)                                                                                        \
-    (qnndsp_base_log(NN_LOG_ERRORLVL, "%s:" STRINGIZE(__LINE__) ":" cformat "\n", FILE_BASENAME, __VA_ARGS__),         \
-     GraphStatus::ErrorFatal)
-#define _errlog_(cformat, ...)                                                                                         \
-    (qnndsp_base_log(NN_LOG_ERRORLVL, "%s:" STRINGIZE(__LINE__) ":ERROR:" cformat "\n", FILE_BASENAME, __VA_ARGS__),   \
-     GraphStatus::ErrorFatal)
-#define _warnlog_(cformat, ...) qnndsp_base_log(NN_LOG_WARNLVL, "WARNING: " cformat "\n", __VA_ARGS__)
-#define _statlog_(statname, statvalue, dummy)                                                                          \
-    qnndsp_base_log(NN_LOG_STATLVL, "STAT: %s=%lld\n", statname, (long long)statvalue)
-#define _i_statlog_(statname, statvalue, dummy)                                                                        \
-    qnndsp_base_log(NN_LOG_STATLVL_INTERNAL, "STAT: %s=%lld\n", statname, (long long)statvalue)
-#define _statslog_(statname, statvalue, dummy) qnndsp_base_log(NN_LOG_STATLVL, "STAT: %s=%s\n", statname, statvalue)
-#define _i_statslog_(statname, statvalue, dummy)                                                                       \
-    qnndsp_base_log(NN_LOG_STATLVL_INTERNAL, "STAT: %s=%s\n", statname, statvalue)
-#define _infolog_(cformat, ...)       qnndsp_base_log(NN_LOG_INFOLVL, cformat "\n", __VA_ARGS__)
-#define _i_infolog_(cformat, ...)     qnndsp_base_log(NN_LOG_INFOLVL_INTERNAL, cformat "\n", __VA_ARGS__)
-#define _debuglog_(cformat, ...)      qnndsp_base_log(NN_LOG_DEBUGLVL, cformat "\n", __VA_ARGS__)
-#define _verboselog_(cformat, ...)    qnndsp_base_log(NN_LOG_VERBOSELVL, cformat "\n", __VA_ARGS__)
-#define logmsgraw(prio, cformat, ...) qnndsp_base_log(prio, cformat, ##__VA_ARGS__)
-#define _logmsg_(prio, cformat, ...)                                                                                   \
-    (void)(qnndsp_base_log(prio, "%s:" STRINGIZE(__LINE__) ":" cformat "\n", FILE_BASENAME, __VA_ARGS__))
-#define _logmsgl_(prio, cformat, ...) (void)(qnndsp_base_log(prio, cformat, __VA_ARGS__))
-
-#else // ENABLE_QNNDSP_LOG
-
-// Standalone HexNN default log
-
 #if defined(NN_LOG_DYNLVL) && (NN_LOG_DYNLVL > 0)
 
 // Dynamic logging level test function.
@@ -172,7 +129,7 @@ static inline bool log_condition(const int prio)
 #elif defined(NN_LOG_MAXLVL)
 
 // Logging level is fixed at compile time.
-constexpr static bool log_condition(const int prio)
+static inline bool log_condition(const int prio)
 {
     return ((prio <= NN_LOG_MAXLVL) ? true : false);
 };
@@ -187,6 +144,32 @@ constexpr static bool log_condition(const int prio)
 
 #endif
 
+#ifdef ENABLE_QNNDSP_LOG
+
+PUSH_VISIBILITY(default)
+API_FUNC_EXPORT API_C_FUNC void API_FUNC_NAME(SetLogCallback)(DspLogCallbackFunc cbFn, int logPriority);
+
+extern "C" {
+API_FUNC_EXPORT void qnndsp_log(int prio, const char *FMT, ...);
+
+API_FUNC_EXPORT void hv3_load_log_functions(decltype(SetLogCallback) **SetLogCallback_f);
+}
+POP_VISIBILITY()
+
+#define MAKE_LOG_FMT_WITH_PREFIX(FMT, ...)                                                                             \
+    "%s"                                                                                                               \
+    ":" STRINGIZE(__LINE__) ":" FMT "\n",                                                                              \
+            FILE_BASENAME, ##__VA_ARGS__
+
+#define HV3_LOG(PRIO, FMT, ...) qnndsp_log(PRIO, FMT, ##__VA_ARGS__)
+
+#else // ENABLE_QNNDSP_LOG
+
+#define MAKE_LOG_FMT_WITH_PREFIX(FMT, ...) FILE_BASENAME ":" STRINGIZE(__LINE__) ":" FMT "\n", ##__VA_ARGS__
+#define HV3_LOG(PRIO, FMT, ...)            nn_log_printf(FMT, ##__VA_ARGS__)
+
+#endif // ENABLE_QNNDSP_LOG
+
 // These are conditional, where the condition is set via compile flags.  Note that these are
 // template functions so that we can exclude them from coverage using lcov commands.
 
@@ -194,7 +177,7 @@ template <typename... Types> inline void logmsgraw(const int prio, char const *f
 {
     // LCOV_EXCL_START [SAFTYSWCCB-996]
     if (log_condition(prio)) {
-        nn_log_printf(fmt, args...);
+        HV3_LOG(prio, fmt, args...);
     }
     // LCOV_EXCL_STOP
 }
@@ -202,30 +185,24 @@ template <typename... Types> inline void logmsgraw(const int prio, char const *f
 // These macros are what are used in actual code, so that the line and filename macros will expand
 // properly to show where the macro is invoked.
 
-#define _rawlog_(FMT, ...)  (nn_log_printf((FMT), __VA_ARGS__))
-#define _okaylog_(FMT, ...) (nn_log_printf(FILE_BASENAME ":" STRINGIZE(__LINE__) ":" FMT "\n", __VA_ARGS__))
+#define _rawlog_(FMT, ...)  HV3_LOG(NN_LOG_ERRORLVL, FMT, ##__VA_ARGS__)
+#define _okaylog_(FMT, ...) HV3_LOG(NN_LOG_ERRORLVL, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
 #define _errlog_(FMT, ...)                                                                                             \
-    (nn_log_printf(FILE_BASENAME ":" STRINGIZE(__LINE__) ":ERROR:" FMT "\n", __VA_ARGS__), GraphStatus::ErrorFatal)
-#define _logmsg_(PRIO, FMT, ...) logmsgraw(PRIO, FILE_BASENAME ":" STRINGIZE(__LINE__) ": " FMT "\n", __VA_ARGS__)
-#define _warnlog_(FMT, ...)                                                                                            \
-    logmsgraw(NN_LOG_WARNLVL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":WARNING: " FMT "\n", __VA_ARGS__)
+    HV3_LOG(NN_LOG_ERRORLVL, MAKE_LOG_FMT_WITH_PREFIX(":ERROR:" FMT, ##__VA_ARGS__)), GraphStatus::ErrorFatal
+#define _logmsg_(PRIO, FMT, ...) logmsgraw(PRIO, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
+#define _warnlog_(FMT, ...)      logmsgraw(NN_LOG_WARNLVL, MAKE_LOG_FMT_WITH_PREFIX("WARNING:" FMT, ##__VA_ARGS__))
 #define _statlog_(statname, statvalue, dummy)                                                                          \
-    logmsgraw(NN_LOG_STATLVL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":STAT: %s=%lld\n", statname, (long long)statvalue)
+    logmsgraw(NN_LOG_STATLVL, MAKE_LOG_FMT_WITH_PREFIX("STAT: %s=%lld", statname, (long long)statvalue))
 #define _i_statlog_(statname, statvalue, dummy)                                                                        \
-    logmsgraw(NN_LOG_STATLVL_INTERNAL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":STAT: %s=%lld\n", statname,             \
-              (long long)statvalue)
+    logmsgraw(NN_LOG_STATLVL_INTERNAL, MAKE_LOG_FMT_WITH_PREFIX("STAT: %s=%lld", statname, (long long)statvalue))
 #define _statslog_(statname, statvalue, dummy)                                                                         \
-    logmsgraw(NN_LOG_STATLVL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":STAT: %s=%s\n", statname, statvalue)
+    logmsgraw(NN_LOG_STATLVL, MAKE_LOG_FMT_WITH_PREFIX("STAT: %s=%s", statname, statvalue))
 #define _i_statslog_(statname, statvalue, dummy)                                                                       \
-    logmsgraw(NN_LOG_STATLVL_INTERNAL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":STAT: %s=%s\n", statname, (statvalue))
-#define _infolog_(FMT, ...) logmsgraw(NN_LOG_INFOLVL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":" FMT "\n", __VA_ARGS__)
-#define _i_infolog_(FMT, ...)                                                                                          \
-    logmsgraw(NN_LOG_INFOLVL_INTERNAL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":" FMT "\n", __VA_ARGS__)
-#define _debuglog_(FMT, ...) logmsgraw(NN_LOG_DEBUGLVL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":" FMT "\n", __VA_ARGS__)
-#define _verboselog_(FMT, ...)                                                                                         \
-    logmsgraw(NN_LOG_VERBOSELVL, FILE_BASENAME ":" STRINGIZE(__LINE__) ":" FMT "\n", __VA_ARGS__)
-
-#endif // ENABLE_QNNDSP_LOG
+    logmsgraw(NN_LOG_STATLVL_INTERNAL, MAKE_LOG_FMT_WITH_PREFIX("STAT: %s=%s", statname, (statvalue)))
+#define _infolog_(FMT, ...)    logmsgraw(NN_LOG_INFOLVL, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
+#define _i_infolog_(FMT, ...)  logmsgraw(NN_LOG_INFOLVL_INTERNAL, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
+#define _debuglog_(FMT, ...)   logmsgraw(NN_LOG_DEBUGLVL, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
+#define _verboselog_(FMT, ...) logmsgraw(NN_LOG_VERBOSELVL, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
 
 template <class T> constexpr const char *format_type_check = "";
 
@@ -249,6 +226,33 @@ template <class T> constexpr const char *format_type_check = "";
 // Extra hook for debuglog.  This allows files to redefine it in order to add extra compile-time
 // hooks for removing it.
 #define debuglog(...) _debuglog(__VA_ARGS__)
+
+//
+// BCK:  Temporarily removing fmtlib logging due to QNN build issues.
+//
+#if 0
+//
+// These are logging variants which use fmtlib.
+//
+
+// Internal formatter function which sends data to stdout, FARF, etc.
+void vlogmsg_fmt(fmt::string_view fmt, fmt::format_args args);
+
+template <typename... T> inline void logmsg_fmt(const int prio, fmt::format_string<T...> fmt, T &&...args)
+{
+    // LCOV_EXCL_START [SAFTYSWCCB-996]
+    if (log_condition(prio)) {
+        vlogmsg_fmt(fmt, fmt::make_format_args(args...));
+    }
+    // LCOV_EXCL_STOP
+}
+
+#define errlogf(...)          logmsg_fmt(NN_LOG_ERRORLVL, "", MAKE_LOG_FMT_WITH_PREFIX(":ERROR:" FMT, ##__VA_ARGS__))
+#define warnlogf(...)         logmsg_fmt(NN_LOG_WARNLVL, "", MAKE_LOG_FMT_WITH_PREFIX(":WARNING:" FMT, ##__VA_ARGS__))
+#define infologf(FMT, ...)    logmsg_fmt(NN_LOG_INFOLVL, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
+#define verboselogf(FMT, ...) logmsg_fmt(NN_LOG_VERBOSELVL, MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
+#define debuglogf(FMT, ...)   logmsg_fmt(NN_LOG_DEBUGLVL, "", MAKE_LOG_FMT_WITH_PREFIX(FMT, ##__VA_ARGS__))
+#endif // 0
 
 #ifdef NN_LOG_MAXLVL
 #define LOG_STAT()    ((NN_LOG_MAXLVL) >= NN_LOG_STATLVL)
@@ -285,7 +289,7 @@ class ExternalTimePoint {
 
     void update_progress(unsigned int new_numerator, unsigned int new_denominator);
 
-    void close();
+    std::pair<std::string, uint64_t> close();
 
     // Custom destructor
     ExternalTimePoint() = delete;

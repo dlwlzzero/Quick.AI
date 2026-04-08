@@ -375,7 +375,7 @@ inline std::pair<int32_t, int32_t> Float16::force_norm() const
     return std::make_pair(e, f);
 }
 
-constexpr Float16 operator"" _f16(long double v)
+constexpr Float16 operator""_f16(long double v)
 {
     return Float16(static_cast<float>(v));
 }

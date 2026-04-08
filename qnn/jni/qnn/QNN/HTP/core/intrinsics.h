@@ -305,10 +305,30 @@ inline void dcfetch(void const *addr)
     POP_WARNING()
 }
 
+inline void dcfetch_block(const void *addr, int size);
+
+inline void dcfetch_multi(void const *addr, int len)
+{
+#if (__HEXAGON_ARCH__ >= 85)
+    // LCOV_EXCL_START [SAFTYSWCCB-1735] Hawi
+    asm volatile(" dcfetch_multi(%0,%1) " : : "r"(addr), "r"(len));
+    // LCOV_EXCL_STOP
+#else
+    dcfetch_block(addr, len);
+#endif
+}
+
 inline void ALWAYSINLINE l2pref(const void *p, uint32_t height, uint32_t width, uint32_t stride)
 {
     uint64_t const control = Q6_P_combine_RR(stride, Q6_R_combine_RlRl(width, height));
     asm volatile(" l2fetch(%0,%1) " : : "r"(p), "r"(control));
+}
+
+inline void ALWAYSINLINE unpause()
+{
+#if (__HEXAGON_ARCH__ >= 73)
+    asm volatile("unpause");
+#endif
 }
 
 inline void ALWAYSINLINE pause_just_enough()
@@ -328,6 +348,17 @@ inline void ALWAYSINLINE pause_just_enough()
 // LCOV_EXCL_STOP
 #endif
 }
+
+// LCOV_EXCL_START [SAFTYSWCCB-1735] Hawi
+inline void ALWAYSINLINE copymem(void *dest, const void *src, unsigned n)
+{
+#if HEX_ARCH >= 91
+    asm volatile("memcpy(%0,%1,%2);" : : "r"(dest), "r"(src), "r"(n - 1) : "memory");
+#else
+    abort();
+#endif
+}
+// LCOV_EXCL_STOP
 
 #else
 
@@ -371,6 +402,7 @@ inline void q6op_vstu_variable_ARVR(void *addr, int n, HVX_Vector vin, int pos0)
 }
 
 inline void dcfetch(void const volatile *addr) {}
+inline void dcfetch_multi(void const *addr, int len) {}
 inline void l2pref(const void *p, uint32_t height, uint32_t width, uint32_t stride) {}
 
 inline void pause_just_enough()
@@ -381,6 +413,18 @@ inline void pause_just_enough()
     std::this_thread::yield();
 #endif
 }
+
+inline void unpause() {}
+
+// LCOV_EXCL_START [SAFTYSWCCB-1544]
+inline void ALWAYSINLINE copymem(void *dest, const void *src, unsigned n)
+{
+    // Needs to be a power of 2 and have a max size of 256K.
+    assert(((n > 0) && ((n & (n - 1)) == 0)) && (n <= 256 * 1024));
+
+    memcpy(dest, src, n);
+}
+// LCOV_EXCL_STOP
 
 #endif
 
@@ -536,6 +580,9 @@ inline HVX_Vector uint64_to_qfloat(HVX_Vector ll_hi, HVX_Vector ll_lo)
     mant0 = Q6_V_vand_VV(mant0, qmask);
     exp0 = Q6_Vw_vsub_VwVw(qexpmin, exp0); //merge mant and exponent
     qf32_out = Q6_V_vor_VV(mant0, exp0); //qfloat
+    // handling float conversion for 0 manually
+    HVX_Vector maskZero = Q6_V_vand_QV(Q6_Q_vcmp_eq_VwVw(ll_lo, vzero), Q6_Q_vcmp_eq_VwVw(ll_hi, vzero));
+    qf32_out = Q6_V_vmux_QVV(maskZero, vzero, qf32_out);
     return (qf32_out);
 }
 
@@ -755,7 +802,7 @@ static inline HVX_Vector convert_s32_to_sf(const HVX_Vector vals)
     return Q6_Vsf_equals_Vw(vals);
 #else
     // LCOV_EXCL_START [SAFTYSWCCB-1735]
-    return int32_to_float(vals);
+    return int32_to_fp32(vals);
     // LCOV_EXCL_STOP
 #endif
 }

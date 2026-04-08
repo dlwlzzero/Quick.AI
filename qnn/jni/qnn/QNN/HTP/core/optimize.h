@@ -298,8 +298,8 @@ struct QuickShape {
         }
     }
 
-    // set an output def based on QuickShape. Only useful in implementing modifiers.
-    API_EXPORT void to_outdef(OutputDef &odef) noexcept;
+    // set an op_def's output def based on QuickShape. Only useful in implementing modifiers.
+    API_EXPORT void to_outdef(OpDef &op_def) noexcept;
     explicit inline constexpr QuickShape(empty_rank const &erank) : rank(std::min((unsigned)erank.r, maxdims)), dims()
     {
     }
@@ -1476,6 +1476,21 @@ class Replacement : public Constraint {
     // what are comments
     OpRef add_TRACKED_OP(Replacement &rpx, const OpDef &old, const ReplFunc_or_Operand &&op);
 
+    /// \ingroup OptReplacement
+    /// @brief It's used for CSE when quant_is_updateable is enabled.
+    /// The nested_level represents the layers from inside to outside of the target op in replacement.
+    /// If the target op changes multiple times in a phase, TRACK_SOURCE_ID needs to be used for recording each id change.
+    /// It must be used together with cse_after_if in the same DEF_OPT.
+    API_HIDDEN inline static ReplFunc TRACK_SOURCE_ID(ReplFunc_or_Operand &&ref, int nested_level, ReplFunc_general &&f)
+    {
+        return ReplFunc::create([=](Replacement &rpx, const OpDef &old) -> OpRef {
+            OpDef const new_def = rpx.add_MAPPED_OPID(ref(rpx, old), nested_level, old);
+            return f(rpx, new_def);
+        });
+    }
+
+    OpDef add_MAPPED_OPID(OpRef const &ref, int nested_level, OpDef const &old);
+
     API_HIDDEN inline static ReplFunc WrapOp(char const *opname, ReplFunc_or_Operand &&f)
     {
         return WrapOp_internal(opname, pkg_flag.c_str(), std::move(f), true);
@@ -1935,23 +1950,27 @@ class Replacement : public Constraint {
     OpDef const &curr_op() const { return *m_curr_op; }
 
     API_EXPORT static OpRef gen_node(const hnnx::opname_tag_t str, size_t n_in, OpRef const *inputs, const OpDef &old,
-                                     char const *package_name = THIS_PKG_NAME_STR, const OpDef *model = nullptr);
+                                     const OutputDef *new_odef = nullptr, char const *package_name = THIS_PKG_NAME_STR,
+                                     const OpDef *model = nullptr);
     static inline OpRef gen_node(const hnnx::opname_tag_t str, std::vector<OpRef> const &inputs, const OpDef &old,
-                                 char const *package_name = THIS_PKG_NAME_STR, const OpDef *model = nullptr)
+                                 const OutputDef *new_odef = nullptr, char const *package_name = THIS_PKG_NAME_STR,
+                                 const OpDef *model = nullptr)
     {
-        return gen_node(str, inputs.size(), inputs.data(), old, package_name, model);
+        return gen_node(str, inputs.size(), inputs.data(), old, new_odef, package_name, model);
     }
     // allow {opref1, opref2} for 'inputs' (without becoming std::vector)
     static inline OpRef gen_node(const hnnx::opname_tag_t str, std::initializer_list<OpRef> inputs, const OpDef &old,
-                                 char const *package_name = THIS_PKG_NAME_STR, const OpDef *model = nullptr)
+                                 const OutputDef *new_odef = nullptr, char const *package_name = THIS_PKG_NAME_STR,
+                                 const OpDef *model = nullptr)
     {
-        return gen_node(str, inputs.size(), inputs.begin(), old, package_name, model);
+        return gen_node(str, inputs.size(), inputs.begin(), old, new_odef, package_name, model);
     }
     template <size_t N>
     static inline OpRef gen_node(const hnnx::opname_tag_t str, std::array<OpRef, N> const &inputs, const OpDef &old,
-                                 char const *package_name = THIS_PKG_NAME_STR, const OpDef *model = nullptr)
+                                 const OutputDef *new_odef = nullptr, char const *package_name = THIS_PKG_NAME_STR,
+                                 const OpDef *model = nullptr)
     {
-        return gen_node(str, N, inputs.data(), old, package_name, model);
+        return gen_node(str, N, inputs.data(), old, new_odef, package_name, model);
     }
 
     API_EXPORT OpRef gen_Shape_in_graph(const OpDef &old, int rank, size_t const *sizes);
@@ -2560,15 +2579,76 @@ DECLARE_PACKAGE_OPTIMIZATION_DEF()
 #define REGISTER_PACKAGE_OPTIMIZATIONS()
 #endif // PREPARE_DISABLED
 
-#define COMPILER_FOR(XXF, FUNC, PARA)                                                                                  \
-    template <> constexpr bool has_compile_method<XXF> = true;                                                         \
-    template <> struct OpaqueT_FOR<XXF> {                                                                              \
+struct Recompilable_param {
+    const Op *op_ptr = nullptr;
+    Recompilable_param *next = nullptr;
+};
+
+#define COMPILER_FOR_UPDATEABLE_QUANT_WITH_CHECKS(XXF, FUNC, PARA, PRE, POST)                                          \
+    template <> constexpr bool has_compile_method<&XXF> = true;                                                        \
+    template <> struct OpaqueT_FOR<&XXF> {                                                                             \
         using type = PARA;                                                                                             \
     };                                                                                                                 \
-    template <> hnnx::Executable::ItemType hnnx::TypicalOpWithCompiler<XXF, PARA>::compile(Graph &graph_in) const      \
+    template <> bool hnnx::TypicalOpWithCompiler<&XXF, PARA>::check_constraint_for_recompile(Graph &graph_in) const    \
+    {                                                                                                                  \
+        return POST(graph_in, this);                                                                                   \
+    }                                                                                                                  \
+    template <> hnnx::Executable::ItemType hnnx::TypicalOpWithCompiler<&XXF, PARA>::compile(Graph &graph_in) const     \
     {                                                                                                                  \
         static_assert(check_szal());                                                                                   \
-        return FUNC(graph_in, this);                                                                                   \
+        auto [f, v] = FUNC(graph_in, this);                                                                            \
+        auto pre_check_res = PRE(graph_in, this);                                                                      \
+        Recompilable_param *const recomp_ptr = (pre_check_res) ? (Recompilable_param *)(&this->opaque) : nullptr;      \
+        if (!graph_in.recompile_for_updated_quant && pre_check_res) {                                                  \
+            recomp_ptr->op_ptr = this;                                                                                 \
+            recomp_ptr->next = nullptr;                                                                                \
+            hnnx::nn_mutex_lock(&(graph_in.linked_params_lock));                                                       \
+            param_list &cur_list = graph_in.linked_params[graph_in.linked_params_cur_ind];                             \
+            if (cur_list.head == nullptr) {                                                                            \
+                cur_list.head = recomp_ptr;                                                                            \
+                cur_list.tail = recomp_ptr;                                                                            \
+            } else {                                                                                                   \
+                cur_list.tail->next = recomp_ptr;                                                                      \
+                cur_list.tail = recomp_ptr;                                                                            \
+            }                                                                                                          \
+            graph_in.linked_params_cur_ind =                                                                           \
+                    (graph_in.linked_params_cur_ind + 1) % graph_in.num_threads_for_recompile;                         \
+            hnnx::nn_mutex_unlock(&(graph_in.linked_params_lock));                                                     \
+        }                                                                                                              \
+        return hnnx::Executable::ItemType(f, v);                                                                       \
     }
+
+template <typename T> bool default_pre_check_for_recompile(Graph &graph_in, T *const op)
+{
+    return true;
+}
+
+// the precheck is useful here for disabling recompile, set the precheck return to false
+template <typename T> bool pre_check_for_non_updateable(Graph &graph_in, T *const op)
+{
+    return false;
+}
+
+template <typename T> bool default_post_check_for_recompile(Graph &graph_in, T *const op)
+{
+    return op->hnnx::Executable::check_constraint_for_recompile(graph_in);
+}
+
+// only performs post check
+#define COMPILER_FOR_UPDATEABLE_QUANT_WITH_POST(XXF, FUNC, PARA, POST)                                                 \
+    COMPILER_FOR_UPDATEABLE_QUANT_WITH_CHECKS(XXF, FUNC, PARA, default_pre_check_for_recompile, POST)
+
+// only performs pre check
+#define COMPILER_FOR_UPDATEABLE_QUANT_WITH_PRE(XXF, FUNC, PARA, PRE)                                                   \
+    COMPILER_FOR_UPDATEABLE_QUANT_WITH_CHECKS(XXF, FUNC, PARA, PRE, default_post_check_for_recompile)
+
+// performs no check
+#define COMPILER_FOR_UPDATEABLE_QUANT(XXF, FUNC, PARA)                                                                 \
+    COMPILER_FOR_UPDATEABLE_QUANT_WITH_CHECKS(XXF, FUNC, PARA, default_pre_check_for_recompile,                        \
+                                              default_post_check_for_recompile)
+
+#define COMPILER_FOR(XXF, FUNC, PARA)                                                                                  \
+    COMPILER_FOR_UPDATEABLE_QUANT_WITH_CHECKS(XXF, FUNC, PARA, pre_check_for_non_updateable,                           \
+                                              default_post_check_for_recompile)
 
 #endif // OPTIMIZE_H

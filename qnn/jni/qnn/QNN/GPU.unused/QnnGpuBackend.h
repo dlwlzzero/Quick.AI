@@ -27,8 +27,8 @@ extern "C" {
 #endif
 
 /**
-* @brief This enum defines QNN GPU custom Backend config options.
-*/
+ * @brief This enum defines QNN GPU custom Backend config options.
+ */
 typedef enum {
   /// If non-zero, tuning mode will be enabled
   QNN_GPU_BACKEND_CONFIG_OPTION_ENABLE_TUNING_MODE = 0,
@@ -36,6 +36,10 @@ typedef enum {
   QNN_GPU_BACKEND_CONFIG_OPTION_PERFORMANCE_CACHE_DIR = 1,
   /// If non-zero, the performance cache will be ignored when initializing
   QNN_GPU_BACKEND_CONFIG_OPTION_INVALIDATE_PERFORMANCE_CACHE = 2,
+  /// If non-zero, weight sharing is disabled
+  QNN_GPU_BACKEND_CONFIG_OPTION_WEIGHT_SHARING_ENABLED = 3,
+  /// If non-zero, kernels will not be profiled in tuning mode
+  QNN_GPU_BACKEND_CONFIG_OPTION_DISABLE_KERNEL_PROFILING = 4,
   /// Unused, present to ensure 32 bits.
   QNN_GPU_BACKEND_CONFIG_OPTION_UNDEFINED = 0x7FFFFFFF,
 } QnnGpuBackend_ConfigOption_t;
@@ -45,12 +49,14 @@ typedef enum {
  *        Objects of this type are to be referenced through QnnBackend_CustomConfig_t.
  */
 typedef struct {
-   QnnGpuBackend_ConfigOption_t option;
-   union UNNAMED {
-      uint8_t enableTuningMode;
-      const char* performanceCacheDir;
-      uint8_t invalidatePerformanceCache;
-   };
+  QnnGpuBackend_ConfigOption_t option;
+  union UNNAMED {
+    uint8_t enableTuningMode;
+    const char* performanceCacheDir;
+    uint8_t invalidatePerformanceCache;
+    uint8_t weightSharingEnabled;
+    uint8_t disableKernelProfiling;
+  };
 } QnnGpuBackend_CustomConfig_t;
 
 // clang-format off
@@ -59,8 +65,8 @@ typedef struct {
   {                                                               \
     QNN_GPU_BACKEND_CONFIG_OPTION_UNDEFINED, /*option*/           \
     {                                                             \
-    false                            /*enableTuningMode*/         \
-    }                                                             \
+      false                           /*enableTuningMode*/          \
+    }                                                                \
   }
 // clang-format on
 

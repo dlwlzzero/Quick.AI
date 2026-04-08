@@ -5,6 +5,7 @@
 //  Confidential and Proprietary - Qualcomm Technologies, Inc.
 //
 //==============================================================================
+
 #pragma once
 
 #include <string>
@@ -16,9 +17,12 @@
 struct BackendExtensionsConfigs {
   std::string sharedLibraryPath;
   std::string configFilePath;
+
   BackendExtensionsConfigs() : sharedLibraryPath(""), configFilePath("") {}
-  BackendExtensionsConfigs(std::string sharedLibraryPath, std::string configFilePath)
-      : sharedLibraryPath(sharedLibraryPath), configFilePath(configFilePath) {}
+
+  BackendExtensionsConfigs(const std::string& _sharedLibraryPath,
+                           const std::string& _configFilePath)
+      : sharedLibraryPath(_sharedLibraryPath), configFilePath(_configFilePath) {}
 };
 
 struct GraphConfigs {

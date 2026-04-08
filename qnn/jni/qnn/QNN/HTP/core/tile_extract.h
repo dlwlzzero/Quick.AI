@@ -148,18 +148,20 @@
 PUSH_VISIBILITY(default)
 
 namespace tileExt {
-enum tile_flags : unsigned {
-    // lower 5 bits contain 'ht'. This must be 0 (to indicate 'default') or a number in range 1..8
-    // The default is normally 8; for 32-bit tiles it is 2.
-    tile_ht_mask = 31,
-    copy = 32,
-    unshuffled = 64,
-    broadcast = 128,
+// definitions for the 'flags' parameter of the tile methods
+// This used to be an enum, but static analysis doesn't like '&' and '|' applied to enum
 
-    write_strategy = 256, // used internally only
-    write_strategy_keep = unshuffled | tile_ht_mask
-};
+// lower 5 bits contain 'ht'. This must be 0 (to indicate 'default') or a number in range 1..8
+// The default is 8 in all currently supported cases.
+inline constexpr unsigned tile_ht_mask = 31;
+inline constexpr unsigned copy = 32; // force copy on read, even if direct access is possible
+inline constexpr unsigned unshuffled = 64; // for 16 bit, data in tile buffer is unshuffled.
+inline constexpr unsigned broadcast = 128; // only affects read - broadcast on dims with size 1
 
+// ussed internally only!
+// These determine what flags are passed to read_tile in order to implement write_tile_strategy.
+inline constexpr unsigned write_strategy = 256;
+inline constexpr unsigned write_strategy_keep = unshuffled | tile_ht_mask;
 } //namespace tileExt
 
 namespace hnnx {
@@ -192,14 +194,19 @@ template <unsigned FLAGS, typename T> struct tile_support_flags_for {
 //  (and any such types, hopefully all, can have 'fast' support).
 //
 // We support:
-//  - only with rank 4, and with unsupported storage_type
+//  - only with rank 4, and with supported storage_type
 //  - any flat;
-//  - no 'contiguous chunked' tensors;
+//  - no 'contiguous chunked' tensors; and no 'is_singular' tensors;
 //  - any 'normal' crouton (i.e. no 'wide' crouton)
 //
 template <typename Linfo> constexpr bool tile_support_test_for_linfo()
 {
     using storage_type = typename Linfo::storage_type;
+    // Note: this condition could be 'tensor_traits<LayoutTensor<Linfo>>::is_singular'
+    // but we can't instantiate LayoutTensor<Linfo> here, due to the way some gtests work.
+    if constexpr (std::is_same_v<typename Linfo::Tlayout, SingularMemoryLayout<Linfo::Rank>>) {
+        return false;
+    }
     if constexpr (Linfo::Rank != 4 ||
                   !(std::is_same_v<storage_type, uint8_t> || std::is_same_v<storage_type, uint16_t> ||
                     std::is_same_v<storage_type, NN_UINT32_T>)) {
@@ -330,6 +337,10 @@ template <> struct tile_methods<Ldefs::Crouton_16> : public tile_methods_r4crout
 
 // 32 bit
 template <> struct tile_methods<Ldefs::Crouton_32> : public tile_methods_r4crouton<Ldefs::Crouton_32> {
+};
+
+// 8 bit
+template <> struct tile_methods<Ldefs::Crouton4x1_8> : public tile_methods_r4crouton<Ldefs::Crouton4x1_8> {
 };
 
 } // namespace tileExt_priv

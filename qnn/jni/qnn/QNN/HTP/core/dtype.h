@@ -13,8 +13,18 @@
 #include <type_traits>
 #include "dtype_enum.h"
 #include "float16.h"
+#include "bfloat16.h"
 #include "macros_attribute.h"
 #include "weak_linkage.h"
+
+namespace hnnx::dtype_private {
+// std::is_signed<T> gives true for float, but false for Float16 and BFloat16.
+// So, this is used instead, to generate dtype_info::is_signed, from element_type.
+template <typename T> inline constexpr bool is_signed_for_dt = std::is_signed<T>::value;
+
+template <> inline constexpr bool is_signed_for_dt<Float16> = true;
+template <> inline constexpr bool is_signed_for_dt<BFloat16> = true;
+} // namespace hnnx::dtype_private
 
 template <DType DT> struct dtype_traits {
 };
@@ -97,6 +107,14 @@ template <> struct dtype_traits<DType::Int64> {
     static const bool is_float = false;
     static const storage_type minus_inf_code = 1llu << 63;
 };
+template <> struct dtype_traits<DType::BFloat16> {
+    typedef BFloat16 element_type;
+    typedef uint16_t storage_type;
+    static const int element_size = sizeof(element_type);
+    static const bool is_quant = false;
+    static const bool is_float = true;
+    static const storage_type minus_inf_code = 0xFF80;
+};
 
 // 'runtime' attributes
 // E.g. Dtype_info(d).elbytes gives the element size.
@@ -114,6 +132,7 @@ POP_VISIBILITY()
 
 namespace hnnx {
 namespace dtype_private {
+
 template <DType DT> dtype_info constexpr inline dtype_info_for()
 {
     typedef dtype_traits<DT> traits;
@@ -122,7 +141,7 @@ template <DType DT> dtype_info constexpr inline dtype_info_for()
             DT, // dtype
             traits::is_quant, //is_quant
             traits::is_float, //is_float
-            (std::is_signed<typename traits::element_type>::value ? 1 : 0) //is_signed
+            (is_signed_for_dt<typename traits::element_type> ? 1 : 0) //is_signed
     };
 }
 template <> dtype_info constexpr inline dtype_info_for<DType::UNKNOWN>()
@@ -159,6 +178,8 @@ inline constexpr dtype_info DType_info_inline(DType d)
         return dtype_info_for<DType::QInt8>();
     case DType::Int64:
         return dtype_info_for<DType::Int64>();
+    case DType::BFloat16:
+        return dtype_info_for<DType::BFloat16>();
     default:
         return dtype_info_for<DType::UNKNOWN>();
     }

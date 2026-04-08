@@ -47,6 +47,8 @@ typedef struct {
   uint32_t compilerVersion[4];
   /// GPU device max work group size
   size_t maxWorkGroupSize;
+  /// GPU device image 1D max width
+  size_t image1dBufferMaxWidth;
   /// GPU device image 2D max width
   size_t image2dMaxWidth;
   /// GPU device image 2D max height
@@ -61,6 +63,12 @@ typedef struct {
   size_t image2dArrayMaxHeight;
   /// GPU device image 2D Array max depth
   size_t image2dArrayMaxDepth;
+  /// GPU compiler predicate clobber type
+  bool predicateClobberFullRegister;
+  /// GPU local memory support type
+  bool isLocalMemorySupported;
+  /// GPU compiler vector64 support
+  bool vector64Support;
 } QnnGpu_DeviceProperties_t;
 
 /**
@@ -225,6 +233,8 @@ typedef struct _QnnOpPackage_Optimization_t {
 typedef struct _QnnOpPackage_GraphInfrastructure_t {
   /// GPU precision mode, user-supplied hint used for optimal kernel selection
   QnnGpu_Precision_t precisionMode;
+  /// GPU device properties
+  const QnnGpu_DeviceProperties_t* deviceProperties;
 } QnnGpuOpPackage_GraphInfrastructure_t;
 
 //=============================================================================
@@ -251,6 +261,8 @@ typedef enum {
   /// Memory type is unclaimed and can be specified by the op package via the \n
   /// QnnGpu_OutputClaim_t struct
   QNN_GPU_MEM_OBJ_TYPE_UNCLAIMED = 6,
+  /// GPU driver image 1D memory object
+  QNN_GPU_MEM_OBJ_TYPE_IMAGE1D_BUFFER = 7,
 } QnnGpu_MemoryObjectType_t;
 
 /**
@@ -264,6 +276,12 @@ typedef enum {
   QNN_GPU_MEM_LAYOUT_HCW = 1,
   /// CHW layout
   QNN_GPU_MEM_LAYOUT_CHW = 2,
+  /// C_HWC4 layout
+  QNN_GPU_MEM_LAYOUT_C_HWC4 = 3,
+  /// DHWC layout
+  QNN_GPU_MEM_LAYOUT_DHWC = 4,
+  /// CDHW layout
+  QNN_GPU_MEM_LAYOUT_CDHW = 5,
   /// Undefined
   QNN_GPU_MEM_LAYOUT_UNDEFINED = 0x7FFFFFFF,
 } QnnGpu_MemoryLayout_t;
@@ -328,6 +346,8 @@ typedef struct {
   QnnGpu_MemoryLayout_t layout;
   /// Block Quantization Tensor Information
   QnnGpu_BlockEncodingInfo_t blockEncodingInfo;
+  /// Memory object name used to propagate the tensor name to Backend
+  const char* name;
 } QnnGpu_MemoryObject_t;
 
 // clang-format off
@@ -340,7 +360,8 @@ typedef struct {
     NULL,                           /*offsets*/       \
     0u,                             /*numDimensions*/ \
     QNN_GPU_MEM_LAYOUT_UNDEFINED,   /*layout*/        \
-    QNN_GPU_BLOCK_ENCODING_INFO_INIT  /*blockEncodingInfo*/    \
+    QNN_GPU_BLOCK_ENCODING_INFO_INIT,  /*blockEncodingInfo*/    \
+    NULL                            /*name*/          \
   }
 // clang-format on
 

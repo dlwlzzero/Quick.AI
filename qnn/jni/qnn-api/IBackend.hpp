@@ -1,7 +1,7 @@
 //==============================================================================
 //
 //  Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-//  All Rights Reserved.
+//  All rights reserved.
 //  Confidential and Proprietary - Qualcomm Technologies, Inc.
 //
 //==============================================================================
@@ -10,6 +10,7 @@
 
 #include <map>
 #include <memory>
+#include <vector>
 
 #include "QnnBackend.h"
 #include "QnnContext.h"
@@ -17,17 +18,17 @@
 #include "QnnGraph.h"
 #include "QnnLog.h"
 #include "QnnProfile.h"
-#include "QnnWrapperUtils.hpp"
 #include "QnnTypes.h"
+#include "QnnWrapperUtils.hpp"
 
 namespace qnn {
-    namespace commandline2 {
-        class ICommandLineManager;
-    }
+namespace commandline2 {
+class ICommandLineManager;
+}
 namespace tools {
-    namespace iotensor {
-        class IBufferAlloc;
-    }
+namespace iotensor {
+class IBufferAlloc;
+}
 namespace netrun {
 
 const uint32_t g_profilingLevelNotSet = 0;
@@ -113,7 +114,7 @@ class IBackend {
 
   virtual bool afterExecute() = 0;
 
-  virtual bool beforeContextFree() = 0;
+  virtual bool beforeContextFree(const std::vector<Qnn_ContextHandle_t>& contextHandle) = 0;
 
   virtual bool afterContextFree() = 0;
 
@@ -134,7 +135,9 @@ class IBackend {
 
   virtual bool afterCreateContextsFromBinaryList() = 0;
 
-  virtual bool beforeCreateDevice(QnnDevice_Config_t*** deviceConfigs, uint32_t* configCount) = 0;
+  virtual bool beforeCreateDevice(QnnDevice_Config_t*** deviceConfigs,
+                                  uint32_t* configCount,
+                                  uint32_t socModel) = 0;
 
   virtual bool afterCreateDevice() = 0;
 
@@ -167,9 +170,21 @@ class IBackend {
   virtual bool isOpMappingsRequired() = 0;
 
   virtual bool prepareSoc(std::int32_t curDeviceId,
-                  std::string dspArch, int vtcmMem, std::string name) = 0;
+                          std::string dspArch,
+                          int vtcmMem,
+                          std::string name) = 0;
+
+  virtual bool allocateExternalBuffers(void* contextHandle,
+                                       int64_t scratchBuffer,
+                                       int64_t weightsBuffer) = 0;
 
   virtual void provideOpMappings(Qnn_OpMapping_t* opMappings, uint32_t numOpMappings) = 0;
+
+  virtual bool detachableBuffersEnabled() = 0;
+
+  virtual bool detachBuffers(Qnn_ContextHandle_t contextHandle) = 0;
+
+  virtual bool attachBuffers(Qnn_ContextHandle_t contextHandle) = 0;
 };
 
 // These are the function types that the backend extensions shared library is

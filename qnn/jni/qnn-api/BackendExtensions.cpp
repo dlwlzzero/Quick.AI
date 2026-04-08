@@ -1,7 +1,7 @@
 //==============================================================================
 //
 //  Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-//  All Rights Reserved.
+//  All rights reserved.
 //  Confidential and Proprietary - Qualcomm Technologies, Inc.
 //
 //==============================================================================
@@ -9,12 +9,12 @@
 #include <stdexcept>
 
 #include "BackendExtensions.hpp"
-#include "Log/Logger.hpp"
 #include "dlwrap.hpp"
+#include "PAL/DynamicLoading.hpp"
+#include "qualla/detail/Log.hpp"
 
 BackendExtensions::BackendExtensions(BackendExtensionsConfigs backendExtensionsConfig,
                                      void* backendLibHandle,
-                                     qnn::tools::netrun::PerfProfile perfProfile,
                                      bool debug_qnn,
                                      QnnLog_Callback_t registeredLogCallback,
                                      QnnLog_Level_t qnnLogLevel)
@@ -32,22 +32,26 @@ BackendExtensions::BackendExtensions(BackendExtensionsConfigs backendExtensionsC
   }
 
   void* libHandle =
-      dlopen(backendExtensionsConfig.sharedLibraryPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+      pal::dynamicloading::dlOpen(backendExtensionsConfig.sharedLibraryPath.c_str(),
+                                  pal::dynamicloading::DL_NOW | pal::dynamicloading::DL_LOCAL);
   if (nullptr == libHandle) {
+    const char* msg = pal::dynamicloading::dlError();
     QNN_ERROR("Unable to load backend extensions lib: [%s]. dlerror(): [%s]",
               backendExtensionsConfig.sharedLibraryPath.c_str(),
-              dlerror());
+              msg ? msg : "Unknown error");
     throw std::runtime_error("Unable to open backend extension library.");
   }
 
-  auto createBackendInterfaceFn = (qnn::tools::netrun::CreateBackendInterfaceFnType_t)dlsym(
-      libHandle, "createBackendInterface");
+  auto createBackendInterfaceFn =
+      reinterpret_cast<qnn::tools::netrun::CreateBackendInterfaceFnType_t>(
+          pal::dynamicloading::dlSym(libHandle, "createBackendInterface"));
   if (nullptr == createBackendInterfaceFn) {
     throw std::runtime_error("Unable to resolve createBackendInterface.");
   }
 
-  m_destroyBackendInterfaceFn = (qnn::tools::netrun::DestroyBackendInterfaceFnType_t)dlsym(
-      libHandle, "destroyBackendInterface");
+  m_destroyBackendInterfaceFn =
+      reinterpret_cast<qnn::tools::netrun::DestroyBackendInterfaceFnType_t>(
+          pal::dynamicloading::dlSym(libHandle, "destroyBackendInterface"));
   if (nullptr == m_destroyBackendInterfaceFn) {
     throw std::runtime_error("Unable to resolve destroyBackendInterface.");
   }
@@ -65,12 +69,6 @@ BackendExtensions::BackendExtensions(BackendExtensionsConfigs backendExtensionsC
 
   if (!m_backendInterface->initialize(backendLibHandle)) {
     throw std::runtime_error("Unable to initialize backend extensions interface.");
-  }
-
-  if (!m_backendInterface->setPerfProfile(perfProfile)) {
-    QNN_WARN("Unable to set perf profile in  backend extensions interface.");
-    // Do not throw
-    // TODO: is this correct?
   }
 
   if (!m_backendInterface->loadConfig(backendExtensionsConfig.configFilePath)) {

@@ -8,6 +8,7 @@
 
 #ifndef PICKLE_HEADER_TAGS_H_
 #define PICKLE_HEADER_TAGS_H_
+#include <algorithm> // std::min(...)
 
 enum HTP_header_const {
     Hdr_MAGIC = 0x7309F72B,
@@ -15,7 +16,7 @@ enum HTP_header_const {
     HdrVersion_VERSION = 1,
     HdrVersion_GRAPH_PATCH_VERSION = 1,
     HdrVersion_VERSION_FLAG_MULTI_NSP = 0x8000, // 'or' to version in multi-pickle header.
-    MULTI_SER_ALIGN = 64, // all blobs in multi-pickle are padded out to multiple of this
+    MULTI_SER_ALIGN = 4096, // all blobs in multi-pickle are padded out to multiple of this
     HdrTag_IDENT = 'I' + 256 * 'd',
     HdrTag_SIZE = 'S' + 256 * 'z',
     HdrTag_VERSION = 'V' + 256 * 'r',
@@ -29,6 +30,7 @@ enum HTP_header_const {
     HdrTag_PATCH_METADATA = 0x2AFF5A2B,
     HdrTag_CONSTPOOL = 'C' + 256 * 'p',
     HdrTag_QUANT_PARAM_UPDATE = 'Q' + 256 * 'u',
+    HdrTag_QUANT_PARAM_UPDATE_MC = 'Q' + 256 * 'm', // Quant param for multicore
     HdrTag_ENDHDR = 'Z' + 256 * 'z',
 
     // size of field, in bytes, specifying the names within the Sw tag
@@ -52,6 +54,16 @@ constexpr inline bool htp_header_is_valid_MAGIC(const unsigned val)
 constexpr inline unsigned htp_header_get_MAGIC(void const *const p)
 {
     return *(unsigned const *)p;
+}
+
+inline bool htp_is_barrel(void const *const p)
+{
+    return htp_header_get_MAGIC(p) == Hdr_MAGIC_MULTI;
+}
+
+inline bool htp_is_pickle(void const *const p)
+{
+    return htp_header_get_MAGIC(p) == Hdr_MAGIC;
 }
 
 //

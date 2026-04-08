@@ -70,6 +70,11 @@ enum hexagon_nn_thread_type_t {
     MaxOsThreads = 1001,
 };
 
+///
+/// @brief Type for specifying the preemption scheme
+///
+typedef enum { COOP, FORCED, DEFERRED, ORDERED_COOP } hexagon_nn_preemption_style_t;
+
 enum MemContentType {
     Standard = 0,
     Weight = 1,

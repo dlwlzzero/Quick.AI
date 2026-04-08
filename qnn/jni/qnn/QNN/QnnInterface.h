@@ -28,6 +28,7 @@
 #include "QnnContext.h"
 #include "QnnDevice.h"
 #include "QnnError.h"
+#include "QnnGlobalConfig.h"
 #include "QnnGraph.h"
 #include "QnnLog.h"
 #include "QnnMem.h"
@@ -99,6 +100,13 @@ typedef enum {
 
 /** @brief See QnnProperty_hasCapability()*/
 typedef Qnn_ErrorHandle_t (*QnnProperty_HasCapabilityFn_t)(QnnProperty_Key_t key);
+
+//
+// From QnnGlobalConfig.h
+//
+
+/** @brief See QnnConfig_Set()*/
+typedef Qnn_ErrorHandle_t (*QnnGlobalConfig_SetFn_t)(const QnnGlobalConfig_t** config);
 
 //
 // From QnnBackend.h
@@ -207,6 +215,22 @@ typedef Qnn_ErrorHandle_t (*QnnContext_CreateFromBinaryListAsyncFn_t)(
     const QnnContext_Config_t** listConfig,
     Qnn_SignalHandle_t signal);
 
+/** @brief See QnnContext_finalize()*/
+typedef Qnn_ErrorHandle_t (*QnnContext_FinalizeFn_t)(Qnn_ContextHandle_t context,
+                                                     Qnn_ProfileHandle_t profile);
+
+/** @brief See QnnContext_createFromBinaryWithCallback()*/
+typedef Qnn_ErrorHandle_t (*QnnContext_CreateFromBinaryWithCallbackFn_t)(
+    Qnn_BackendHandle_t backend,
+    Qnn_DeviceHandle_t device,
+    const QnnContext_Config_t** config,
+    const Qnn_ContextBinaryCallback_t* callback,
+    const void* binaryBuffer,
+    Qnn_ContextBinarySize_t binaryBufferSize,
+    Qnn_ContextHandle_t* context,
+    Qnn_ProfileHandle_t profile,
+    Qnn_SignalHandle_t signal);
+
 /** @brief See QnnContext_getBinarySectionSize()*/
 typedef Qnn_ErrorHandle_t (*QnnContext_GetBinarySectionSizeFn_t)(
     Qnn_ContextHandle_t context,
@@ -223,6 +247,7 @@ typedef Qnn_ErrorHandle_t (*QnnContext_GetBinarySectionFn_t)(
     Qnn_ContextBinarySize_t* writtenBufferSize,
     Qnn_ProfileHandle_t profile,
     Qnn_SignalHandle_t signal);
+
 /** @brief See QnnContext_applyBinarySection()*/
 typedef Qnn_ErrorHandle_t (*QnnContext_ApplyBinarySectionFn_t)(
     Qnn_ContextHandle_t context,
@@ -232,20 +257,37 @@ typedef Qnn_ErrorHandle_t (*QnnContext_ApplyBinarySectionFn_t)(
     Qnn_ProfileHandle_t profile,
     Qnn_SignalHandle_t signal);
 
+/** @brief See QnnContext_getBinarySectionUpdate()*/
+typedef Qnn_ErrorHandle_t (*QnnContext_GetBinarySectionUpdateFn_t)(
+    const QnnContext_Buffer_t* binaryBuffer,
+    const QnnContext_Buffer_t* auxiliaryBuffer,
+    const Qnn_Tensor_t** tensors,
+    uint64_t numTensors,
+    uint8_t keepUpdatable,
+    Qnn_LogHandle_t logger,
+    Qnn_ProfileHandle_t profile,
+    Qnn_SignalHandle_t signal,
+    QnnContext_Buffer_t* binarySectionUpdate);
+
+/** @brief See QnnContext_freeBinarySectionUpdate()*/
+typedef Qnn_ErrorHandle_t (*QnnContext_FreeBinarySectionUpdateFn_t)(
+    QnnContext_Buffer_t binarySectionUpdate,
+    Qnn_LogHandle_t logger);
+
 /** @brief See QnnContext_getProperty()*/
 typedef Qnn_ErrorHandle_t (*QnnContext_GetPropertyFn_t)(Qnn_ContextHandle_t contextHandle,
                                                         QnnContext_Property_t** properties);
 
 /** @brief See QnnContext_getIncrementalBinary()*/
-typedef Qnn_ErrorHandle_t (*QnnContext_GetIncrementalBinaryFn_t)(Qnn_ContextHandle_t context,
-                                                      const void** binaryBuffer,
-                                                      Qnn_ContextBinarySize_t* startOffset,
-                                                      Qnn_ContextBinarySize_t* writtenBufferSize);
+typedef Qnn_ErrorHandle_t (*QnnContext_GetIncrementalBinaryFn_t)(
+    Qnn_ContextHandle_t context,
+    const void** binaryBuffer,
+    Qnn_ContextBinarySize_t* startOffset,
+    Qnn_ContextBinarySize_t* writtenBufferSize);
 
 /** @brief See QnnContext_releaseIncrementalBinary()*/
-typedef Qnn_ErrorHandle_t (*QnnContext_ReleaseIncrementalBinaryFn_t)(Qnn_ContextHandle_t context,
-                                                                 const void* binaryBuffer,
-                                                                 Qnn_ContextBinarySize_t startOffset);
+typedef Qnn_ErrorHandle_t (*QnnContext_ReleaseIncrementalBinaryFn_t)(
+    Qnn_ContextHandle_t context, const void* binaryBuffer, Qnn_ContextBinarySize_t startOffset);
 //
 // From QnnGraph.h
 //
@@ -469,84 +511,89 @@ typedef Qnn_ErrorHandle_t (*QnnError_FreeVerboseMessageFn_t)(const char* errorMe
  *
  */
 typedef struct {
-  QnnProperty_HasCapabilityFn_t             propertyHasCapability;
+  QnnProperty_HasCapabilityFn_t               propertyHasCapability;
 
-  QnnBackend_CreateFn_t                     backendCreate;
-  QnnBackend_SetConfigFn_t                  backendSetConfig;
-  QnnBackend_GetApiVersionFn_t              backendGetApiVersion;
-  QnnBackend_GetBuildIdFn_t                 backendGetBuildId;
-  QnnBackend_RegisterOpPackageFn_t          backendRegisterOpPackage;
-  QnnBackend_GetSupportedOperationsFn_t     backendGetSupportedOperations;
-  QnnBackend_ValidateOpConfigFn_t           backendValidateOpConfig;
-  QnnBackend_FreeFn_t                       backendFree;
+  QnnBackend_CreateFn_t                       backendCreate;
+  QnnBackend_SetConfigFn_t                    backendSetConfig;
+  QnnBackend_GetApiVersionFn_t                backendGetApiVersion;
+  QnnBackend_GetBuildIdFn_t                   backendGetBuildId;
+  QnnBackend_RegisterOpPackageFn_t            backendRegisterOpPackage;
+  QnnBackend_GetSupportedOperationsFn_t       backendGetSupportedOperations;
+  QnnBackend_ValidateOpConfigFn_t             backendValidateOpConfig;
+  QnnBackend_FreeFn_t                         backendFree;
 
-  QnnContext_CreateFn_t                     contextCreate;
-  QnnContext_SetConfigFn_t                  contextSetConfig;
-  QnnContext_GetBinarySizeFn_t              contextGetBinarySize;
-  QnnContext_GetBinaryFn_t                  contextGetBinary;
-  QnnContext_CreateFromBinaryFn_t           contextCreateFromBinary;
-  QnnContext_FreeFn_t                       contextFree;
+  QnnContext_CreateFn_t                       contextCreate;
+  QnnContext_SetConfigFn_t                    contextSetConfig;
+  QnnContext_GetBinarySizeFn_t                contextGetBinarySize;
+  QnnContext_GetBinaryFn_t                    contextGetBinary;
+  QnnContext_CreateFromBinaryFn_t             contextCreateFromBinary;
+  QnnContext_FreeFn_t                         contextFree;
 
-  QnnGraph_CreateFn_t                       graphCreate;
-  QnnGraph_CreateSubgraphFn_t               graphCreateSubgraph;
-  QnnGraph_SetConfigFn_t                    graphSetConfig;
-  QnnGraph_AddNodeFn_t                      graphAddNode;
-  QnnGraph_FinalizeFn_t                     graphFinalize;
-  QnnGraph_RetrieveFn_t                     graphRetrieve;
-  QnnGraph_ExecuteFn_t                      graphExecute;
-  QnnGraph_ExecuteAsyncFn_t                 graphExecuteAsync;
+  QnnGraph_CreateFn_t                         graphCreate;
+  QnnGraph_CreateSubgraphFn_t                 graphCreateSubgraph;
+  QnnGraph_SetConfigFn_t                      graphSetConfig;
+  QnnGraph_AddNodeFn_t                        graphAddNode;
+  QnnGraph_FinalizeFn_t                       graphFinalize;
+  QnnGraph_RetrieveFn_t                       graphRetrieve;
+  QnnGraph_ExecuteFn_t                        graphExecute;
+  QnnGraph_ExecuteAsyncFn_t                   graphExecuteAsync;
 
-  QnnTensor_CreateContextTensorFn_t         tensorCreateContextTensor;
-  QnnTensor_CreateGraphTensorFn_t           tensorCreateGraphTensor;
+  QnnTensor_CreateContextTensorFn_t           tensorCreateContextTensor;
+  QnnTensor_CreateGraphTensorFn_t             tensorCreateGraphTensor;
 
-  QnnLog_CreateFn_t                         logCreate;
-  QnnLog_SetLogLevelFn_t                    logSetLogLevel;
-  QnnLog_FreeFn_t                           logFree;
+  QnnLog_CreateFn_t                           logCreate;
+  QnnLog_SetLogLevelFn_t                      logSetLogLevel;
+  QnnLog_FreeFn_t                             logFree;
 
-  QnnProfile_CreateFn_t                     profileCreate;
-  QnnProfile_SetConfigFn_t                  profileSetConfig;
-  QnnProfile_GetEventsFn_t                  profileGetEvents;
-  QnnProfile_GetSubEventsFn_t               profileGetSubEvents;
-  QnnProfile_GetEventDataFn_t               profileGetEventData;
-  QnnProfile_GetExtendedEventDataFn_t       profileGetExtendedEventData;
-  QnnProfile_FreeFn_t                       profileFree;
+  QnnProfile_CreateFn_t                       profileCreate;
+  QnnProfile_SetConfigFn_t                    profileSetConfig;
+  QnnProfile_GetEventsFn_t                    profileGetEvents;
+  QnnProfile_GetSubEventsFn_t                 profileGetSubEvents;
+  QnnProfile_GetEventDataFn_t                 profileGetEventData;
+  QnnProfile_GetExtendedEventDataFn_t         profileGetExtendedEventData;
+  QnnProfile_FreeFn_t                         profileFree;
 
-  QnnMem_RegisterFn_t                       memRegister;
-  QnnMem_DeRegisterFn_t                     memDeRegister;
+  QnnMem_RegisterFn_t                         memRegister;
+  QnnMem_DeRegisterFn_t                       memDeRegister;
 
-  QnnDevice_GetPlatformInfoFn_t             deviceGetPlatformInfo;
-  QnnDevice_FreePlatformInfoFn_t            deviceFreePlatformInfo;
-  QnnDevice_GetInfrastructureFn_t           deviceGetInfrastructure;
-  QnnDevice_CreateFn_t                      deviceCreate;
-  QnnDevice_SetConfigFn_t                   deviceSetConfig;
-  QnnDevice_GetInfoFn_t                     deviceGetInfo;
-  QnnDevice_FreeFn_t                        deviceFree;
+  QnnDevice_GetPlatformInfoFn_t               deviceGetPlatformInfo;
+  QnnDevice_FreePlatformInfoFn_t              deviceFreePlatformInfo;
+  QnnDevice_GetInfrastructureFn_t             deviceGetInfrastructure;
+  QnnDevice_CreateFn_t                        deviceCreate;
+  QnnDevice_SetConfigFn_t                     deviceSetConfig;
+  QnnDevice_GetInfoFn_t                       deviceGetInfo;
+  QnnDevice_FreeFn_t                          deviceFree;
 
-  QnnSignal_CreateFn_t                      signalCreate;
-  QnnSignal_SetConfigFn_t                   signalSetConfig;
-  QnnSignal_TriggerFn_t                     signalTrigger;
-  QnnSignal_FreeFn_t                        signalFree;
+  QnnSignal_CreateFn_t                        signalCreate;
+  QnnSignal_SetConfigFn_t                     signalSetConfig;
+  QnnSignal_TriggerFn_t                       signalTrigger;
+  QnnSignal_FreeFn_t                          signalFree;
 
-  QnnError_GetMessageFn_t                   errorGetMessage;
-  QnnError_GetVerboseMessageFn_t            errorGetVerboseMessage;
-  QnnError_FreeVerboseMessageFn_t           errorFreeVerboseMessage;
+  QnnError_GetMessageFn_t                     errorGetMessage;
+  QnnError_GetVerboseMessageFn_t              errorGetVerboseMessage;
+  QnnError_FreeVerboseMessageFn_t             errorFreeVerboseMessage;
 
-  QnnGraph_PrepareExecutionEnvironmentFn_t  graphPrepareExecutionEnvironment;
-  QnnGraph_ReleaseExecutionEnvironmentFn_t  graphReleaseExecutionEnvironment;
-  QnnGraph_GetPropertyFn_t                  graphGetProperty;
+  QnnGraph_PrepareExecutionEnvironmentFn_t    graphPrepareExecutionEnvironment;
+  QnnGraph_ReleaseExecutionEnvironmentFn_t    graphReleaseExecutionEnvironment;
+  QnnGraph_GetPropertyFn_t                    graphGetProperty;
 
-  QnnContext_ValidateBinaryFn_t             contextValidateBinary;
-  QnnContext_CreateFromBinaryWithSignalFn_t contextCreateFromBinaryWithSignal;
-  QnnContext_CreateFromBinaryListAsyncFn_t  contextCreateFromBinaryListAsync;
-  QnnTensor_UpdateGraphTensorsFn_t          tensorUpdateGraphTensors;
-  QnnTensor_UpdateContextTensorsFn_t        tensorUpdateContextTensors;
-  QnnContext_GetBinarySectionSizeFn_t       contextGetBinarySectionSize;
-  QnnContext_GetBinarySectionFn_t           contextGetBinarySection;
-  QnnContext_ApplyBinarySectionFn_t         contextApplyBinarySection;
-  QnnBackend_GetPropertyFn_t                backendGetProperty;
-  QnnContext_GetPropertyFn_t                contextGetProperty;
-  QnnContext_GetIncrementalBinaryFn_t       contextGetIncrementalBinary;
-  QnnContext_ReleaseIncrementalBinaryFn_t   contextReleaseIncrementalBinary;
+  QnnContext_ValidateBinaryFn_t               contextValidateBinary;
+  QnnContext_CreateFromBinaryWithSignalFn_t   contextCreateFromBinaryWithSignal;
+  QnnContext_CreateFromBinaryListAsyncFn_t    contextCreateFromBinaryListAsync;
+  QnnTensor_UpdateGraphTensorsFn_t            tensorUpdateGraphTensors;
+  QnnTensor_UpdateContextTensorsFn_t          tensorUpdateContextTensors;
+  QnnContext_GetBinarySectionSizeFn_t         contextGetBinarySectionSize;
+  QnnContext_GetBinarySectionFn_t             contextGetBinarySection;
+  QnnContext_ApplyBinarySectionFn_t           contextApplyBinarySection;
+  QnnBackend_GetPropertyFn_t                  backendGetProperty;
+  QnnContext_GetPropertyFn_t                  contextGetProperty;
+  QnnContext_GetIncrementalBinaryFn_t         contextGetIncrementalBinary;
+  QnnContext_ReleaseIncrementalBinaryFn_t     contextReleaseIncrementalBinary;
+  QnnContext_FinalizeFn_t                     contextFinalize;
+  QnnGlobalConfig_SetFn_t                     globalConfigSet;
+  QnnContext_CreateFromBinaryWithCallbackFn_t contextCreateFromBinaryWithCallback;
+  QnnContext_GetBinarySectionUpdateFn_t       contextGetBinarySectionUpdate;
+  QnnContext_FreeBinarySectionUpdateFn_t      contextFreeBinarySectionUpdate;
 } QNN_INTERFACE_VER_TYPE;
 
 /// QNN_INTERFACE_VER_TYPE initializer macro
@@ -617,6 +664,11 @@ typedef struct {
   NULL, /*contextGetProperty*/ \
   NULL, /*contextGetIncrementalProperty*/ \
   NULL, /*contextReleaseIncrementalProperty*/ \
+  NULL, /*contextFinalize*/ \
+  NULL, /*globalConfigSet*/ \
+  NULL, /*contextCreateFromBinaryWithCallback*/ \
+  NULL, /*contextGetBinarySectionUpdate*/ \
+  NULL, /*contextFreeBinarySectionUpdate*/ \
 }
 
 typedef struct {
