@@ -17,7 +17,7 @@
   "hidden_dim": 3072,
   "sequence_length": 256,
   "num_vocab": 150080,
-  "max_seq_len": 4096,
+  "max_seq_len": 8192,
   "local_rope_theta": 500000.0,
   "context_size": 256,
   "pos_dim": 64,

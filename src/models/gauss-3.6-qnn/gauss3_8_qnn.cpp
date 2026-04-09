@@ -111,10 +111,10 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
     if (i % 5 == 4) {
       // no sliding attn
       attn_length = max_seq_len;
-      generation_attn_length = max_seq_len - 1;
+      generation_attn_length = max_seq_len - context_size;
     } else {
       attn_length = sliding_window;
-      generation_attn_length = sliding_window - context_size - 1;
+      generation_attn_length = sliding_window - context_size;
     }
     int prefill_size = attn_length * head_dim;
     int size = generation_attn_length * head_dim;
@@ -222,14 +222,17 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     std::memcpy(generation_swa_position_ids_sin,
                 swa_position_ids_sin + idx * pos_dim,
                 pos_dim * sizeof(uint16_t));
+
+    // Remove output_hidden_states from outputs
+    outputs.erase(outputs.begin() + 96);
+
 #pragma omp parallel for
     for (int i = 0; i < this->kvs.size(); i++) {
       bool is_key = i % 4 > 1;
       int kv_idx = i / 4 * 4 + (i + 2) % 4;
       int layer_idx = i / 4;
-      int dest_row_length = layer_idx % 5 == 4
-                                ? max_seq_len - 1
-                                : sliding_window - context_size - 1;
+      int dest_row_length = layer_idx % 5 == 4 ? max_seq_len - context_size
+                                               : sliding_window - context_size;
       int src_row_length = idx == _len ? 256 : 1;
 
       auto output = std::get<uint8_t *>(outputs[i]);
