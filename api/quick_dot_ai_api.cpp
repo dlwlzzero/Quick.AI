@@ -34,6 +34,9 @@
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include <factory.h>
+#ifdef ENABLE_QNN
+#include "gauss3_6_qnn.h"
+#endif
 #include <fstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -52,8 +55,11 @@ static std::string g_last_output = "";
 static double g_initialization_duration_ms = 0.0;
 
 static std::map<std::string, std::string> g_model_path_map = {
-  {"QWEN3-0.6B", "qwen3-0.6b"},
-  {"GAUSS2.5-1B", "gauss2.5-1b"},
+    {"QWEN3-0.6B", "qwen3-0.6b"},
+    {"GAUSS2.5-1B", "gauss2.5-1b"},
+#ifdef ENABLE_QNN
+    {"GAUSS3.6-QNN", "gauss3.6-qnn"},
+#endif
 };
 
 /**
@@ -92,15 +98,23 @@ static void register_models() {
   static std::once_flag flag;
   std::call_once(flag, []() {
     causallm::Factory::Instance().registerModel(
-      "Qwen3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Qwen3CausalLM>(cfg, generation_cfg,
-                                                         nntr_cfg);
-      });
+        "Qwen3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Qwen3CausalLM>(cfg, generation_cfg,
+                                                           nntr_cfg);
+        });
     causallm::Factory::Instance().registerModel(
-      "Gauss2_5ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Gauss2_5_Causallm>(
-          cfg, generation_cfg, nntr_cfg);
-      });
+        "Gauss2_5ForCausalLM",
+        [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss2_5_Causallm>(
+              cfg, generation_cfg, nntr_cfg);
+        });
+#ifdef ENABLE_QNN
+    causallm::Factory::Instance().registerModel(
+        "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
+                                                          nntr_cfg);
+        });
+#endif
 
     // Register built-in model configurations (direct C++ call)
     register_builtin_configs();
@@ -112,6 +126,10 @@ static const char *get_model_name_from_type(ModelType type) {
     return "QWEN3-0.6B";
   if (type == CAUSAL_LM_MODEL_GAUSS2_5)
     return "GAUSS2.5-1B";
+#ifdef ENABLE_QNN
+  if (type == CAUSAL_LM_MODEL_GAUSS3_6_QNN)
+    return "GAUSS3.6-QNN";
+#endif
   return nullptr;
 }
 
@@ -179,7 +197,7 @@ static std::string resolve_model_path(const std::string &model_key,
   }
 
   std::string model_path =
-    "./models/" + base_dir_name + get_quantization_suffix(quant_type);
+      "./models/" + base_dir_name + get_quantization_suffix(quant_type);
 
   return model_path;
 }
@@ -196,8 +214,8 @@ static void validate_models() {
     // We want to check for each Quantization Type if it exists
     // List of quant types to check: UNKNOWN (default), W4A32, W16A16, W32A32
     std::vector<ModelQuantizationType> quant_types = {
-      CAUSAL_LM_QUANTIZATION_UNKNOWN, CAUSAL_LM_QUANTIZATION_W4A32,
-      CAUSAL_LM_QUANTIZATION_W16A16, CAUSAL_LM_QUANTIZATION_W32A32};
+        CAUSAL_LM_QUANTIZATION_UNKNOWN, CAUSAL_LM_QUANTIZATION_W4A32,
+        CAUSAL_LM_QUANTIZATION_W16A16, CAUSAL_LM_QUANTIZATION_W32A32};
 
     for (auto qt : quant_types) {
       std::string quant_suffix = get_quantization_suffix(qt);
@@ -235,7 +253,7 @@ static void validate_models() {
         if (check_file_exists(resolved_path)) {
           bool has_config = check_file_exists(resolved_path + "/config.json");
           bool has_nntr =
-            check_file_exists(resolved_path + "/nntr_config.json");
+              check_file_exists(resolved_path + "/nntr_config.json");
 
           if (has_config && has_nntr) {
             std::cout << "  [OK] External Config: " << lookup_key << " -> "
@@ -243,7 +261,7 @@ static void validate_models() {
             // Optional: Parse nntr_config to check bin
             try {
               json nntr =
-                causallm::LoadJsonFile(resolved_path + "/nntr_config.json");
+                  causallm::LoadJsonFile(resolved_path + "/nntr_config.json");
               if (nntr.contains("model_file_name")) {
                 std::string bin = nntr["model_file_name"];
                 if (check_file_exists(resolved_path + "/" + bin)) {
@@ -305,7 +323,7 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
   auto start_init = std::chrono::high_resolution_clock::now();
 
   const char *target_model_name =
-    quick_dot_ai::get_model_name_from_type(modeltype);
+      quick_dot_ai::get_model_name_from_type(modeltype);
   if (target_model_name == nullptr) {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
@@ -356,7 +374,7 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
       // In this case, we do NOT load config.json or nntr_config.json from disk.
       // We only locate the binary weight file.
       quick_dot_ai::RegisteredModel &rm =
-        quick_dot_ai::g_model_registry[lookup_name];
+          quick_dot_ai::g_model_registry[lookup_name];
 
       // Find architecture config
       if (quick_dot_ai::g_arch_config_map.find(rm.arch_name) ==
@@ -371,7 +389,7 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
 
       // Strategy: Resolve path to find the weight file
       model_dir_path =
-        quick_dot_ai::resolve_model_path(target_model_name, quant_type);
+          quick_dot_ai::resolve_model_path(target_model_name, quant_type);
 
       // Populate JSONs from Arch Struct
       cfg["vocab_size"] = ac.vocab_size;
@@ -381,8 +399,8 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
       cfg["num_attention_heads"] = ac.num_attention_heads;
       cfg["head_dim"] = ac.head_dim;
       cfg["num_key_value_heads"] = ac.num_key_value_heads > 0
-                                     ? ac.num_key_value_heads
-                                     : ac.num_attention_heads;
+                                       ? ac.num_key_value_heads
+                                       : ac.num_attention_heads;
       cfg["max_position_embeddings"] = ac.max_position_embeddings;
       cfg["rope_theta"] = ac.rope_theta;
       cfg["rms_norm_eps"] = ac.rms_norm_eps;
@@ -441,12 +459,12 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
       // this quantization is not in memory. We must load config.json and
       // nntr_config.json from the model directory
       model_dir_path =
-        quick_dot_ai::resolve_model_path(target_model_name, quant_type);
+          quick_dot_ai::resolve_model_path(target_model_name, quant_type);
 
       // Load configuration files
       cfg = causallm::LoadJsonFile(model_dir_path + "/config.json");
       generation_cfg =
-        causallm::LoadJsonFile(model_dir_path + "/generation_config.json");
+          causallm::LoadJsonFile(model_dir_path + "/generation_config.json");
       nntr_cfg = causallm::LoadJsonFile(model_dir_path + "/nntr_config.json");
 
       if (nntr_cfg.contains("tokenizer_file")) {
@@ -461,7 +479,7 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
       weight_file_name = nntr_cfg["model_file_name"].get<std::string>();
     } else {
       weight_file_name =
-        "pytorch_model.bin"; // Default fallback if not specified
+          "pytorch_model.bin"; // Default fallback if not specified
     }
 
     const std::string weight_file = model_dir_path + "/" + weight_file_name;
@@ -480,7 +498,7 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
     }
 
     quick_dot_ai::g_model = causallm::Factory::Instance().create(
-      architecture, cfg, generation_cfg, nntr_cfg);
+        architecture, cfg, generation_cfg, nntr_cfg);
     if (!quick_dot_ai::g_model) {
       return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
     }
@@ -493,7 +511,7 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
 
     auto finish_init = std::chrono::high_resolution_clock::now();
     auto init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      finish_init - start_init);
+        finish_init - start_init);
     quick_dot_ai::g_initialization_duration_ms = init_duration.count();
 
   } catch (const std::exception &e) {
@@ -521,8 +539,8 @@ ErrorCode runModel(const char *inputTextPrompt, const char **outputText) {
     std::string input(inputTextPrompt);
 
     if (quick_dot_ai::g_use_chat_template) {
-      input =
-        quick_dot_ai::apply_chat_template(quick_dot_ai::g_architecture, input);
+      input = quick_dot_ai::apply_chat_template(quick_dot_ai::g_architecture,
+                                                input);
     }
 
 // We assume single batch request for this API
@@ -534,7 +552,7 @@ ErrorCode runModel(const char *inputTextPrompt, const char **outputText) {
 #endif
 
     auto causal_lm_model =
-      dynamic_cast<causallm::CausalLM *>(quick_dot_ai::g_model.get());
+        dynamic_cast<causallm::CausalLM *>(quick_dot_ai::g_model.get());
     quick_dot_ai::g_last_output = ""; // Reset last output
     if (causal_lm_model) {
       quick_dot_ai::g_last_output = causal_lm_model->getOutput(0);
@@ -561,16 +579,26 @@ ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics) {
   try {
     std::lock_guard<std::mutex> lock(quick_dot_ai::g_mutex);
     auto causal_lm_model =
-      dynamic_cast<causallm::CausalLM *>(quick_dot_ai::g_model.get());
+        dynamic_cast<causallm::CausalLM *>(quick_dot_ai::g_model.get());
 
     if (causal_lm_model) {
       if (!causal_lm_model->hasRun()) {
         return CAUSAL_LM_ERROR_INFERENCE_NOT_RUN;
       }
-      *metrics = causal_lm_model->getPerformanceMetrics();
+      // Copy fields individually from the internal
+      // TransformerPerformanceMetrics struct returned by CausalLM
+      // into our public PerformanceMetrics struct. Using
+      // `auto` avoids a hard dependency on the internal type's name.
+      auto internal_metrics = causal_lm_model->getPerformanceMetrics();
+      metrics->prefill_tokens = internal_metrics.prefill_tokens;
+      metrics->prefill_duration_ms = internal_metrics.prefill_duration_ms;
+      metrics->generation_tokens = internal_metrics.generation_tokens;
+      metrics->generation_duration_ms = internal_metrics.generation_duration_ms;
+      metrics->total_duration_ms = internal_metrics.total_duration_ms;
+      metrics->peak_memory_kb = internal_metrics.peak_memory_kb;
       // Overwrite init duration with the one measured in loadModel API
       metrics->initialization_duration_ms =
-        quick_dot_ai::g_initialization_duration_ms;
+          quick_dot_ai::g_initialization_duration_ms;
     } else {
       return CAUSAL_LM_ERROR_UNKNOWN;
     }

@@ -7,12 +7,18 @@ on:
     paths:
       - 'src/**'
       - 'nntrainer/**'
+      - 'build.sh'
+      - 'meson.build'
+      - 'meson.options'
       - '.github/workflows/src-x86-build.yml'
   pull_request:
     branches: [main]
     paths:
       - 'src/**'
       - 'nntrainer/**'
+      - 'build.sh'
+      - 'meson.build'
+      - 'meson.options'
       - '.github/workflows/src-x86-build.yml'
 
 jobs:
@@ -50,16 +56,16 @@ jobs:
         env:
           BUILD_JOBS: "1"
         run: |
-          chmod +x src/build_x86.sh
-          src/build_x86.sh
+          chmod +x build.sh
+          ./build.sh --platform=x86 --target=src
 
       - name: Verify build artifacts
         run: |
           echo "Checking build outputs..."
-          ls -la src/builddir/
-          test -f src/builddir/quick_dot_ai
-          test -f src/builddir/libcausallm.so
-          test -f src/builddir/libquick_dot_ai.so
+          ls -la builddir_x86/src/
+          test -f builddir_x86/src/quick_dot_ai
+          test -f builddir_x86/src/libcausallm.so
+          test -f builddir_x86/src/libquick_dot_ai.so
           echo "All artifacts verified."
 
       - name: Upload build artifacts
@@ -67,7 +73,7 @@ jobs:
         with:
           name: src-x86-linux
           path: |
-            src/builddir/quick_dot_ai
-            src/builddir/libcausallm.so
-            src/builddir/libquick_dot_ai.so
+            builddir_x86/src/quick_dot_ai
+            builddir_x86/src/libcausallm.so
+            builddir_x86/src/libquick_dot_ai.so
           retention-days: 7

@@ -1,6 +1,7 @@
 # Build directories (meson)
 builddir/
 builddir_x86/
+builddir_android/
 
 # NDK build outputs
 src/jni/libs/
@@ -15,3 +16,5 @@ include/
 
 # res
 res/
+
+cross/android-aarch64.cross
