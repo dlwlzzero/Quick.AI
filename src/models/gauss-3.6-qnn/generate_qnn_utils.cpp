@@ -1,17 +1,17 @@
+#include "generate_qnn_utils.h"
+#include "android_memory_allocator.h"
+
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <queue>
+#include <random>
 #include <utility>
 #include <vector>
 
-#include "android_memory_allocator.hpp"
 #include <model.h>
 #include <tokenizers_cpp.h>
-
-using ModelHandle = std::unique_ptr<ml::train::Model>;
-using IO_TensorType = ml::train::TensorDim::IO_TensorType;
 
 std::mt19937 rng;
 std::chrono::duration<double> raw_exec_seconds;

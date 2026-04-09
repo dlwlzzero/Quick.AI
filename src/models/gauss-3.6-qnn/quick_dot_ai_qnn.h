@@ -34,13 +34,15 @@ public:
 
   void initialize() override;
 
+  virtual void initialize_input_outputs() = 0;
+
   void load_weight(const std::string &weight_path) override;
 
   void save_weight(const std::string &weight_path) override;
 
-  void run(const WSTR prompt, bool do_sample = false,
-           const WSTR system_prompt = "", const WSTR tail_prompt = "",
-           bool log_output = true) override;
+  virtual void run(const WSTR prompt, bool do_sample = false,
+                   const WSTR system_prompt = "", const WSTR tail_prompt = "",
+                   bool log_output = true) = 0;
 
   void setupParameters(json &cfg, json &generation_cfg,
                        json &nntr_cfg) override;

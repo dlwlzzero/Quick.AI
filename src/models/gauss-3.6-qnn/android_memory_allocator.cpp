@@ -1,6 +1,4 @@
-#include <cstring>
-#include <iostream>
-#include <map>
+#include "android_memory_allocator.h"
 
 #include <dynamic_library_loader.h>
 
