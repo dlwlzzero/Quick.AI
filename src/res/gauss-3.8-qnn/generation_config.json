@@ -1,0 +1,12 @@
+{
+  "do_sample": true,
+  "top_k": 40,
+  "top_p": 0.8,
+  "temperature": 1.0,
+  "eos_token_id": 9,
+  "bos_token_id": 1,
+  "padding_token": 0,
+  "repetition_penalty": 1.0,
+  "logit_scale": 0.002013430930674076,
+  "logit_offset": -35142
+}
