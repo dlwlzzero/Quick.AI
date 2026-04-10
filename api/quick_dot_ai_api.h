@@ -30,6 +30,10 @@
 #define CAUSAL_LM_MODEL_GAUSS3_6_QNN ((ModelType)2)
 #endif
 
+#ifndef CAUSAL_LM_MODEL_GAUSS3_8_QNN
+#define CAUSAL_LM_MODEL_GAUSS3_8_QNN ((ModelType)3)
+#endif
+
 #else /* causal_lm_api.h not included — provide full definitions */
 
 #define __CAUSAL_LM_API_H__
@@ -66,6 +70,7 @@ typedef enum {
   CAUSAL_LM_MODEL_QWEN3_0_6B = 0,
   CAUSAL_LM_MODEL_GAUSS2_5 = 1,
   CAUSAL_LM_MODEL_GAUSS3_6_QNN = 2,
+  CAUSAL_LM_MODEL_GAUSS3_8_QNN = 3,
 } ModelType;
 
 typedef struct {

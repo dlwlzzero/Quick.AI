@@ -36,6 +36,7 @@
 #include <factory.h>
 #ifdef ENABLE_QNN
 #include "gauss3_6_qnn.h"
+#include "gauss3_8_qnn.h"
 #endif
 #include <fstream>
 #include <sys/stat.h>
@@ -59,6 +60,7 @@ static std::map<std::string, std::string> g_model_path_map = {
     {"GAUSS2.5-1B", "gauss2.5-1b"},
 #ifdef ENABLE_QNN
     {"GAUSS3.6-QNN", "gauss3.6-qnn"},
+    {"GAUSS3.8-QNN", "gauss3.8-qnn"},
 #endif
 };
 
@@ -114,6 +116,11 @@ static void register_models() {
           return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
                                                           nntr_cfg);
         });
+    causallm::Factory::Instance().registerModel(
+        "Gauss_3_8_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_8_QNN>(cfg, generation_cfg,
+                                                          nntr_cfg);
+        });
 #endif
 
     // Register built-in model configurations (direct C++ call)
@@ -129,6 +136,8 @@ static const char *get_model_name_from_type(ModelType type) {
 #ifdef ENABLE_QNN
   if (type == CAUSAL_LM_MODEL_GAUSS3_6_QNN)
     return "GAUSS3.6-QNN";
+  if (type == CAUSAL_LM_MODEL_GAUSS3_8_QNN)
+    return "GAUSS3.8-QNN";
 #endif
   return nullptr;
 }
