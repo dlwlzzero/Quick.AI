@@ -9,8 +9,13 @@ api_inc = include_directories('.')
 # Extension model headers
 quick_dot_ai_inc_args = [
   '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'gauss-2.5',
-  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'gauss-3.6',
 ]
+
+if enable_qnn
+quick_dot_ai_inc_args += [
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'gauss-3.6-qnn',
+]
+endif
 
 quick_dot_ai_api_lib = shared_library('quick_dot_ai_api',
     'quick_dot_ai_api.cpp',

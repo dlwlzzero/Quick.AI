@@ -95,7 +95,7 @@ static void print_usage(const char *prog) {
             << prog << clr::reset << " <model> [prompt] [chat_tpl] [quant] "
             << "[verbose]\n";
   std::cout << clr::yellow << "│" << clr::reset << "\n";
-  print_kv("model", "qwen3-0.6b | gauss2.5-1b", clr::yellow);
+  print_kv("model", "qwen3-0.6b | gauss2.5-1b | gauss3.6-qnn", clr::yellow);
   print_kv("prompt", "\"Hello, how are you?\"", clr::yellow);
   print_kv("chat_tpl", "true | false  (default: true)", clr::yellow);
   print_kv("quant", "W4A32 | W16A16 | W8A16 | W32A32", clr::yellow);
@@ -176,6 +176,15 @@ int main(int argc, char *argv[]) {
     model_type = CAUSAL_LM_MODEL_QWEN3_0_6B;
   } else if (model_name_str == "gauss2.5" || model_name_str == "gauss2.5-1b") {
     model_type = CAUSAL_LM_MODEL_GAUSS2_5;
+  } else if (model_name_str == "gauss3.6-qnn" ||
+             model_name_str == "gauss3.6_qnn") {
+#ifdef ENABLE_QNN
+    model_type = CAUSAL_LM_MODEL_GAUSS3_6_QNN;
+#else
+    print_error("Model '" + std::string(model_name) +
+                "' requires QNN support. Rebuild with -Denable-qnn=true.");
+    return 1;
+#endif
   } else {
     print_error("Unknown model: " + std::string(model_name));
     return 1;
@@ -226,13 +235,13 @@ int main(int argc, char *argv[]) {
   err = getPerformanceMetrics(&metrics);
   if (err == CAUSAL_LM_ERROR_NONE) {
     double prefill_tps =
-      metrics.prefill_duration_ms > 0
-        ? metrics.prefill_tokens / metrics.prefill_duration_ms * 1000.0
-        : 0.0;
-    double gen_tps =
-      metrics.generation_duration_ms > 0
-        ? metrics.generation_tokens / metrics.generation_duration_ms * 1000.0
-        : 0.0;
+        metrics.prefill_duration_ms > 0
+            ? metrics.prefill_tokens / metrics.prefill_duration_ms * 1000.0
+            : 0.0;
+    double gen_tps = metrics.generation_duration_ms > 0
+                         ? metrics.generation_tokens /
+                               metrics.generation_duration_ms * 1000.0
+                         : 0.0;
 
     std::ostringstream oss;
 
