@@ -33,6 +33,9 @@ void process_value(uint8_t *pointer, int row, int column, uint8_t *dest,
 void fill_attention_mask_with_length(int rows, int columns, int length,
                                      uint16_t *attention_mask);
 
+void fill_attention_mask_with_prev_length(int rows, int columns, int length, 
+                                          uint16_t *attention_mask);
+
 uint16_t *get_zero_memory(int size, int zero_point);
 
 int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,

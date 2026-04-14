@@ -62,6 +62,10 @@ private:
   std::vector<ml::train::TensorDim::IO_TensorType> generation_inputs;
 
   // KV cache variables
+  std::vector<uint16_t *> prefill_kvs;
+  std::vector<int> prefill_kv_sizes;
+  std::vector<uint16_t *> prefill_fresh_kvs;
+  
   std::vector<uint16_t *> kvs;
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;

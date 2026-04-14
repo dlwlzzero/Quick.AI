@@ -16,6 +16,7 @@
 std::mt19937 rng;
 std::chrono::duration<double> raw_exec_seconds;
 
+// context의 시작점과 끝점이 추가되어야 함
 std::tuple<uint16_t *, uint16_t *> get_cos_sin(int context_size, int pos_dim,
                                                const double theta) {
   const double exponent = 1.0 / static_cast<double>(pos_dim);
@@ -83,6 +84,15 @@ void fill_attention_mask_with_length(int rows, int columns, int length,
       index++;
     }
   }
+}
+
+void fill_attention_mask_with_prev_length(int rows, int columns, int length, 
+                                          uint16_t *attention_mask) {
+  for(int i = 0; i < rows; i++) {
+    for(int j = 0; j < length; j++) {
+      attention_mask[i * columns + j] = std::numeric_limits<uint16_t>::max();
+    }
+  }                                            
 }
 
 uint16_t *get_zero_memory(int size, int zero_point) {
