@@ -112,33 +112,21 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
   this->prefill_kv_sizes.clear();
 
   for (int i = 0; i < num_hidden_layers; i++) {
-    int attn_length;
-    int generation_attn_length;
-    if (i % 5 == 4) {
-      // no sliding attn
-      // attn_length = max_seq_len;
-      attn_length = max_seq_len - context_size;
-      generation_attn_length = max_seq_len - context_size;
-    } else {
-      // attn_length = sliding_window;
-      attn_length = sliding_window - context_size;
-      generation_attn_length = sliding_window - context_size;
-    }
-    int prefill_size = attn_length * head_dim;
-    int size = generation_attn_length * head_dim;
+    int attn_length = (i % 5 == 4) ? max_seq_len - context_size : sliding_window - context_size;
+    int size = attn_length * head_dim;
     // key, value, first head, second head
     for (int j = 0; j < 4; j++) {
       int coeff = sizeof(uint16_t) / sizeof(uint8_t);
       this->kv_sizes.push_back(size * coeff);
-      this->prefill_kv_sizes.push_back(prefill_size * coeff);
-      // if (i < max_window_layers) {
-        // If we cast int8 memory full of 128 to int16, we get 128 * 256 + 128
-        // 여기가 prefill kvcache
-        auto cur_prefill_kv = get_zero_memory(prefill_size * coeff, 128 * 256 + 128);
-        prefill_inputs.push_back(cur_prefill_kv);
-        this->prefill_kvs.push_back(cur_prefill_kv);
-        this->prefill_fresh_kvs.push_back(get_zero_memory(prefill_size * coeff, 128 * 256 + 128));
-      // }
+      this->prefill_kv_sizes.push_back(size * coeff);
+
+      // If we cast int8 memory full of 128 to int16, we get 128 * 256 + 128
+      // 여기가 prefill kvcache
+      auto cur_prefill_kv = get_zero_memory(size * coeff, 128 * 256 + 128);
+      prefill_inputs.push_back(cur_prefill_kv);
+      this->prefill_kvs.push_back(cur_prefill_kv);
+      this->prefill_fresh_kvs.push_back(get_zero_memory(size * coeff, 128 * 256 + 128));
+
       auto current_kv = get_zero_memory(size * coeff, 128 * 256 + 128);
       generation_inputs.push_back(current_kv);
       this->kvs.push_back(current_kv);
@@ -184,18 +172,13 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
   }
 
   auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
-  std::cout << "[INFO] input_len: " << _len << ", n_chunk: " << _n_chunks << std::endl;
-  
   auto token  = _input.back();
 
   std::vector<int> output;
   std::vector<ml::train::TensorDim::IO_TensorType> outputs;
 
-
   for(int c = 0; c < _n_chunks; c++){
     int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
-    
-    std::cout << "[INFO] Loop(" << c << "), chunk_len(" << _chunk_len << ")" << std::endl;
 
     for(int i = 0; i < context_size; i++)
       input_sample[i] = (i < _chunk_len) ? _input[c * 256 + i] : padding_token;
@@ -206,8 +189,6 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     fill_attention_mask_with_length(context_size, sliding_window, _chunk_len, sliding_attention_mask);
     int sliding_window_length = (c > 4) ? sliding_window : (c * 256);
     fill_attention_mask_with_prev_length(context_size, sliding_window, sliding_window_length, sliding_attention_mask);
-
-    std::cout << "[CP] Prefill Attention Mask success" << std::endl;
 
     std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_position_ids_sin, context_size * pos_dim, 32768);
@@ -220,16 +201,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     std::memcpy(prefill_swa_position_ids_cos, swa_position_ids_cos + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
     std::memcpy(prefill_swa_position_ids_sin, swa_position_ids_sin + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
 
-    std::cout << "[CP] filling position id success" << std::endl;
-
     outputs = prefill_model->inference(1, prefill_inputs);
-
-    std::cout << "[CP] Prefill model success" << std::endl;
-
-    // if(c == (_n_chunks-1)){
-    //   std::cout << "[INFO] Loop(" << c << "), KV Cache Copy skipped." << std::endl;
-    //   continue; 
-    // }
 
     // Remove output_hidden_states from outputs
     outputs.erase(outputs.begin() + 96);
@@ -254,7 +226,6 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
         process_value(output, _chunk_len, num_column, dest, c * 256);
       }
     }
-    std::cout << "[CP] Prefill KV Cache copied." << std::endl;
   }
   
 #pragma omp parallel for
@@ -282,8 +253,6 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       std::memcpy(dest, src, num_column * num_row);
     }
   }
-  
-  std::cout << "[CP] Prefill KV Cache -> TG KV Cache" << std::endl;
 
   std::fill_n(generation_attention_mask, max_seq_len, 0);
   std::fill_n(generation_sliding_attention_mask, sliding_window - context_size, 0);
@@ -295,8 +264,6 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
   for (int i = 0; i < _len; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-
-  std::cout << "[CP] Generation Attention Mask success" << std::endl;
   
   auto start = std::chrono::system_clock::now();
   int idx;
@@ -316,8 +283,6 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     std::memcpy(generation_swa_position_ids_sin,
                 swa_position_ids_sin + idx * pos_dim,
                 pos_dim * sizeof(uint16_t));
-
-    // std::cout << "[CP] Generation Attention Mask success" << std::endl;
 
     if(idx > _len) {
       // Remove output_hidden_states from outputs
