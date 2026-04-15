@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "causal_lm.h"
-#include "chat_template.h"
 #include "gauss2_5_causallm.h"
 #include "gemma3_causallm.h"
 #include "gptoss_cached_slim_causallm.h"
@@ -72,11 +71,6 @@ struct CausalLmModel {
 static std::mutex g_registry_mutex;
 static bool g_use_chat_template = false;
 static bool g_verbose = false;
-static std::string g_last_output = "";
-static double g_initialization_duration_ms = 0.0;
-static causallm::ChatTemplate g_chat_template;
-static std::string g_formatted_template;
-static std::string g_chat_template_name = "default";
 
 // Default handle backing the legacy non-handle API.
 static CausalLmModel &get_default_handle() {
@@ -133,6 +127,30 @@ static void register_models() {
   static std::once_flag flag;
   std::call_once(flag, []() {
     causallm::Factory::Instance().registerModel(
+<<<<<<< HEAD
+        "Qwen3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Qwen3CausalLM>(cfg, generation_cfg,
+                                                           nntr_cfg);
+        });
+    causallm::Factory::Instance().registerModel(
+        "Gauss2_5ForCausalLM",
+        [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss2_5_Causallm>(
+              cfg, generation_cfg, nntr_cfg);
+        });
+#ifdef ENABLE_QNN
+    causallm::Factory::Instance().registerModel(
+        "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
+                                                          nntr_cfg);
+        });
+    causallm::Factory::Instance().registerModel(
+        "Gauss_3_8_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_8_QNN>(cfg, generation_cfg,
+                                                          nntr_cfg);
+        });
+#endif
+=======
       "LlamaForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::CausalLM>(cfg, generation_cfg,
                                                     nntr_cfg);
@@ -181,25 +199,14 @@ static void register_models() {
                                                           nntr_cfg);
       });
     causallm::Factory::Instance().registerModel(
-        "Gauss2_5ForCausalLM",
-        [](json cfg, json generation_cfg, json nntr_cfg) {
-          return std::make_unique<causallm::Gauss2_5_Causallm>(
-              cfg, generation_cfg, nntr_cfg);
-        });
-#ifdef ENABLE_QNN
-    causallm::Factory::Instance().registerModel(
-        "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
-          return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
-                                                          nntr_cfg);
-        });
-    causallm::Factory::Instance().registerModel(
-        "Gauss_3_8_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
-          return std::make_unique<causallm::Gauss3_8_QNN>(cfg, generation_cfg,
-                                                          nntr_cfg);
-        });
-#endif
+      "GaussForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::Gauss2_5_Causallm>(
+          cfg, generation_cfg, nntr_cfg);
+      });
+>>>>>>> 8eacd4a (fix for DEMO)
+
     // Register built-in configurations
-    quick_dot_ai::register_builtin_configs();
+    register_builtin_model_configs();
   });
 }
 
@@ -209,25 +216,23 @@ static const char *get_model_name_from_type(ModelType type) {
     return "QWEN3-0.6B";
   case CAUSAL_LM_MODEL_GAUSS2_5:
     return "GAUSS2.5-1B";
+<<<<<<< HEAD
 #ifdef ENABLE_QNN
-  case CAUSAL_LM_MODEL_GAUSS3_6_QNN:
+  if (type == CAUSAL_LM_MODEL_GAUSS3_6_QNN)
     return "GAUSS3.6-QNN";
-  case CAUSAL_LM_MODEL_GAUSS3_8_QNN:
+  if (type == CAUSAL_LM_MODEL_GAUSS3_8_QNN)
     return "GAUSS3.8-QNN";
 #endif
+  return nullptr;
+=======
   default:
     return nullptr;
   }
+>>>>>>> 8eacd4a (fix for DEMO)
 }
 
 static std::string apply_chat_template(const std::string &architecture,
                                        const std::string &input) {
-  // Use dynamic chat template from tokenizer_config.json if available
-  if (g_chat_template.isAvailable()) {
-    return g_chat_template.apply(input);
-  }
-
-  // Fallback: hardcoded per-architecture templates
   if (architecture == "LlamaForCausalLM") {
     // Llama 2/3 chat format: [INST] {prompt} [/INST]
     return "[INST] " + input + " [/INST]";
@@ -238,12 +243,18 @@ static std::string apply_chat_template(const std::string &architecture,
              architecture == "Qwen3CachedSlimMoeForCausalLM") {
     // Qwen chat format
     // <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
+    // Note: assuming model handles tokenizer specific special tokens or we
+    // might need to handle them raw if tokenizer enabled
     return "<|im_start|>user\n" + input + "<|im_end|>\n<|im_start|>assistant\n";
   } else if (architecture == "Gemma3ForCausalLM") {
     // Gemma chat format:
     // <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
     return "<start_of_turn>user\n" + input +
            "<end_of_turn>\n<start_of_turn>model\n";
+  } else if (architecture == "GaussForCausalLM") {
+    return "<|begin_of_text|><|begin_of_text|><|turn_start|>System\n<|turn_end|"
+           ">\n<|turn_start|>User\n" +
+           input + "\n<|turn_end|>\n<|turn_start|>Assistant\n";
   }
   return input;
 }
@@ -284,7 +295,7 @@ static std::string resolve_model_path(const std::string &model_key,
   }
 
   std::string model_path =
-    "./models/" + base_dir_name + get_quantization_suffix(quant_type);
+      "./models/" + base_dir_name + get_quantization_suffix(quant_type);
 
   return model_path;
 }
@@ -301,8 +312,8 @@ static void validate_models() {
     // We want to check for each Quantization Type if it exists
     // List of quant types to check: UNKNOWN (default), W4A32, W16A16, W32A32
     std::vector<ModelQuantizationType> quant_types = {
-      CAUSAL_LM_QUANTIZATION_UNKNOWN, CAUSAL_LM_QUANTIZATION_W4A32,
-      CAUSAL_LM_QUANTIZATION_W16A16, CAUSAL_LM_QUANTIZATION_W32A32};
+        CAUSAL_LM_QUANTIZATION_UNKNOWN, CAUSAL_LM_QUANTIZATION_W4A32,
+        CAUSAL_LM_QUANTIZATION_W16A16, CAUSAL_LM_QUANTIZATION_W32A32};
 
     for (auto qt : quant_types) {
       std::string quant_suffix = get_quantization_suffix(qt);
@@ -340,7 +351,7 @@ static void validate_models() {
         if (check_file_exists(resolved_path)) {
           bool has_config = check_file_exists(resolved_path + "/config.json");
           bool has_nntr =
-            check_file_exists(resolved_path + "/nntr_config.json");
+              check_file_exists(resolved_path + "/nntr_config.json");
 
           if (has_config && has_nntr) {
             std::cout << "  [OK] External Config: " << lookup_key << " -> "
@@ -348,7 +359,7 @@ static void validate_models() {
             // Optional: Parse nntr_config to check bin
             try {
               json nntr =
-                causallm::LoadJsonFile(resolved_path + "/nntr_config.json");
+                  causallm::LoadJsonFile(resolved_path + "/nntr_config.json");
               if (nntr.contains("model_file_name")) {
                 std::string bin = nntr["model_file_name"];
                 if (check_file_exists(resolved_path + "/" + bin)) {
@@ -376,9 +387,6 @@ ErrorCode setOptions(Config config) {
   // Currently no options are being handled
   g_use_chat_template = config.use_chat_template;
   g_verbose = config.verbose;
-  g_chat_template_name = (config.chat_template_name != nullptr)
-                           ? config.chat_template_name
-                           : "default";
   if (config.debug_mode) {
     // Ensure models are registered so we can validate them
     register_models();
@@ -426,7 +434,12 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
   auto start_init = std::chrono::high_resolution_clock::now();
 
+<<<<<<< HEAD
+  const char *target_model_name =
+      quick_dot_ai::get_model_name_from_type(modeltype);
+=======
   const char *target_model_name = get_model_name_from_type(modeltype);
+>>>>>>> 8eacd4a (fix for DEMO)
   if (target_model_name == nullptr) {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
@@ -480,7 +493,12 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       // ------------------------------------------------------------------------
       // In this case, we do NOT load config.json or nntr_config.json from disk.
       // We only locate the binary weight file.
+<<<<<<< HEAD
+      quick_dot_ai::RegisteredModel &rm =
+          quick_dot_ai::g_model_registry[lookup_name];
+=======
       RegisteredModel &rm = g_model_registry[lookup_name];
+>>>>>>> 8eacd4a (fix for DEMO)
 
       // Find architecture config
       if (g_arch_config_map.find(rm.arch_name) == g_arch_config_map.end()) {
@@ -493,7 +511,12 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       ModelRuntimeConfig &rc = rm.config;
 
       // Strategy: Resolve path to find the weight file
+<<<<<<< HEAD
+      model_dir_path =
+          quick_dot_ai::resolve_model_path(target_model_name, quant_type);
+=======
       model_dir_path = resolve_model_path(target_model_name, quant_type);
+>>>>>>> 8eacd4a (fix for DEMO)
 
       // Populate JSONs from Arch Struct
       cfg["vocab_size"] = ac.vocab_size;
@@ -503,8 +526,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       cfg["num_attention_heads"] = ac.num_attention_heads;
       cfg["head_dim"] = ac.head_dim;
       cfg["num_key_value_heads"] = ac.num_key_value_heads > 0
-                                     ? ac.num_key_value_heads
-                                     : ac.num_attention_heads;
+                                       ? ac.num_key_value_heads
+                                       : ac.num_attention_heads;
       cfg["max_position_embeddings"] = ac.max_position_embeddings;
       cfg["rope_theta"] = ac.rope_theta;
       cfg["rms_norm_eps"] = ac.rms_norm_eps;
@@ -562,12 +585,17 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       // The model type is registered (enum), but specific configuration for
       // this quantization is not in memory. We must load config.json and
       // nntr_config.json from the model directory
+<<<<<<< HEAD
+      model_dir_path =
+          quick_dot_ai::resolve_model_path(target_model_name, quant_type);
+=======
       model_dir_path = resolve_model_path(target_model_name, quant_type);
+>>>>>>> 8eacd4a (fix for DEMO)
 
       // Load configuration files
       cfg = causallm::LoadJsonFile(model_dir_path + "/config.json");
       generation_cfg =
-        causallm::LoadJsonFile(model_dir_path + "/generation_config.json");
+          causallm::LoadJsonFile(model_dir_path + "/generation_config.json");
       nntr_cfg = causallm::LoadJsonFile(model_dir_path + "/nntr_config.json");
 
       if (nntr_cfg.contains("tokenizer_file")) {
@@ -576,34 +604,13 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       }
     }
 
-    // Load chat template from tokenizer_config.json if available
-    std::string tc_path = model_dir_path + "/tokenizer_config.json";
-    if (check_file_exists(tc_path)) {
-      g_chat_template =
-        causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
-      if (g_chat_template.isAvailable()) {
-        std::cout << "[Info] Chat template loaded from tokenizer_config.json"
-                  << std::endl;
-      } else {
-        std::cerr
-          << "[Warning] tokenizer_config.json found but chat template could "
-             "not be loaded. Falling back to hardcoded templates."
-          << std::endl;
-      }
-    } else {
-      g_chat_template = causallm::ChatTemplate();
-      std::cerr << "[Warning] tokenizer_config.json not found in "
-                << model_dir_path << ". Using hardcoded chat templates."
-                << std::endl;
-    }
-
     // Construct weight file path
     std::string weight_file_name;
     if (nntr_cfg.contains("model_file_name")) {
       weight_file_name = nntr_cfg["model_file_name"].get<std::string>();
     } else {
       weight_file_name =
-        "pytorch_model.bin"; // Default fallback if not specified
+          "pytorch_model.bin"; // Default fallback if not specified
     }
 
     const std::string weight_file = model_dir_path + "/" + weight_file_name;
@@ -621,9 +628,15 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       return CAUSAL_LM_ERROR_INVALID_PARAMETER;
     }
 
+<<<<<<< HEAD
+    quick_dot_ai::g_model = causallm::Factory::Instance().create(
+        architecture, cfg, generation_cfg, nntr_cfg);
+    if (!quick_dot_ai::g_model) {
+=======
     h.model = causallm::Factory::Instance().create(architecture, cfg,
                                                    generation_cfg, nntr_cfg);
     if (!h.model) {
+>>>>>>> 8eacd4a (fix for DEMO)
       return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
     }
 
@@ -635,8 +648,13 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
     auto finish_init = std::chrono::high_resolution_clock::now();
     auto init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+<<<<<<< HEAD
+        finish_init - start_init);
+    quick_dot_ai::g_initialization_duration_ms = init_duration.count();
+=======
       finish_init - start_init);
     h.initialization_duration_ms = init_duration.count();
+>>>>>>> 8eacd4a (fix for DEMO)
 
   } catch (const std::exception &e) {
     std::cerr << "Exception in loadModel: " << e.what() << std::endl;
@@ -666,8 +684,14 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
   try {
     std::string input(inputTextPrompt);
 
+<<<<<<< HEAD
+    if (quick_dot_ai::g_use_chat_template) {
+      input = quick_dot_ai::apply_chat_template(quick_dot_ai::g_architecture,
+                                                input);
+=======
     if (g_use_chat_template) {
       input = apply_chat_template(h.architecture, input);
+>>>>>>> 8eacd4a (fix for DEMO)
     }
 
 // We assume single batch request for this API
@@ -678,8 +702,14 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
     h.model->run(input, false, "", "", g_verbose);
 #endif
 
+<<<<<<< HEAD
+    auto causal_lm_model =
+        dynamic_cast<causallm::CausalLM *>(quick_dot_ai::g_model.get());
+    quick_dot_ai::g_last_output = ""; // Reset last output
+=======
     auto causal_lm_model = dynamic_cast<causallm::CausalLM *>(h.model.get());
     h.last_output = "";
+>>>>>>> 8eacd4a (fix for DEMO)
     if (causal_lm_model) {
       h.last_output = causal_lm_model->getOutput(0);
     }
@@ -704,6 +734,32 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
+<<<<<<< HEAD
+  try {
+    std::lock_guard<std::mutex> lock(quick_dot_ai::g_mutex);
+    auto causal_lm_model =
+        dynamic_cast<causallm::CausalLM *>(quick_dot_ai::g_model.get());
+
+    if (causal_lm_model) {
+      if (!causal_lm_model->hasRun()) {
+        return CAUSAL_LM_ERROR_INFERENCE_NOT_RUN;
+      }
+      // Copy fields individually from the internal
+      // TransformerPerformanceMetrics struct returned by CausalLM
+      // into our public PerformanceMetrics struct. Using
+      // `auto` avoids a hard dependency on the internal type's name.
+      auto internal_metrics = causal_lm_model->getPerformanceMetrics();
+      metrics->prefill_tokens = internal_metrics.prefill_tokens;
+      metrics->prefill_duration_ms = internal_metrics.prefill_duration_ms;
+      metrics->generation_tokens = internal_metrics.generation_tokens;
+      metrics->generation_duration_ms = internal_metrics.generation_duration_ms;
+      metrics->total_duration_ms = internal_metrics.total_duration_ms;
+      metrics->peak_memory_kb = internal_metrics.peak_memory_kb;
+      // Overwrite init duration with the one measured in loadModel API
+      metrics->initialization_duration_ms =
+          quick_dot_ai::g_initialization_duration_ms;
+    } else {
+=======
   std::lock_guard<std::mutex> lock(h.mtx);
   if (!h.initialized || !h.model) {
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
@@ -712,6 +768,7 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
   try {
     auto causal_lm_model = dynamic_cast<causallm::CausalLM *>(h.model.get());
     if (!causal_lm_model) {
+>>>>>>> 8eacd4a (fix for DEMO)
       return CAUSAL_LM_ERROR_UNKNOWN;
     }
     if (!causal_lm_model->hasRun()) {
@@ -734,121 +791,6 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
   return CAUSAL_LM_ERROR_NONE;
 }
 
-/*****************************************************************************
- * Chat Template API - role + content message support
- *****************************************************************************/
-
-/**
- * @brief Convert C message array to C++ ChatMessage vector
- */
-static std::vector<causallm::ChatMessage>
-convertMessages(const CausalLMChatMessage *messages, size_t num_messages) {
-  std::vector<causallm::ChatMessage> result;
-  result.reserve(num_messages);
-  for (size_t i = 0; i < num_messages; ++i) {
-    causallm::ChatMessage msg;
-    msg.role = messages[i].role ? messages[i].role : "";
-    msg.content = messages[i].content ? messages[i].content : "";
-    result.push_back(std::move(msg));
-  }
-  return result;
-}
-
-/**
- * @brief Apply chat template to messages with hardcoded fallback
- */
-static std::string
-apply_chat_template_messages(const std::string &architecture,
-                             const std::vector<causallm::ChatMessage> &messages,
-                             bool add_generation_prompt) {
-  if (g_chat_template.isAvailable()) {
-    return g_chat_template.apply(messages, add_generation_prompt);
-  }
-
-  std::string result;
-
-  if (architecture == "LlamaForCausalLM") {
-    for (const auto &msg : messages) {
-      if (msg.role == "system") {
-        result += "<<SYS>>\n" + msg.content + "\n<</SYS>>\n\n";
-      } else if (msg.role == "user") {
-        result += "[INST] " + msg.content + " [/INST]";
-      } else if (msg.role == "assistant") {
-        result += msg.content + "\n";
-      }
-    }
-  } else if (architecture == "Qwen2ForCausalLM" ||
-             architecture == "Qwen3ForCausalLM" ||
-             architecture == "Qwen3MoeForCausalLM" ||
-             architecture == "Qwen3SlimMoeForCausalLM" ||
-             architecture == "Qwen3CachedSlimMoeForCausalLM") {
-    for (const auto &msg : messages) {
-      result += "<|im_start|>" + msg.role + "\n" + msg.content + "<|im_end|>\n";
-    }
-    if (add_generation_prompt) {
-      result += "<|im_start|>assistant\n";
-    }
-  } else if (architecture == "Gemma3ForCausalLM") {
-    for (const auto &msg : messages) {
-      if (msg.role == "user") {
-        result += "<start_of_turn>user\n" + msg.content + "<end_of_turn>\n";
-      } else if (msg.role == "assistant") {
-        result += "<start_of_turn>model\n" + msg.content + "<end_of_turn>\n";
-      }
-    }
-    if (add_generation_prompt) {
-      result += "<start_of_turn>model\n";
-    }
-  } else {
-    for (const auto &msg : messages) {
-      result += msg.content + "\n";
-    }
-  }
-
-  return result;
-}
-
-ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
-                            size_t num_messages, bool add_generation_prompt,
-                            const char **formattedText) {
-  if (messages == nullptr || num_messages == 0 || formattedText == nullptr) {
-    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-  }
-
-  try {
-    auto &h = get_default_handle();
-    std::lock_guard<std::mutex> lock(h.mtx);
-
-    auto chat_messages = convertMessages(messages, num_messages);
-    g_formatted_template = apply_chat_template_messages(
-      h.architecture, chat_messages, add_generation_prompt);
-
-    *formattedText = g_formatted_template.c_str();
-
-  } catch (const std::exception &e) {
-    std::cerr << "Exception in applyChatTemplate: " << e.what() << std::endl;
-    return CAUSAL_LM_ERROR_UNKNOWN;
-  }
-
-  return CAUSAL_LM_ERROR_NONE;
-}
-
-ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
-                               size_t num_messages, bool add_generation_prompt,
-                               const char **outputText) {
-  if (outputText == nullptr) {
-    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-  }
-
-  const char *formattedInput = nullptr;
-  ErrorCode err = applyChatTemplate(messages, num_messages,
-                                    add_generation_prompt, &formattedInput);
-  if (err != CAUSAL_LM_ERROR_NONE) {
-    return err;
-  }
-
-  return runModel(formattedInput, outputText);
-}
 /*============================================================================
  * Legacy non-handle API implementation
  *============================================================================*/
@@ -967,16 +909,6 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
-  return CAUSAL_LM_ERROR_NONE;
-}
-
-ErrorCode unloadModelHandle(CausalLmHandle handle) {
-  if (handle == nullptr) {
-    return CAUSAL_LM_ERROR_NONE;
-  }
-  std::lock_guard<std::mutex> lock(handle->mtx);
-  handle->model.reset();
-  handle->initialized = false;
   return CAUSAL_LM_ERROR_NONE;
 }
 
