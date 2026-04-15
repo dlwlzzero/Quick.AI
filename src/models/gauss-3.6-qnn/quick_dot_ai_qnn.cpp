@@ -3,6 +3,12 @@
 #include "generate_qnn_utils.h"
 
 #include <iostream>
+#include <android/log.h>
+
+#define LOG_TAG "Quick_Dot_AI_QNN"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 using namespace ml::train;
 using namespace nntrainer;
@@ -13,11 +19,19 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
 
   auto &ct_engine = nntrainer::Engine::Global();
 
+  LOGD("%s:%d", __FILE__, __LINE__);
+
   NNTR_THROW_IF(ct_engine.registerContext("libqnn_context.so", ""),
                 std::runtime_error)
       << "Fail to register QNN Context";
 
+        LOGD("%s:%d", __FILE__, __LINE__);
+
+
   prefill_model = createModel(ml::train::ModelType::NEURAL_NET);
+
+    LOGD("%s:%d", __FILE__, __LINE__);
+
 
   prefill_model->addLayer(createLayer(
       "embedding",
@@ -25,16 +39,28 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
        withKey("input_shape", "1:" + std::to_string(sequence_length)),
        withKey("out_dim", hidden_size)}));
 
+         LOGD("%s:%d", __FILE__, __LINE__);
+
+
   NNTR_THROW_IF(prefill_non_embed_input_names.size() !=
                     prefill_non_embed_input_dims.size(),
                 std::invalid_argument)
       << "Non-embedding input names and dimensions should have equal size";
+
+        LOGD("%s:%d", __FILE__, __LINE__);
+
   non_embed_input_count = prefill_non_embed_input_names.size();
+
+    LOGD("%s:%d", __FILE__, __LINE__);
+
   for (int i = 0; i < non_embed_input_count; i++) {
     prefill_model->addLayer(createLayer(
         "input", {withKey("name", prefill_non_embed_input_names[i]),
                   withKey("input_shape", prefill_non_embed_input_dims[i])}));
   }
+
+    LOGD("%s:%d", __FILE__, __LINE__);
+
 
   LayerHandle prefill_qnn_layer =
       createLayer("qnn_graph",
@@ -46,10 +72,20 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
                    withKey("input_quant_param", prefill_in_quant),
                    withKey("output_quant_param", prefill_out_quant),
                    withKey("engine", "qnn")});
+
+                     LOGD("%s:%d", __FILE__, __LINE__);
+
+
   prefill_model->addLayer(prefill_qnn_layer);
+
+    LOGD("%s:%d", __FILE__, __LINE__);
+
 
   prefill_model->setProperty({withKey("batch_size", 1), withKey("epochs", 1),
                               withKey("model_tensor_type", "UINT16-UINT16")});
+
+                                LOGD("%s:%d", __FILE__, __LINE__);
+
 
   auto prefill_optimizer =
       createOptimizer("sgd", {withKey("learning_rate", 0.001)});

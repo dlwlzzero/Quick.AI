@@ -59,10 +59,8 @@ typedef enum {
 typedef enum {
   CAUSAL_LM_MODEL_QWEN3_0_6B = 0,
   CAUSAL_LM_MODEL_GAUSS2_5 = 1,
-#ifdef ENABLE_QNN
   CAUSAL_LM_MODEL_GAUSS3_6_QNN = 2,
   CAUSAL_LM_MODEL_GAUSS3_8_QNN = 3,
-#endif
 } ModelType;
 
 typedef struct {
@@ -177,14 +175,17 @@ typedef struct CausalLmModel *CausalLmHandle;
  * handles, each with its own model state. The caller must eventually call
  * destroyModelHandle on the returned handle to release resources.
  *
- * @param compute    Backend compute type
- * @param modeltype  Model type enum
- * @param quant_type Quantization type
- * @param out_handle Out-parameter that receives the new handle on success
+ * @param compute         Backend compute type
+ * @param modeltype       Model type enum
+ * @param quant_type      Quantization type
+ * @param native_lib_dir  Native library directory path (from Android
+ *                        ApplicationInfo.nativeLibraryDir). May be NULL.
+ * @param out_handle      Out-parameter that receives the new handle on success
  * @return ErrorCode
  */
 WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
                                      ModelQuantizationType quant_type,
+                                     const char *native_lib_dir,
                                      CausalLmHandle *out_handle);
 
 /**

@@ -57,7 +57,7 @@ ext_inc = include_directories('models/gauss-2.5')
 quick_dot_ai_plugin = shared_library('quick_dot_ai',
     quick_dot_ai_src,
     include_directories: [ext_inc, quick_dot_ai_inc],
-    dependencies: [nntrainer_dep, causallm_dep, openmp_dep],
+    dependencies: [nntrainer_dep, causallm_dep, openmp_dep, log_dep],
     install: true,
 )
 
@@ -70,14 +70,14 @@ quick_dot_ai_dep = declare_dependency(
 quick_dot_ai_static = static_library('quick_dot_ai_static',
     quick_dot_ai_src,
     include_directories: [ext_inc, quick_dot_ai_inc],
-    dependencies: [nntrainer_dep, causallm_dep, openmp_dep],
+    dependencies: [nntrainer_dep, causallm_dep, openmp_dep, log_dep],
 )
 
 # ── Build executable (original main.cpp + custom plugin) ──────────────
 executable('quick_dot_ai',
     causallm_root / 'main.cpp',
     include_directories: [ext_inc, quick_dot_ai_inc],
-    dependencies: [nntrainer_dep, causallm_dep, openmp_dep],
+    dependencies: [nntrainer_dep, causallm_dep, openmp_dep, log_dep],
     link_whole: quick_dot_ai_static,
     cpp_args: causallm_inc_args,
     install: true,

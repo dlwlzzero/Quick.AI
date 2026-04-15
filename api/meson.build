@@ -23,7 +23,7 @@ quick_dot_ai_api_lib = shared_library('quick_dot_ai_api',
     'streamer.cpp',
     'callback_streamer.cpp',
     include_directories: [api_inc],
-    dependencies: [nntrainer_dep, causallm_dep, quick_dot_ai_dep, openmp_dep, thread_dep],
+    dependencies: [nntrainer_dep, causallm_dep, quick_dot_ai_dep, openmp_dep, thread_dep, log_dep],
     cpp_args: quick_dot_ai_inc_args,
     install: true,
 )

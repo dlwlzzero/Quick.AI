@@ -92,6 +92,13 @@ nntrainer_dep = declare_dependency(
 openmp_dep = dependency('openmp', required: false)
 thread_dep = dependency('threads')
 
+# ── Android log library ─────────────────────────────────────────────────
+if is_android
+  log_dep = cxx.find_library('log', required: true)
+else
+  log_dep = dependency('', required: false)
+endif
+
 # ── CausalLM includes ──────────────────────────────────────────────────
 causallm_auto_inc_dirs = run_command('find',
   causallm_root / 'layers',

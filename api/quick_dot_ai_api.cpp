@@ -44,6 +44,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOG_TAG "QuickAI"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+#define LOGD(fmt, ...) fprintf(stdout, fmt "\n", ##__VA_ARGS__)
+#define LOGE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#endif
+
 using json = nlohmann::json;
 
 /**
@@ -88,8 +98,8 @@ static std::map<std::string, std::string> g_model_path_map = {
     {"QWEN3-0.6B", "qwen3-0.6b"},
     {"GAUSS2.5-1B", "gauss2.5-1b"},
 #ifdef ENABLE_QNN
-    {"GAUSS3.6-QNN", "gauss3.6-qnn"},
-    {"GAUSS3.8-QNN", "gauss3.8-qnn"},
+    {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
+    {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
 #endif
 };
 
@@ -133,53 +143,54 @@ static void register_models() {
   static std::once_flag flag;
   std::call_once(flag, []() {
     causallm::Factory::Instance().registerModel(
-      "LlamaForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::CausalLM>(cfg, generation_cfg,
-                                                    nntr_cfg);
-      });
+        "LlamaForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::CausalLM>(cfg, generation_cfg,
+                                                      nntr_cfg);
+        });
     causallm::Factory::Instance().registerModel(
-      "Qwen2ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Qwen2CausalLM>(cfg, generation_cfg,
-                                                         nntr_cfg);
-      });
+        "Qwen2ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Qwen2CausalLM>(cfg, generation_cfg,
+                                                           nntr_cfg);
+        });
     causallm::Factory::Instance().registerModel(
-      "Qwen3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Qwen3CausalLM>(cfg, generation_cfg,
-                                                         nntr_cfg);
-      });
+        "Qwen3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Qwen3CausalLM>(cfg, generation_cfg,
+                                                           nntr_cfg);
+        });
     causallm::Factory::Instance().registerModel(
-      "Qwen3MoeForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Qwen3MoECausalLM>(cfg, generation_cfg,
+        "Qwen3MoeForCausalLM",
+        [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Qwen3MoECausalLM>(
+              cfg, generation_cfg, nntr_cfg);
+        });
+    causallm::Factory::Instance().registerModel(
+        "Qwen3SlimMoeForCausalLM",
+        [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Qwen3SlimMoECausalLM>(
+              cfg, generation_cfg, nntr_cfg);
+        });
+    causallm::Factory::Instance().registerModel(
+        "Qwen3CachedSlimMoeForCausalLM",
+        [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Qwen3CachedSlimMoECausalLM>(
+              cfg, generation_cfg, nntr_cfg);
+        });
+    causallm::Factory::Instance().registerModel(
+        "GptOssForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::GptOssForCausalLM>(
+              cfg, generation_cfg, nntr_cfg);
+        });
+    causallm::Factory::Instance().registerModel(
+        "GptOssCachedSlimCausalLM",
+        [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::GptOssCachedSlimCausalLM>(
+              cfg, generation_cfg, nntr_cfg);
+        });
+    causallm::Factory::Instance().registerModel(
+        "Gemma3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
                                                             nntr_cfg);
-      });
-    causallm::Factory::Instance().registerModel(
-      "Qwen3SlimMoeForCausalLM",
-      [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Qwen3SlimMoECausalLM>(
-          cfg, generation_cfg, nntr_cfg);
-      });
-    causallm::Factory::Instance().registerModel(
-      "Qwen3CachedSlimMoeForCausalLM",
-      [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Qwen3CachedSlimMoECausalLM>(
-          cfg, generation_cfg, nntr_cfg);
-      });
-    causallm::Factory::Instance().registerModel(
-      "GptOssForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::GptOssForCausalLM>(
-          cfg, generation_cfg, nntr_cfg);
-      });
-    causallm::Factory::Instance().registerModel(
-      "GptOssCachedSlimCausalLM",
-      [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::GptOssCachedSlimCausalLM>(
-          cfg, generation_cfg, nntr_cfg);
-      });
-    causallm::Factory::Instance().registerModel(
-      "Gemma3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
-                                                          nntr_cfg);
-      });
+        });
     causallm::Factory::Instance().registerModel(
         "Gauss2_5ForCausalLM",
         [](json cfg, json generation_cfg, json nntr_cfg) {
@@ -249,6 +260,7 @@ static std::string apply_chat_template(const std::string &architecture,
 }
 
 static std::string get_quantization_suffix(ModelQuantizationType type) {
+    return "";
   switch (type) {
   case CAUSAL_LM_QUANTIZATION_W4A32:
     return "-w4a32";
@@ -284,7 +296,7 @@ static std::string resolve_model_path(const std::string &model_key,
   }
 
   std::string model_path =
-    "./models/" + base_dir_name + get_quantization_suffix(quant_type);
+      "./models/" + base_dir_name + get_quantization_suffix(quant_type);
 
   return model_path;
 }
@@ -301,8 +313,8 @@ static void validate_models() {
     // We want to check for each Quantization Type if it exists
     // List of quant types to check: UNKNOWN (default), W4A32, W16A16, W32A32
     std::vector<ModelQuantizationType> quant_types = {
-      CAUSAL_LM_QUANTIZATION_UNKNOWN, CAUSAL_LM_QUANTIZATION_W4A32,
-      CAUSAL_LM_QUANTIZATION_W16A16, CAUSAL_LM_QUANTIZATION_W32A32};
+        CAUSAL_LM_QUANTIZATION_UNKNOWN, CAUSAL_LM_QUANTIZATION_W4A32,
+        CAUSAL_LM_QUANTIZATION_W16A16, CAUSAL_LM_QUANTIZATION_W32A32};
 
     for (auto qt : quant_types) {
       std::string quant_suffix = get_quantization_suffix(qt);
@@ -340,7 +352,7 @@ static void validate_models() {
         if (check_file_exists(resolved_path)) {
           bool has_config = check_file_exists(resolved_path + "/config.json");
           bool has_nntr =
-            check_file_exists(resolved_path + "/nntr_config.json");
+              check_file_exists(resolved_path + "/nntr_config.json");
 
           if (has_config && has_nntr) {
             std::cout << "  [OK] External Config: " << lookup_key << " -> "
@@ -348,7 +360,7 @@ static void validate_models() {
             // Optional: Parse nntr_config to check bin
             try {
               json nntr =
-                causallm::LoadJsonFile(resolved_path + "/nntr_config.json");
+                  causallm::LoadJsonFile(resolved_path + "/nntr_config.json");
               if (nntr.contains("model_file_name")) {
                 std::string bin = nntr["model_file_name"];
                 if (check_file_exists(resolved_path + "/" + bin)) {
@@ -377,8 +389,8 @@ ErrorCode setOptions(Config config) {
   g_use_chat_template = config.use_chat_template;
   g_verbose = config.verbose;
   g_chat_template_name = (config.chat_template_name != nullptr)
-                           ? config.chat_template_name
-                           : "default";
+                             ? config.chat_template_name
+                             : "default";
   if (config.debug_mode) {
     // Ensure models are registered so we can validate them
     register_models();
@@ -421,18 +433,26 @@ ErrorCode registerModel(const char *model_name, const char *arch_name,
  * g_arch_config_map during lookup.
  */
 static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
-                                  ModelType modeltype,
-                                  ModelQuantizationType quant_type) {
+                                   ModelType modeltype,
+                                   ModelQuantizationType quant_type) {
+  LOGD("[DEBUG] load_into_handle: START");
+  LOGD("[DEBUG]   compute: %d", compute);
+  LOGD("[DEBUG]   modeltype: %d", modeltype);
+  LOGD("[DEBUG]   quant_type: %d", quant_type);
 
   auto start_init = std::chrono::high_resolution_clock::now();
 
   const char *target_model_name = get_model_name_from_type(modeltype);
   if (target_model_name == nullptr) {
+    LOGE("[DEBUG] load_into_handle: Invalid modeltype");
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
+  LOGD("[DEBUG] load_into_handle: target_model_name = %s", target_model_name);
 
   // Ensure models/configs are registered (thread-safe via call_once)
+  LOGD("[DEBUG] load_into_handle: Calling register_models...");
   register_models();
+  LOGD("[DEBUG] load_into_handle: register_models done");
 
   std::lock_guard<std::mutex> lock(h.mtx);
   try {
@@ -461,6 +481,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       break;
     }
     std::string lookup_name = input_name_upper + quant_suffix;
+    LOGD("[DEBUG] load_into_handle: lookup_name = %s", lookup_name.c_str());
 
     json cfg;
     json generation_cfg;
@@ -474,6 +495,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
     // Check in-memory map first
     if (g_model_registry.find(lookup_name) != g_model_registry.end()) {
+      LOGD("[DEBUG] load_into_handle: CASE 1 - Internal config found for %s", lookup_name.c_str());
       // ------------------------------------------------------------------------
       // CASE 1: Model Configuration is Internal (Registered in
       // model_config.cpp)
@@ -484,16 +506,17 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
       // Find architecture config
       if (g_arch_config_map.find(rm.arch_name) == g_arch_config_map.end()) {
-        std::cerr << "Architecture '" << rm.arch_name
-                  << "' not found for model '" << lookup_name << "'"
-                  << std::endl;
+        LOGE("[DEBUG] load_into_handle: Architecture '%s' not found for model '%s'",
+             rm.arch_name.c_str(), lookup_name.c_str());
         return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
       }
+      LOGD("[DEBUG] load_into_handle: arch_name = %s", rm.arch_name.c_str());
       ModelArchConfig &ac = g_arch_config_map[rm.arch_name];
       ModelRuntimeConfig &rc = rm.config;
 
       // Strategy: Resolve path to find the weight file
       model_dir_path = resolve_model_path(target_model_name, quant_type);
+      LOGD("[DEBUG] load_into_handle: model_dir_path = %s", model_dir_path.c_str());
 
       // Populate JSONs from Arch Struct
       cfg["vocab_size"] = ac.vocab_size;
@@ -503,8 +526,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       cfg["num_attention_heads"] = ac.num_attention_heads;
       cfg["head_dim"] = ac.head_dim;
       cfg["num_key_value_heads"] = ac.num_key_value_heads > 0
-                                     ? ac.num_key_value_heads
-                                     : ac.num_attention_heads;
+                                       ? ac.num_key_value_heads
+                                       : ac.num_attention_heads;
       cfg["max_position_embeddings"] = ac.max_position_embeddings;
       cfg["rope_theta"] = ac.rope_theta;
       cfg["rms_norm_eps"] = ac.rms_norm_eps;
@@ -544,7 +567,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       nntr_cfg["model_file_name"] = std::string(rc.model_file_name);
 
       std::string t_file = rc.tokenizer_file;
-      nntr_cfg["tokenizer_file"] = model_dir_path + "/" + t_file;
+      nntr_cfg["tokenizer_file"] = "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer.json";
 
       if (strlen(rc.lmhead_dtype) > 0) {
         nntr_cfg["lmhead_dtype"] = std::string(rc.lmhead_dtype);
@@ -556,6 +579,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       nntr_cfg["bad_word_ids"] = bad_ids;
 
     } else {
+      LOGD("[DEBUG] load_into_handle: CASE 2 - External config (file-based)");
       // --------------------------------------------------
       // CASE 2: External Model Configuration (File-based)
       // --------------------------------------------------
@@ -563,32 +587,33 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       // this quantization is not in memory. We must load config.json and
       // nntr_config.json from the model directory
       model_dir_path = resolve_model_path(target_model_name, quant_type);
+      LOGD("[DEBUG] load_into_handle: model_dir_path = %s", model_dir_path.c_str());
 
       // Load configuration files
-      cfg = causallm::LoadJsonFile(model_dir_path + "/config.json");
+      cfg = causallm::LoadJsonFile("/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/config.json");
       generation_cfg =
-        causallm::LoadJsonFile(model_dir_path + "/generation_config.json");
-      nntr_cfg = causallm::LoadJsonFile(model_dir_path + "/nntr_config.json");
+          causallm::LoadJsonFile("/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/generation_config.json");
+      nntr_cfg = causallm::LoadJsonFile("/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/nntr_config.json");
 
       if (nntr_cfg.contains("tokenizer_file")) {
         std::string t_file = nntr_cfg["tokenizer_file"];
-        nntr_cfg["tokenizer_file"] = model_dir_path + "/" + t_file;
+        nntr_cfg["tokenizer_file"] = "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer.json";
       }
     }
 
     // Load chat template from tokenizer_config.json if available
-    std::string tc_path = model_dir_path + "/tokenizer_config.json";
+    std::string tc_path = model_dir_path + "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer_config.json";
     if (check_file_exists(tc_path)) {
       g_chat_template =
-        causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
+          causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
       if (g_chat_template.isAvailable()) {
         std::cout << "[Info] Chat template loaded from tokenizer_config.json"
                   << std::endl;
       } else {
         std::cerr
-          << "[Warning] tokenizer_config.json found but chat template could "
-             "not be loaded. Falling back to hardcoded templates."
-          << std::endl;
+            << "[Warning] tokenizer_config.json found but chat template could "
+               "not be loaded. Falling back to hardcoded templates."
+            << std::endl;
       }
     } else {
       g_chat_template = causallm::ChatTemplate();
@@ -603,10 +628,11 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       weight_file_name = nntr_cfg["model_file_name"].get<std::string>();
     } else {
       weight_file_name =
-        "pytorch_model.bin"; // Default fallback if not specified
+          "pytorch_model.bin"; // Default fallback if not specified
     }
 
-    const std::string weight_file = model_dir_path + "/" + weight_file_name;
+    const std::string weight_file = weight_file_name;
+    LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
 
     // Determine architecture from config or ModelType
     // Priority: Config file architecture > ModelType mapping (fallback)
@@ -618,34 +644,47 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       // No fallback mapping from specific ModelType instances to generic
       // architecture strings for now, as specific types should have config or
       // be loaded from valid file with config.json
+      LOGE("[DEBUG] load_into_handle: No architecture found in config");
       return CAUSAL_LM_ERROR_INVALID_PARAMETER;
     }
+    LOGD("[DEBUG] load_into_handle: architecture = %s", architecture.c_str());
 
+    LOGD("[DEBUG] load_into_handle: Creating model via Factory...");
     h.model = causallm::Factory::Instance().create(architecture, cfg,
                                                    generation_cfg, nntr_cfg);
     if (!h.model) {
+      LOGE("[DEBUG] load_into_handle: Factory::create returned nullptr");
       return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
     }
+    LOGD("[DEBUG] load_into_handle: Model created successfully");
 
+    LOGD("[DEBUG] load_into_handle: Calling model->initialize()...");
     h.model->initialize();
+    LOGD("[DEBUG] load_into_handle: model->initialize() done");
+
+    LOGD("[DEBUG] load_into_handle: Calling model->load_weight()...");
     h.model->load_weight(weight_file);
+    LOGD("[DEBUG] load_into_handle: model->load_weight() done");
 
     h.initialized = true;
     h.architecture = architecture;
 
     auto finish_init = std::chrono::high_resolution_clock::now();
     auto init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      finish_init - start_init);
+        finish_init - start_init);
     h.initialization_duration_ms = init_duration.count();
 
+    LOGD("[DEBUG] load_into_handle: SUCCESS (init took %ld ms)", h.initialization_duration_ms);
+
   } catch (const std::exception &e) {
-    std::cerr << "Exception in loadModel: " << e.what() << std::endl;
+    LOGE("[DEBUG] load_into_handle: Exception: %s", e.what());
     return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
   } catch (...) {
-    std::cerr << "Unknown exception in loadModel" << std::endl;
+    LOGE("[DEBUG] load_into_handle: Unknown exception");
     return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
   }
 
+  LOGD("[DEBUG] load_into_handle: END (returning CAUSAL_LM_ERROR_NONE)");
   return CAUSAL_LM_ERROR_NONE;
 }
 
@@ -821,7 +860,7 @@ ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
 
     auto chat_messages = convertMessages(messages, num_messages);
     g_formatted_template = apply_chat_template_messages(
-      h.architecture, chat_messages, add_generation_prompt);
+        h.architecture, chat_messages, add_generation_prompt);
 
     *formattedText = g_formatted_template.c_str();
 
@@ -871,22 +910,37 @@ ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics) {
  *============================================================================*/
 
 ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
-                          ModelQuantizationType quant_type,
-                          CausalLmHandle *out_handle) {
+                            ModelQuantizationType quant_type,
+                            CausalLmHandle *out_handle) {
+  LOGD("[DEBUG] loadModelHandle:%d START", __LINE__);
+  LOGD("[DEBUG] loadModelHandle:%d   compute: %d", __LINE__, compute);
+  LOGD("[DEBUG] loadModelHandle:%d   modeltype: %d", __LINE__, modeltype);
+  LOGD("[DEBUG] loadModelHandle:%d   quant_type: %d", __LINE__, quant_type);
+  LOGD("[DEBUG] loadModelHandle:%d   out_handle ptr: %p", __LINE__, (void*)out_handle);
+
   if (out_handle == nullptr) {
+    LOGE("[DEBUG] loadModelHandle:%d out_handle is nullptr", __LINE__);
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
   auto *h = new (std::nothrow) CausalLmModel();
   if (h == nullptr) {
+    LOGE("[DEBUG] loadModelHandle:%d Failed to allocate CausalLmModel", __LINE__);
     return CAUSAL_LM_ERROR_UNKNOWN;
   }
+  LOGD("[DEBUG] loadModelHandle:%d CausalLmModel allocated at %p", __LINE__, (void*)h);
+
+  LOGD("[DEBUG] loadModelHandle:%d Calling load_into_handle...", __LINE__);
   ErrorCode ec = load_into_handle(*h, compute, modeltype, quant_type);
+  LOGD("[DEBUG] loadModelHandle:%d load_into_handle returned: %d", __LINE__, ec);
+
   if (ec != CAUSAL_LM_ERROR_NONE) {
+    LOGE("[DEBUG] loadModelHandle:%d load_into_handle failed, deleting handle", __LINE__);
     delete h;
     *out_handle = nullptr;
     return ec;
   }
   *out_handle = h;
+  LOGD("[DEBUG] loadModelHandle:%d SUCCESS, handle set to %p", __LINE__, (void*)h);
   return CAUSAL_LM_ERROR_NONE;
 }
 

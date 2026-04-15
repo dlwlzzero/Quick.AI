@@ -29,6 +29,16 @@
 #include <tensor_layer.h>
 #include <weight_layer.h>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOG_TAG "QNNContext"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+#define LOGD(fmt, ...) fprintf(stdout, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#define LOGE(fmt, ...) fprintf(stderr, "[ERROR] " fmt "\n", ##__VA_ARGS__)
+#endif
+
 using namespace qnn;
 using namespace qnn::tools;
 using namespace qnn::tools::sample_app;
@@ -38,16 +48,21 @@ namespace nntrainer {
 std::mutex qnn_factory_mutex;
 
 void QNNContext::initialize() noexcept {
+  LOGD("initialize: START");
   try {
+    LOGD("initialize: calling init()");
     init();
+    LOGD("initialize: init() completed");
     ml_logi("qnn init done");
+    LOGD("initialize: creating QNNRpcManager");
     setMemAllocator(std::make_shared<QNNRpcManager>());
 
     std::static_pointer_cast<QNNBackendVar>(getContextData())
         ->getVar()
         ->RpcMem = std::static_pointer_cast<QNNRpcManager>(getMemAllocator());
+    LOGD("initialize: QNNRpcManager set");
 
-    // Register QNN layers
+    LOGD("initialize: registering QNN layers");
     registerFactory(nntrainer::createLayer<QNNLinear>, QNNLinear::type,
                     ml::train::LayerType::LAYER_FC);
     registerFactory(nntrainer::createLayer<WeightLayer>, WeightLayer::type,
@@ -56,29 +71,37 @@ void QNNContext::initialize() noexcept {
                     ml::train::LayerType::LAYER_TENSOR);
     registerFactory(nntrainer::createLayer<QNNGraph>, QNNGraph::type, -1);
     ml_logi("qnn registerFactory done");
+    LOGD("initialize: registerFactory done");
   } catch (std::exception &e) {
+    LOGE("initialize: registering qnn layers failed!!, reason: %s", e.what());
     ml_loge("registering qnn layers failed!!, reason: %s", e.what());
   } catch (...) {
+    LOGE("initialize: registering qnn layer failed due to unknown reason");
     ml_loge("registering qnn layer failed due to unknown reason");
   }
+  LOGD("initialize: END");
 }
 
 int QNNContext::init() {
+  LOGD("init: START");
   std::cout << "qnncontext::init called" << std::endl;
   if (!log::initializeLogging()) {
+    LOGE("init: Unable to initialize logging!");
     ml_loge("ERROR: Unable to initialize logging!");
     return -1;
   }
-  log::setLogLevel(QnnLog_Level_t::QNN_LOG_LEVEL_ERROR);
+  LOGD("init: logging initialized");
+  log::setLogLevel(QnnLog_Level_t::QNN_LOG_LEVEL_DEBUG);
 
   std::string backEndPath = "libQnnHtp.so";
   std::string systemLibraryPath = "libQnnSystem.so";
-  // The opPacagkePaths needs to be kept as it is. Thus, disable clang-format.
-  // clang-format off
+  LOGD("init: backEndPath=%s", backEndPath.c_str());
+  LOGD("init: systemLibraryPath=%s", systemLibraryPath.c_str());
+
   std::string opPackagePaths = "";
-  // clang-format on
 
   auto qnn_data = getQnnData();
+  LOGD("init: qnn_data obtained");
 
   qnn_data->m_outputDataType = iotensor::OutputDataType::FLOAT_AND_NATIVE;
   qnn_data->m_inputDataType = iotensor::InputDataType::NATIVE;
@@ -90,29 +113,36 @@ int QNNContext::init() {
   qnn::tools::sample_app::split(m_opPackagePaths, opPackagePaths, ',');
 
   if (backEndPath.empty()) {
+    LOGE("init: Cannot find backend Path : libQnnHtp.so");
     ml_loge("ERROR: Cannot fine backend Path : libQnnHtp.so");
     return -1;
   }
-  std::cout << "before dynamicloadutil::getQnnFunctionPointers" << std::endl;
+  LOGD("init: calling dynamicloadutil::getQnnFunctionPointers");
 
   auto statusCode = dynamicloadutil::getQnnFunctionPointers(
       backEndPath, "", &qnn_data->m_qnnFunctionPointers,
       &qnn_data->m_backendLibraryHandle, false, nullptr);
-  std::cout << "after dynamicloadutil::getQnnFunctionPointers" << std::endl;
+  LOGD("init: getQnnFunctionPointers returned status=%d", (int)statusCode);
   if (dynamicloadutil::StatusCode::SUCCESS != statusCode) {
     if (dynamicloadutil::StatusCode::FAIL_LOAD_BACKEND == statusCode) {
+      LOGE("init: could not load backend");
       ml_loge(
           "Error: initializing QNN Function Pointers: could not load backend");
     } else if (dynamicloadutil::StatusCode::FAIL_LOAD_MODEL == statusCode) {
+      LOGE("init: could not load model");
       ml_loge("Error initializing QNN Function Pointers: could not load");
     } else {
+      LOGE("init: unknown error initializing QNN Function Pointers");
       ml_loge("Error initializing QNN Function Pointers");
     }
   }
 
+  LOGD("init: calling getQnnSystemFunctionPointers");
   statusCode = qnn::tools::dynamicloadutil::getQnnSystemFunctionPointers(
       systemLibraryPath, &qnn_data->m_qnnFunctionPointers);
+  LOGD("init: getQnnSystemFunctionPointers returned status=%d", (int)statusCode);
   if (qnn::tools::dynamicloadutil::StatusCode::SUCCESS != statusCode) {
+    LOGE("init: Error initializing QNN System Function Pointers");
     ml_loge("Error initializing QNN System Function Pointers", EXIT_FAILURE);
   }
 
@@ -122,13 +152,15 @@ int QNNContext::init() {
 
     if (QNN_SUCCESS != qnn_data->m_qnnFunctionPointers.qnnInterface.logCreate(
                            logCallback, logLevel, &qnn_data->m_logHandle)) {
+      LOGE("init: Unable to initialize logging in the backend");
       ml_logw("Unable to initialize logging in the backend.");
     } else {
+      LOGD("init: Logging initialized in the backend");
       ml_logw("Logging not available in the backend.");
     }
   }
 
-  // Create backend extensions
+  LOGD("init: Creating backend extensions");
   BackendExtensionsConfigs backend_extensions_config;
   backend_extensions_config.configFilePath = "htp_backend_ext_config.json";
   backend_extensions_config.sharedLibraryPath = "libQnnHtpNetRunExtensions.so";
@@ -137,20 +169,24 @@ int QNNContext::init() {
       backend_extensions_config, qnn_data->m_backendLibraryHandle,
       false, nullptr, QNN_LOG_LEVEL_ERROR);
   qnn_data->m_backendExtensions = backend_extensions;
+  LOGD("init: Backend extensions created");
 
   QnnBackend_Config_t **customConfigs{nullptr};
   uint32_t customConfigCount{0};
   if (backend_extensions->interface()) {
     if (!backend_extensions->interface()->beforeBackendInitialize(
             &customConfigs, &customConfigCount)) {
+      LOGE("init: Extensions Failure in beforeBackendInitialize()");
       QNN_ERROR("Extensions Failure in beforeBackendInitialize()");
       return false;
     }
+    LOGD("init: beforeBackendInitialize done, customConfigCount=%u", customConfigCount);
   }
   if ((customConfigCount) > 0) {
     qnn_data->m_backendConfig = (QnnBackend_Config_t **)calloc(
         (customConfigCount + 1), sizeof(QnnBackend_Config_t *));
     if (nullptr == qnn_data->m_backendConfig) {
+      LOGE("init: Could not allocate memory for allBackendConfigs");
       QNN_ERROR("Could not allocate memory for allBackendConfigs");
       return false;
     }
@@ -159,11 +195,14 @@ int QNNContext::init() {
     }
   }
 
+  LOGD("init: Calling backendCreate");
   auto qnnStatus = qnn_data->m_qnnFunctionPointers.qnnInterface.backendCreate(
       qnn_data->m_logHandle,
       (const QnnBackend_Config_t **)qnn_data->m_backendConfig,
       &qnn_data->m_backendHandle);
+  LOGD("init: backendCreate returned status=%lu", qnnStatus);
   if (QNN_BACKEND_NO_ERROR != qnnStatus) {
+    LOGE("init: Could not initialize backend, error=%d", (unsigned int)qnnStatus);
     ml_loge("Could not initialize backend due to error = %d",
             (unsigned int)qnnStatus);
     if (qnn_data->m_backendConfig) {
@@ -173,6 +212,7 @@ int QNNContext::init() {
   }
   ml_logi("Initialize BAckend Returned Status = %lu", qnnStatus);
   qnn_data->m_isBackendInitialized = true;
+  LOGD("init: Backend initialized successfully");
 
   if (qnn_data->m_backendConfig) {
     free(qnn_data->m_backendConfig);
@@ -180,31 +220,41 @@ int QNNContext::init() {
 
   if (backend_extensions->interface()) {
     if (!backend_extensions->interface()->afterBackendInitialize()) {
+      LOGE("init: Extensions Failure in afterBackendInitialize()");
       QNN_ERROR("Extensions Failure in afterBackendInitialize()");
       return false;
     }
+    LOGD("init: afterBackendInitialize done");
   }
 
-  std::cout << "before create device" << std::endl;
+  LOGD("init: Creating device");
   auto devicePropertySupportStatus = this->isDevicePropertySupported();
+  LOGD("init: isDevicePropertySupported returned %d", (int)devicePropertySupportStatus);
   if (StatusCode::FAILURE != devicePropertySupportStatus) {
     auto createDeviceStatus = this->createDevice();
+    LOGD("init: createDevice returned %d", (int)createDeviceStatus);
     if (StatusCode::SUCCESS != createDeviceStatus) {
+      LOGE("init: Device Creation failure");
       ml_loge("Device Creation failure");
       exit(1);
     }
   }
 
+  LOGD("init: Initializing profiling");
   if (StatusCode::SUCCESS != this->initializeProfiling()) {
+    LOGE("init: Profiling Initialization failure");
     ml_loge("Profiling Initialization failure");
     exit(1);
   }
 
+  LOGD("init: Registering Op Packages");
   if (StatusCode::SUCCESS != this->registerOpPackages()) {
+    LOGE("init: Register Op Packages failure");
     ml_loge("Register Op Packages failure");
     exit(1);
   }
 
+  LOGD("init: END (returning 0)");
   return 0;
 }
 
