@@ -73,6 +73,7 @@ struct CausalLmModel {
   std::unique_ptr<causallm::Transformer> model;
   std::string architecture;
   std::string last_output;
+  std::string native_lib_dir;
   double initialization_duration_ms = 0.0;
   bool initialized = false;
 };
@@ -434,7 +435,8 @@ ErrorCode registerModel(const char *model_name, const char *arch_name,
  */
 static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
                                    ModelType modeltype,
-                                   ModelQuantizationType quant_type) {
+                                   ModelQuantizationType quant_type,
+                                   const char *native_lib_dir) {
   LOGD("[DEBUG] load_into_handle: START");
   LOGD("[DEBUG]   compute: %d", compute);
   LOGD("[DEBUG]   modeltype: %d", modeltype);
@@ -658,8 +660,18 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     }
     LOGD("[DEBUG] load_into_handle: Model created successfully");
 
+    // Store native_lib_dir in handle
+    if (native_lib_dir != nullptr) {
+      h.native_lib_dir = native_lib_dir;
+    }
+
     LOGD("[DEBUG] load_into_handle: Calling model->initialize()...");
-    h.model->initialize();
+    if (native_lib_dir != nullptr && strlen(native_lib_dir) > 0) {
+      setenv("ADSP_LIBRARY_PATH", native_lib_dir, 1);
+      h.model->initialize(std::string(native_lib_dir));
+    } else {
+      h.model->initialize();
+    }
     LOGD("[DEBUG] load_into_handle: model->initialize() done");
 
     LOGD("[DEBUG] load_into_handle: Calling model->load_weight()...");
@@ -894,7 +906,7 @@ ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
 
 ErrorCode loadModel(BackendType compute, ModelType modeltype,
                     ModelQuantizationType quant_type) {
-  return load_into_handle(get_default_handle(), compute, modeltype, quant_type);
+  return load_into_handle(get_default_handle(), compute, modeltype, quant_type, nullptr);
 }
 
 ErrorCode runModel(const char *inputTextPrompt, const char **outputText) {
@@ -911,11 +923,13 @@ ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics) {
 
 ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
                             ModelQuantizationType quant_type,
+                            const char *native_lib_dir,
                             CausalLmHandle *out_handle) {
   LOGD("[DEBUG] loadModelHandle:%d START", __LINE__);
   LOGD("[DEBUG] loadModelHandle:%d   compute: %d", __LINE__, compute);
   LOGD("[DEBUG] loadModelHandle:%d   modeltype: %d", __LINE__, modeltype);
   LOGD("[DEBUG] loadModelHandle:%d   quant_type: %d", __LINE__, quant_type);
+  LOGD("[DEBUG] loadModelHandle:%d   native_lib_dir: %s", __LINE__, native_lib_dir ? native_lib_dir : "(null)");
   LOGD("[DEBUG] loadModelHandle:%d   out_handle ptr: %p", __LINE__, (void*)out_handle);
 
   if (out_handle == nullptr) {
@@ -930,7 +944,7 @@ ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
   LOGD("[DEBUG] loadModelHandle:%d CausalLmModel allocated at %p", __LINE__, (void*)h);
 
   LOGD("[DEBUG] loadModelHandle:%d Calling load_into_handle...", __LINE__);
-  ErrorCode ec = load_into_handle(*h, compute, modeltype, quant_type);
+  ErrorCode ec = load_into_handle(*h, compute, modeltype, quant_type, native_lib_dir);
   LOGD("[DEBUG] loadModelHandle:%d load_into_handle returned: %d", __LINE__, ec);
 
   if (ec != CAUSAL_LM_ERROR_NONE) {

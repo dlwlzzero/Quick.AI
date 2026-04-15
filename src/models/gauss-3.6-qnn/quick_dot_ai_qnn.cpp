@@ -14,14 +14,20 @@ using namespace ml::train;
 using namespace nntrainer;
 
 void causallm::Quick_Dot_AI_QNN::initialize() {
+  // Call the overloaded version with empty native_lib_dir
+  initialize("");
+}
+
+void causallm::Quick_Dot_AI_QNN::initialize(const std::string &native_lib_dir) {
   int status;
   int non_embed_input_count;
 
   auto &ct_engine = nntrainer::Engine::Global();
 
   LOGD("%s:%d", __FILE__, __LINE__);
+  LOGD("native_lib_dir: %s", native_lib_dir.c_str());
 
-  NNTR_THROW_IF(ct_engine.registerContext("libqnn_context.so", ""),
+  NNTR_THROW_IF(ct_engine.registerContext("libqnn_context.so", native_lib_dir),
                 std::runtime_error)
       << "Fail to register QNN Context";
 

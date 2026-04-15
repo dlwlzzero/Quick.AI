@@ -34,6 +34,8 @@ public:
 
   void initialize() override;
 
+  void initialize(const std::string &native_lib_dir) override;
+
   virtual void initialize_input_outputs() = 0;
 
   void load_weight(const std::string &weight_path) override;
