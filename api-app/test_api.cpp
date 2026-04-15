@@ -185,6 +185,15 @@ int main(int argc, char *argv[]) {
                 "' requires QNN support. Rebuild with -Denable-qnn=true.");
     return 1;
 #endif
+  } else if (model_name_str == "gauss3.8-qnn" ||
+             model_name_str == "gauss3.8_qnn") {
+#ifdef ENABLE_QNN
+    model_type = CAUSAL_LM_MODEL_GAUSS3_8_QNN;
+#else
+    print_error("Model '" + std::string(model_name) +
+                "' requires QNN support. Rebuild with -Denable-qnn=true.");
+    return 1;
+#endif
   } else {
     print_error("Unknown model: " + std::string(model_name));
     return 1;
