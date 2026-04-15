@@ -10,10 +10,15 @@ causallm_auto_src = run_command('find',
   causallm_root / 'models',
   causallm_root / 'huggingface_tokenizer.cpp',
   causallm_root / 'llm_util.cpp',
+  causallm_root / 'chat_template.cpp',
   '-name', '*.cpp',
   '-not', '-name', 'main.cpp',
   '-not', '-name', 'test_api.cpp',
   check: true).stdout().strip().split('\n')
+
+streamer_src = [
+  meson.project_source_root() / 'api' / 'streamer.cpp',
+]
 
 # ── Android system libraries ────────────────────────────────────────────
 if is_android
@@ -23,8 +28,12 @@ else
 endif
 
 # ── Build CausalLM as shared library ───────────────────────────────────
+streamer_inc = include_directories('../api')
+
 causallm_lib = shared_library('causallm',
     causallm_auto_src,
+    streamer_src,
+    include_directories: [streamer_inc],
     dependencies: [nntrainer_dep, openmp_dep, log_dep],
     cpp_args: causallm_inc_args,
     link_args: [tokenizer_path],
@@ -47,27 +56,27 @@ ext_inc = include_directories('models/gauss-2.5')
 # ── Build model plugin (.so for LD_PRELOAD mode) ──────────────────────
 quick_dot_ai_plugin = shared_library('quick_dot_ai',
     quick_dot_ai_src,
-    include_directories: [ext_inc],
+    include_directories: [ext_inc, quick_dot_ai_inc],
     dependencies: [nntrainer_dep, causallm_dep, openmp_dep],
     install: true,
 )
 
 quick_dot_ai_dep = declare_dependency(
     link_with: quick_dot_ai_plugin,
-    include_directories: ext_inc,
+    include_directories: [ext_inc, quick_dot_ai_inc],
 )
 
 # ── Static lib for linking into executable (ensures constructor runs) ──
 quick_dot_ai_static = static_library('quick_dot_ai_static',
     quick_dot_ai_src,
-    include_directories: [ext_inc],
+    include_directories: [ext_inc, quick_dot_ai_inc],
     dependencies: [nntrainer_dep, causallm_dep, openmp_dep],
 )
 
 # ── Build executable (original main.cpp + custom plugin) ──────────────
 executable('quick_dot_ai',
     causallm_root / 'main.cpp',
-    include_directories: [ext_inc],
+    include_directories: [ext_inc, quick_dot_ai_inc],
     dependencies: [nntrainer_dep, causallm_dep, openmp_dep],
     link_whole: quick_dot_ai_static,
     cpp_args: causallm_inc_args,
