@@ -978,63 +978,106 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
                                   const char *inputTextPrompt,
                                   CausalLmTokenCallback callback,
                                   void *user_data) {
+  LOGD("[DEBUG] runModelHandleStreaming: START");
+  LOGD("[DEBUG]   handle: %p", (void *)handle);
+  LOGD("[DEBUG]   inputTextPrompt: %s", inputTextPrompt ? inputTextPrompt : "(null)");
+  LOGD("[DEBUG]   callback: %p", (void *)callback);
+  LOGD("[DEBUG]   user_data: %p", user_data);
+
   if (handle == nullptr || inputTextPrompt == nullptr || callback == nullptr) {
+    LOGE("[DEBUG] runModelHandleStreaming: INVALID_PARAMETER");
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
   auto &h = *handle;
+  LOGD("[DEBUG] runModelHandleStreaming: Acquiring mutex lock...");
   std::lock_guard<std::mutex> lock(h.mtx);
+  LOGD("[DEBUG] runModelHandleStreaming: Mutex lock acquired");
+
   if (!h.initialized || !h.model) {
+    LOGE("[DEBUG] runModelHandleStreaming: NOT_INITIALIZED (initialized=%d, model=%p)",
+         h.initialized, (void *)h.model.get());
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
+  LOGD("[DEBUG] runModelHandleStreaming: Model is initialized, architecture=%s",
+       h.architecture.c_str());
 
   // Streaming is only wired up for causallm::CausalLM subclasses (the
   // setStreamer / registerOutputs hook lives on that class). If the
   // loaded model is something else (e.g. a future sentence-transformer
   // style model) the caller should fall back to runModelHandle().
+  LOGD("[DEBUG] runModelHandleStreaming: Performing dynamic_cast to CausalLM...");
   auto *causal = dynamic_cast<causallm::CausalLM *>(h.model.get());
   if (causal == nullptr) {
+    LOGE("[DEBUG] runModelHandleStreaming: dynamic_cast failed, model is not CausalLM");
     return CAUSAL_LM_ERROR_UNKNOWN;
   }
+  LOGD("[DEBUG] runModelHandleStreaming: dynamic_cast successful, causal=%p", (void *)causal);
 
+  LOGD("[DEBUG] runModelHandleStreaming: Initializing callback streamer...");
   CallbackStreamer streamer;
   callback_streamer_init(&streamer, callback, user_data);
+  LOGD("[DEBUG] runModelHandleStreaming: Callback streamer initialized");
+
   // Safe upcast: CallbackStreamer embeds BaseStreamer as its first
   // field (C-style inheritance), so &streamer.base yields a valid
   // BaseStreamer pointer without reinterpret_cast.
+  LOGD("[DEBUG] runModelHandleStreaming: Setting streamer on model...");
   causal->setStreamer(&streamer.base);
+  LOGD("[DEBUG] runModelHandleStreaming: Streamer set successfully");
 
   // RAII detach: make sure the dangling stack pointer never survives
   // the return of this function, no matter which exception path we
   // exit through.
   struct Detach {
     causallm::CausalLM *c;
-    ~Detach() { c->setStreamer(nullptr); }
+    ~Detach() {
+      LOGD("[DEBUG] runModelHandleStreaming::Detach: Clearing streamer");
+      c->setStreamer(nullptr);
+    }
   } detach_guard{causal};
 
   try {
+    LOGD("[DEBUG] runModelHandleStreaming: Preparing input text...");
     std::string input(inputTextPrompt);
+    LOGD("[DEBUG]   raw input length: %zu", input.length());
+    LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
+
     if (g_use_chat_template) {
+      LOGD("[DEBUG] runModelHandleStreaming: Applying chat template...");
       input = apply_chat_template(h.architecture, input);
+      LOGD("[DEBUG]   templated input length: %zu", input.length());
+      LOGD("[DEBUG]   templated input preview: %.100s%s",
+           input.c_str(), input.length() > 100 ? "..." : "");
     }
 
+    LOGD("[DEBUG] runModelHandleStreaming: Calling model->run()...");
 #if defined(_WIN32)
     h.model->run(std::wstring(input.begin(), input.end()), false, L"", L"",
                  g_verbose);
 #else
     h.model->run(input, false, "", "", g_verbose);
 #endif
+    LOGD("[DEBUG] runModelHandleStreaming: model->run() completed");
 
+    LOGD("[DEBUG] runModelHandleStreaming: Getting output...");
     h.last_output = causal->getOutput(0);
+    LOGD("[DEBUG]   output length: %zu", h.last_output.length());
+    LOGD("[DEBUG]   output preview: %.100s%s",
+         h.last_output.c_str(), h.last_output.length() > 100 ? "..." : "");
+
   } catch (const std::exception &e) {
+    LOGE("[DEBUG] runModelHandleStreaming: Exception caught: %s", e.what());
     std::cerr << "Exception in runModelHandleStreaming: " << e.what()
               << std::endl;
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   } catch (...) {
+    LOGE("[DEBUG] runModelHandleStreaming: Unknown exception caught");
     std::cerr << "Unknown exception in runModelHandleStreaming" << std::endl;
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
+  LOGD("[DEBUG] runModelHandleStreaming: END (SUCCESS)");
   return CAUSAL_LM_ERROR_NONE;
 }
 

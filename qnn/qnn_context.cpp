@@ -487,5 +487,4 @@ nntrainer::ContextPluggable ml_train_context_pluggable{create_qnn_context,
                                                        destory_qnn_context};
 }
 #endif
-
 } // namespace nntrainer

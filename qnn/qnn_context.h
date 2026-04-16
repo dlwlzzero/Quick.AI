@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
 /**
  * Copyright (C) 2024 Jijoong Moon <jijoong.moon@samsung.com>
  *
@@ -37,6 +36,25 @@
 
 #include <nntrainer_log.h>
 #include <qnn_context_var.h>
+
+/* LOGD macro for QNN context if not defined */
+#if defined(__ANDROID__)
+#include <android/log.h>
+#ifndef LOG_TAG
+#define LOG_TAG "qnn_context"
+#endif
+#ifndef LOGD
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#endif
+#else
+#ifndef LOG_TAG
+#define LOG_TAG "qnn_context"
+#endif
+#ifndef LOGD
+#include <cstdio>
+#define LOGD(...) do { fprintf(stderr, "[DEBUG][%s] ", LOG_TAG); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#endif
+#endif
 
 #include "singleton.h"
 
@@ -145,6 +163,8 @@ public:
     auto &index = std::get<IndexType<T>>(factory_map);
     auto &int_map = std::get<IntIndexType>(index);
 
+    LOGD("%s:%d", __FILE__, __LINE__);
+
     const auto &entry = int_map.find(int_key);
 
     if (entry == int_map.end()) {
@@ -170,6 +190,9 @@ public:
                           const PropsType &props = {}) const {
     auto &index = std::get<IndexType<T>>(factory_map);
     auto &str_map = std::get<StrIndexType<T>>(index);
+
+    LOGD("%s:%d", __FILE__, __LINE__);
+
 
     std::string lower_key;
     lower_key.resize(key.size());
