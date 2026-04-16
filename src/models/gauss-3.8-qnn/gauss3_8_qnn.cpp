@@ -10,6 +10,7 @@
 
 #include "gauss3_8_qnn.h"
 #include "generate_qnn_utils.h"
+#include "api/streamer.h"
 
 #include <llm_util.hpp>
 #include <model.h>
@@ -155,6 +156,9 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
 void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
                                  const WSTR system_prompt,
                                  const WSTR tail_prompt, bool log_output) {
+  // Clear last output at the start of each run
+  last_output_.clear();
+
   // KV Cache Initialization
   for (int i = 0; i < this->prefill_kvs.size(); i++) {
     std::memcpy(this->prefill_kvs[i], this->prefill_fresh_kvs[i], this->prefill_kv_sizes[i]);
@@ -213,7 +217,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       int layer_idx = i / 4;
       int dest_row_length = layer_idx % 5 == 4 ? max_seq_len - context_size : sliding_window - context_size;
       int src_row_length = 256;
-      
+
       auto output = std::get<uint8_t *>(outputs[i]);
       auto dest = (uint8_t *)this->prefill_kvs[kv_idx];
       // key cache or value cache
@@ -227,10 +231,10 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       }
     }
   }
-  
+
 #pragma omp parallel for
   for(int i = 0; i < this->prefill_kvs.size(); i++) {
-    bool is_key = i % 4 > 1;      
+    bool is_key = i % 4 > 1;
     int kv_idx = i / 4 * 4 + (i + 2) % 4;
     int layer_idx = i / 4; // 한 layer에 k(2), v(2)
 
@@ -259,12 +263,12 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
 
   generation_attention_mask[max_seq_len - 1] = std::numeric_limits<uint16_t>::max();
   generation_sliding_attention_mask[(sliding_window - context_size) - 1] = std::numeric_limits<uint16_t>::max();
-  
+
   for (int i = 0; i < _len; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
   for (int i = 0; i < _len; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  
+
   auto start = std::chrono::system_clock::now();
   int idx;
   for (idx = _len; idx < (max_seq_len - context_size); idx++) {
@@ -322,16 +326,37 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       // std::cout << "Finished generating, break..." << std::endl;
       break;
     } else {
-      std::cout << tokenizer->Decode({token}) << std::flush;
+      std::string decoded = tokenizer->Decode({token});
+      last_output_ += decoded;
+
+      // Stream the token if a streamer is attached
+      if (streamer_) {
+        if (streamer_put(streamer_, decoded.c_str()) != 0) {
+          // User requested cancellation
+          break;
+        }
+      } else if (log_output) {
+        std::cout << decoded << std::flush;
+      }
       _input.push_back(token);
     }
   }
+
+  // Notify the streamer that generation is complete
+  if (streamer_) {
+    streamer_end(streamer_);
+  }
+
+  has_run_ = true;
+
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
-  std::cout << std::endl;
-  std::cout << std::endl;
-  std::cout << "Generation exec_time : " << raw_exec_seconds.count()
-            << ", token per second: " << (idx - _len) / raw_exec_seconds.count()
-            << ", token generation time average: "
-            << raw_exec_seconds.count() / (idx - _len) << std::endl;
+  if (log_output) {
+    std::cout << std::endl;
+    std::cout << std::endl;
+    std::cout << "Generation exec_time : " << raw_exec_seconds.count()
+              << ", token per second: " << (idx - _len) / raw_exec_seconds.count()
+              << ", token generation time average: "
+              << raw_exec_seconds.count() / (idx - _len) << std::endl;
+  }
 }
