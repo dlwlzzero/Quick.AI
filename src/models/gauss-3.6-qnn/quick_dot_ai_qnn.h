@@ -46,6 +46,20 @@ public:
                    const WSTR system_prompt = "", const WSTR tail_prompt = "",
                    bool log_output = true) = 0;
 
+  /**
+   * @brief Attach (or detach) a BaseStreamer to intercept per-token output.
+   *        Passing nullptr detaches any currently-attached streamer.
+   */
+  void setStreamer(::BaseStreamer *streamer) override { streamer_ = streamer; }
+
+  /**
+   * @brief Get the generated output text.
+   */
+  std::string getOutput(int batch_idx = 0) const override {
+    (void)batch_idx;
+    return last_output_;
+  }
+
   void setupParameters(json &cfg, json &generation_cfg,
                        json &nntr_cfg) override;
 
@@ -126,6 +140,10 @@ protected:
   float repetition_penalty;
   float logit_scale;
   int logit_offset;
+
+  // Streaming support
+  ::BaseStreamer *streamer_ = nullptr;
+  std::string last_output_;
 };
 
 } // namespace causallm

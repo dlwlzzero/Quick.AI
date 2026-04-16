@@ -729,11 +729,7 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
     h.model->run(input, false, "", "", g_verbose);
 #endif
 
-    auto causal_lm_model = dynamic_cast<causallm::CausalLM *>(h.model.get());
-    h.last_output = "";
-    if (causal_lm_model) {
-      h.last_output = causal_lm_model->getOutput(0);
-    }
+    h.last_output = h.model->getOutput(0);
 
     *outputText = h.last_output.c_str();
 
@@ -761,7 +757,7 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
   }
 
   try {
-    auto causal_lm_model = dynamic_cast<causallm::CausalLM *>(h.model.get());
+    auto *causal_lm_model = h.model.get();
     if (!causal_lm_model) {
       return CAUSAL_LM_ERROR_UNKNOWN;
     }
@@ -1002,18 +998,7 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   LOGD("[DEBUG] runModelHandleStreaming: Model is initialized, architecture=%s",
        h.architecture.c_str());
 
-  // Streaming is only wired up for causallm::CausalLM subclasses (the
-  // setStreamer / registerOutputs hook lives on that class). If the
-  // loaded model is something else (e.g. a future sentence-transformer
-  // style model) the caller should fall back to runModelHandle().
-  LOGD("[DEBUG] runModelHandleStreaming: Performing dynamic_cast to CausalLM...");
-  auto *causal = dynamic_cast<causallm::CausalLM *>(h.model.get());
-  if (causal == nullptr) {
-    LOGE("[DEBUG] runModelHandleStreaming: dynamic_cast failed, model is not CausalLM");
-    return CAUSAL_LM_ERROR_UNKNOWN;
-  }
-  LOGD("[DEBUG] runModelHandleStreaming: dynamic_cast successful, causal=%p", (void *)causal);
-
+  // Set up streaming via Transformer interface (works for both CausalLM and QNN models)
   LOGD("[DEBUG] runModelHandleStreaming: Initializing callback streamer...");
   CallbackStreamer streamer;
   callback_streamer_init(&streamer, callback, user_data);
@@ -1023,19 +1008,19 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   // field (C-style inheritance), so &streamer.base yields a valid
   // BaseStreamer pointer without reinterpret_cast.
   LOGD("[DEBUG] runModelHandleStreaming: Setting streamer on model...");
-  causal->setStreamer(&streamer.base);
+  h.model->setStreamer(&streamer.base);
   LOGD("[DEBUG] runModelHandleStreaming: Streamer set successfully");
 
   // RAII detach: make sure the dangling stack pointer never survives
   // the return of this function, no matter which exception path we
   // exit through.
   struct Detach {
-    causallm::CausalLM *c;
+    causallm::Transformer *t;
     ~Detach() {
       LOGD("[DEBUG] runModelHandleStreaming::Detach: Clearing streamer");
-      c->setStreamer(nullptr);
+      t->setStreamer(nullptr);
     }
-  } detach_guard{causal};
+  } detach_guard{h.model.get()};
 
   try {
     LOGD("[DEBUG] runModelHandleStreaming: Preparing input text...");
@@ -1061,7 +1046,7 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
     LOGD("[DEBUG] runModelHandleStreaming: model->run() completed");
 
     LOGD("[DEBUG] runModelHandleStreaming: Getting output...");
-    h.last_output = causal->getOutput(0);
+    h.last_output = h.model->getOutput(0);
     LOGD("[DEBUG]   output length: %zu", h.last_output.length());
     LOGD("[DEBUG]   output preview: %.100s%s",
          h.last_output.c_str(), h.last_output.length() > 100 ? "..." : "");
