@@ -54,3 +54,9 @@ qnn_context_lib = shared_library('qnn_context',
   cpp_args: ['-DENABLE_QNN=1', '-DPLUGGABLE=1'],
   install: true,
 )
+
+# Export qnn_context as a dependency for other modules
+qnn_context_dep = declare_dependency(
+  link_with: qnn_context_lib,
+  include_directories: [qnn_inc],
+)

@@ -261,7 +261,6 @@ static std::string apply_chat_template(const std::string &architecture,
 }
 
 static std::string get_quantization_suffix(ModelQuantizationType type) {
-    return "";
   switch (type) {
   case CAUSAL_LM_QUANTIZATION_W4A32:
     return "-w4a32";

@@ -13,7 +13,10 @@ quick_dot_ai_inc_args = [
 
 if enable_qnn
 quick_dot_ai_inc_args += [
-  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'gauss-3.6-qnn',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn' / 'gauss-3.6-qnn',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn' / 'gauss-3.8-qnn',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn' / 'gauss-3.8-vit-qnn',
 ]
 endif
 

@@ -191,29 +191,29 @@ public:
     auto &index = std::get<IndexType<T>>(factory_map);
     auto &str_map = std::get<StrIndexType<T>>(index);
 
-    LOGD("%s:%d", __FILE__, __LINE__);
+    //LOGD("%s:%d", __FILE__, __LINE__);
 
     std::string lower_key;
     lower_key.resize(key.size());
 
-    LOGD("%s:%d", __FILE__, __LINE__);
+    //LOGD("%s:%d", __FILE__, __LINE__);
 
     std::transform(key.begin(), key.end(), lower_key.begin(),
                    [](unsigned char c) { return std::tolower(c); });
 
-    LOGD("%s:%d", __FILE__, __LINE__);
+//    LOGD("%s:%d", __FILE__, __LINE__);
 
     const auto &entry = str_map.find(lower_key);
 
     if (entry == str_map.end()) {
       std::stringstream ss;
       ss << "Key is not found for the object. Key: " << lower_key;
-      LOGD("%s:%d, key is not found", __FILE__, __LINE__);
+  //    LOGD("%s:%d, key is not found", __FILE__, __LINE__);
 
       throw exception::not_supported(ss.str().c_str());
     }
 
-    LOGD("%s:%d", __FILE__, __LINE__);
+    //LOGD("%s:%d", __FILE__, __LINE__);
 
     // entry -> object of str_map -> unordered_map<std::string, FactoryType<T>>
     return entry->second(props);
