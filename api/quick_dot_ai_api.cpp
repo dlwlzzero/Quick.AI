@@ -81,7 +81,7 @@ struct CausalLmModel {
 // Globals shared across all handles — options set via setOptions() apply
 // process-wide regardless of which handle is active.
 static std::mutex g_registry_mutex;
-static bool g_use_chat_template = false;
+static bool g_use_chat_template = true;
 static bool g_verbose = false;
 static std::string g_last_output = "";
 static double g_initialization_duration_ms = 0.0;
@@ -604,8 +604,9 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     }
 
     // Load chat template from tokenizer_config.json if available
-    std::string tc_path = model_dir_path + "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer_config.json";
+    std::string tc_path = "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer_config.json";
     if (check_file_exists(tc_path)) {
+      LOGD("[DEBUG] load_into_handle: tc_path = %s", tc_path.c_str());      
       g_chat_template =
           causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
       if (g_chat_template.isAvailable()) {

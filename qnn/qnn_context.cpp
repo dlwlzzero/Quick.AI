@@ -236,7 +236,7 @@ int QNNContext::init() {
     if (StatusCode::SUCCESS != createDeviceStatus) {
       LOGE("init: Device Creation failure");
       ml_loge("Device Creation failure");
-      exit(1);
+      return -1;
     }
   }
 
@@ -244,14 +244,14 @@ int QNNContext::init() {
   if (StatusCode::SUCCESS != this->initializeProfiling()) {
     LOGE("init: Profiling Initialization failure");
     ml_loge("Profiling Initialization failure");
-    exit(1);
+    return -1;    
   }
 
   LOGD("init: Registering Op Packages");
   if (StatusCode::SUCCESS != this->registerOpPackages()) {
     LOGE("init: Register Op Packages failure");
     ml_loge("Register Op Packages failure");
-    exit(1);
+    return -1;
   }
 
   LOGD("init: END (returning 0)");
@@ -343,7 +343,7 @@ StatusCode QNNContext::createDevice() {
         &qnn_data->m_deviceHandle);
     if (QNN_SUCCESS != qnnStatus &&
         QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE != qnnStatus) {
-      ml_loge("Failed to create device");
+      ml_loge("Failed to create device (QNN error=0x%x)",(unsigned)qnnStatus);
       return verifyFailReturnStatus(qnnStatus);
     }
   }
