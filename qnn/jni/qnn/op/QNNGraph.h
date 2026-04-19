@@ -96,7 +96,7 @@ private:
   int in_features_;
   int out_features_;
   bool state_load;
-  Qnn_ContextHandle_t m_context;
+  Qnn_ContextHandle_t m_context = nullptr;
   qnn_wrapper_api::GraphInfo_t **m_graphsInfo;
   uint32_t m_graphsCount;
   size_t bin_size;

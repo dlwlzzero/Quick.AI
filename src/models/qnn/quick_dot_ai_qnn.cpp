@@ -32,6 +32,9 @@ get_qnn_input_data(TensorInfo tensor_object) {
 }
 
 causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN() {
+  for(auto &[model_name, model]:models){
+    model.model_handle.reset();
+  }
   for (const auto &[model_name, model] : models) {
     for (const auto &input : model.model_inputs) {
       void *ptr = std::visit(
