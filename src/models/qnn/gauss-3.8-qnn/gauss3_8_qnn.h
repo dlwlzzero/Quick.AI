@@ -12,6 +12,7 @@
 
 #include "quick_dot_ai_qnn.h"
 
+
 namespace causallm {
 
 /**
@@ -26,12 +27,13 @@ public:
 
   Gauss3_8_QNN(json &cfg, json &generation_cfg, json &nntr_cfg)
       : Quick_Dot_AI_QNN(cfg, generation_cfg, nntr_cfg) {
+    LOGD("Gauss 3.8 asdfasdfasdfasdfasdfasdfsdfasdf ");
     setupParameters(cfg, generation_cfg, nntr_cfg);
   }
 
   virtual ~Gauss3_8_QNN() = default;
 
-  void initialize() override;
+  void initialize();
 
   void setupParameters(json &cfg, json &generation_cfg,
                        json &nntr_cfg) override;

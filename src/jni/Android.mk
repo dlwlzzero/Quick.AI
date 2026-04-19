@@ -100,21 +100,27 @@ LOCAL_ALLOW_UNDEFINED_SYMBOLS := true
 LOCAL_MODULE := quick_dot_ai
 
 LOCAL_SRC_FILES := \
-    ../models/gauss-2.5/gauss2_5_causallm.cpp
+     ../models/gauss-2.5/gauss2_5_causallm.cpp
 
-LOCAL_SRC_FILES += ../models/gauss-3.6-qnn/quick_dot_ai_qnn.cpp \
-                   ../models/gauss-3.6-qnn/gauss3_6_qnn.cpp
-
-LOCAL_SRC_FILES += ../models/gauss-3.8-qnn/gauss3_8_qnn.cpp
+LOCAL_SRC_FILES += \
+	../models/qnn/android_memory_allocator.cpp \
+	../models/qnn/quick_dot_ai_qnn.cpp \
+	../models/qnn/graph_parser.cpp \
+	../models/qnn/generate_qnn_utils.cpp \
+	../models/gauss-3.8-qnn/gauss3_8_qnn.cpp \
+	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vision_encoder_qnn.cpp \
+	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
+#	../models/gauss-3.6-qnn/gauss3_6_qnn.cpp \
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_LDLIBS := -llog -landroid
 
-LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5
-
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.6-qnn
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.8-qnn
+LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
+    $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/qnn \
+    $(LOCAL_PATH)/../models/gauss-3.8-qnn \
+    $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
+#    $(LOCAL_PATH)/../models/qnn/gauss-3.6 \
 
 include $(BUILD_SHARED_LIBRARY)
 
@@ -132,18 +138,27 @@ LOCAL_CXXFLAGS += -std=c++17 -frtti
 LOCAL_MODULE := quick_dot_ai_static
 
 LOCAL_SRC_FILES := \
-    ../models/gauss-2.5/gauss2_5_causallm.cpp
+     ../models/gauss-2.5/gauss2_5_causallm.cpp
 
-LOCAL_SRC_FILES += ../models/gauss-3.6-qnn/quick_dot_ai_qnn.cpp \
-                   ../models/gauss-3.6-qnn/gauss3_6_qnn.cpp
+LOCAL_SRC_FILES += \
+	../models/qnn/android_memory_allocator.cpp \
+	../models/qnn/quick_dot_ai_qnn.cpp \
+	../models/qnn/graph_parser.cpp \
+	../models/qnn/generate_qnn_utils.cpp \
+	../models/gauss-3.8-qnn/gauss3_8_qnn.cpp \
+	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vision_encoder_qnn.cpp \
+	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
+#	../models/qnn/gauss-3.6-qnn/gauss3_6_qnn.cpp \
 
-LOCAL_SRC_FILES += ../models/gauss-3.8-qnn/gauss3_8_qnn.cpp
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+LOCAL_LDLIBS := -llog -landroid
 
-LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5
-
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.6-qnn
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.8-qnn
+LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
+    $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/qnn \
+    $(LOCAL_PATH)/../models/gauss-3.8-qnn \
+    $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
+#    $(LOCAL_PATH)/../models/qnn/gauss-3.6 \
 
 include $(BUILD_STATIC_LIBRARY)
 
@@ -178,7 +193,11 @@ LOCAL_WHOLE_STATIC_LIBRARIES := quick_dot_ai_static
 LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
     $(LOCAL_PATH)/../models/gauss-2.5
 
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.6-qnn
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../models/gauss-3.8-qnn
+LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
+    $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/qnn \
+    $(LOCAL_PATH)/../models/gauss-3.8-qnn \
+    $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
+#    $(LOCAL_PATH)/../models/qnn/gauss-3.6 \
 
 include $(BUILD_EXECUTABLE)

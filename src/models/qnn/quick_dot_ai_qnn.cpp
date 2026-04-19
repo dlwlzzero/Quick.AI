@@ -45,14 +45,16 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
   int status;
 
   auto &ct_engine = nntrainer::Engine::Global();
+  LOGD("qnn_engine registering .... ");
 
   NNTR_THROW_IF(ct_engine.registerContext("libqnn_context.so", ""),
                 std::runtime_error)
-      << "Fail to register QNN Context";
+    << "Fail to register QNN Context";
+
+  LOGD("qnn_engine registering done "); 
 
   GraphParser graph_parser = GraphParser();
   auto graphs_info = graph_parser.parseJsonFile(binary_config_path);
-
   for (const auto &graph_name : graphs_to_use) {
     auto current_model = createModel(ml::train::ModelType::NEURAL_NET);
     std::string out_dim;
@@ -200,9 +202,13 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   // Read nntr_config parameters
   model_file_name = nntr_cfg["model_file_name"].get<std::string>();
   binary_config_path = nntr_cfg["binary_config_path"].get<std::string>();
+  LOGD("----------------binary_config_path : %s", binary_config_path.c_str());
   graphs_to_use = nntr_cfg["graphs_to_use"].get<std::vector<std::string>>();
-
-  vocab_size = cfg.value<int>("vocab_size", -1);
+  for(auto s : graphs_to_use){
+    LOGD("----------------graphs_to_use : %s", s.c_str());
+  }
+  vocab_size = cfg["vocab_size"].get<int>();
+  LOGD("----------------vocab size : %d", vocab_size);
 }
 
 void causallm::Quick_Dot_AI_QNN::constructModel() {

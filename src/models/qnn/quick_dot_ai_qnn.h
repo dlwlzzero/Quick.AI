@@ -10,6 +10,17 @@
 #ifndef __QUICK_DOT_AI_QNN_H__
 #define __QUICK_DOT_AI_QNN_H__
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOG_TAG "QuickAI"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+#define LOGD(fmt, ...) fprintf(stdout, fmt "\n", ##__VA_ARGS__)
+#define LOGE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#endif
+
+
 #include "graph_parser.h"
 #include <transformer.h>
 
@@ -49,6 +60,13 @@ public:
 
   void constructModel() override;
 
+  /**
+   * @brief Attach (or detach) a BaseStreamer to intercept per-token output.
+   *        Passing nullptr detaches any currently-attached streamer.
+   */
+  void setStreamer(::BaseStreamer *streamer) override { streamer_ = streamer; }
+  
+
   std::vector<LayerHandle>
   createTransformerDecoderBlock(const int layer_id,
                                 std::string input_name) override;
@@ -78,6 +96,10 @@ protected:
   std::map<std::string, QNNModelInfo> models;
 
   bool uses_embedding = true;
+
+  // Streaming support
+  ::BaseStreamer *streamer_ = nullptr;
+  std::string last_output_;  
 };
 
 } // namespace causallm

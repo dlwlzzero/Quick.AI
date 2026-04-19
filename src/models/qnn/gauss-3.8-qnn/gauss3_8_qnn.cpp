@@ -13,6 +13,7 @@
 #include "generate_qnn_utils.h"
 
 #include <llm_util.hpp>
+#include "api/streamer.h"
 #include <model.h>
 
 #include <app_context.h>
@@ -69,23 +70,25 @@ void causallm::Gauss3_8_QNN::initialize() {
   // Call base class initialize first - this populates models map with
   // model_inputs
   Quick_Dot_AI_QNN::initialize();
+  LOGD("Quick_Dot_AI_QNN::initialize() done");
 
   // Get prefill and generation graph names
   std::string prefill_graph = graphs_to_use[0];
   std::string generation_graph = graphs_to_use[1];
-
+  
+  LOGD("----------------------- initialize() %s, %s", prefill_graph.c_str(), generation_graph.c_str());
   // Get references to graph_info and model_inputs
   auto &prefill_graph_info = models[prefill_graph].graph_info;
   auto &generation_graph_info = models[generation_graph].graph_info;
   auto &prefill_inputs = models[prefill_graph].model_inputs;
   auto &generation_inputs = models[generation_graph].model_inputs;
-
+  LOGD("----------------------- initialize() prefill_inputs : %d", prefill_inputs.size());
   // Find input indices by name
   int prefill_input_idx =
       find_tensor_index(prefill_graph_info.raw_inputs, "inputs_embeds");
   int generation_input_idx =
       find_tensor_index(generation_graph_info.raw_inputs, "inputs_embeds");
-
+  LOGD("----------------------- prefill_inputs_idx : %d generation_input_idx :%d ", prefill_input_idx, generation_input_idx);
   // Save pointers to input samples
   if (prefill_input_idx >= 0) {
     input_sample = std::get<float *>(prefill_inputs[prefill_input_idx]);
@@ -149,6 +152,7 @@ void causallm::Gauss3_8_QNN::initialize() {
     generation_position_ids_sin =
         std::get<uint16_t *>(generation_inputs[generation_pos_sin_idx]);
   }
+  LOGD("----------------------- initialize() 1");  
 
   // SWA Position IDs
   int prefill_swa_pos_cos_idx =
@@ -159,7 +163,7 @@ void causallm::Gauss3_8_QNN::initialize() {
       generation_graph_info.raw_inputs, "swa_position_ids_cos");
   int generation_swa_pos_sin_idx = find_tensor_index(
       generation_graph_info.raw_inputs, "swa_position_ids_sin");
-
+  LOGD("----------------------- initialize() 2");  
   if (prefill_swa_pos_cos_idx >= 0) {
     prefill_swa_position_ids_cos =
         std::get<uint16_t *>(prefill_inputs[prefill_swa_pos_cos_idx]);
@@ -176,6 +180,7 @@ void causallm::Gauss3_8_QNN::initialize() {
     generation_swa_position_ids_sin =
         std::get<uint16_t *>(generation_inputs[generation_swa_pos_sin_idx]);
   }
+  LOGD("----------------------- initialize() 3");    
 
   // Allocate position_ids_cos/sin using get_cos_sin (these are source data)
   std::tuple<uint16_t *, uint16_t *> cos_sin_tuple =
@@ -187,7 +192,7 @@ void causallm::Gauss3_8_QNN::initialize() {
       get_cos_sin(context_size, pos_dim, local_rope_theta);
   swa_position_ids_cos = std::get<0>(swa_cos_sin_tuple);
   swa_position_ids_sin = std::get<1>(swa_cos_sin_tuple);
-
+  LOGD("----------------------- initialize() 4");    
   // Initialize LoRA tensors
   if (lora_path.empty()) {
     // Default: fill with 32768 (zero value for quantized uint16_t)
@@ -207,6 +212,7 @@ void causallm::Gauss3_8_QNN::initialize() {
         std::fill_n(lora_ptr, size / sizeof(uint16_t), 32768);
       }
     }
+  LOGD("----------------------- initialize() 5");        
   } else {
     // Load from lora_path file
     int fd = open(lora_path.c_str(), O_RDONLY);
@@ -238,7 +244,7 @@ void causallm::Gauss3_8_QNN::initialize() {
         data_ptr += size;
       }
     }
-
+  LOGD("----------------------- initialize() 6");        
     // Copy to generation lora inputs (in model input order)
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
       const auto &[name, info] = generation_graph_info.raw_inputs[idx];
@@ -248,7 +254,7 @@ void causallm::Gauss3_8_QNN::initialize() {
         data_ptr += size;
       }
     }
-
+  LOGD("----------------------- initialize() 7");        
     munmap(mapped, file_size);
     close(fd);
 
@@ -259,7 +265,7 @@ void causallm::Gauss3_8_QNN::initialize() {
   this->fresh_kvs.clear();
   this->kvs.clear();
   this->kv_sizes.clear();
-
+  LOGD("----------------------- initialize() 8");        
   // Find all KV cache tensors (names starting with "past_") in generation
   // inputs
   for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
@@ -278,6 +284,7 @@ void causallm::Gauss3_8_QNN::initialize() {
           (uint16_t *)get_zero_memory(size, 128 * 256 + 128));
     }
   }
+  LOGD("----------------------- initialize() done");          
 }
 
 void causallm::Gauss3_8_QNN::setupParameters(json &cfg, json &generation_cfg,
@@ -316,6 +323,7 @@ void causallm::Gauss3_8_QNN::setupParameters(json &cfg, json &generation_cfg,
 void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
                                  const WSTR system_prompt,
                                  const WSTR tail_prompt, bool log_output) {
+  last_output_.clear();
   // Get prefill and generation graph names
   std::string prefill_graph = graphs_to_use[0];
   std::string generation_graph = graphs_to_use[1];
@@ -426,22 +434,43 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
                    _input.data(), _input.size(), logit_scale, logit_offset,
                    repetition_penalty, temperature, top_p, top_k);
-
+    
     output.push_back(token);
     if (token == eos_token) {
       std::cout << "Finished generating, break..." << std::endl;
       break;
     } else {
-      std::cout << tokenizer->Decode({token}) << std::flush;
+      std::string decoded= tokenizer->Decode({token});
+      last_output_ += decoded;
+      LOGD("%d : %s",token, decoded.c_str());
+      // Stream the token if a streamer is attached
+      if (streamer_) {
+        if (streamer_put(streamer_, decoded.c_str()) != 0) {
+          // User requested cancellation
+          break;
+        }
+      } else if (log_output) {
+        std::cout << decoded << std::flush;
+      }
       _input.push_back(token);
     }
   }
+
+  // Notify the streamer that generation is complete
+  if (streamer_) {
+    streamer_end(streamer_);
+  }
+
+  has_run_ = true;
+  
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
+  if (log_output) {  
   std::cout << std::endl;
   std::cout << std::endl;
   std::cout << "Generation exec_time : " << raw_exec_seconds.count()
             << ", token per second: " << (idx - _len) / raw_exec_seconds.count()
             << ", token generation time average: "
             << raw_exec_seconds.count() / (idx - _len) << std::endl;
+  }
 }

@@ -37,8 +37,11 @@
 #include "qwen3_slim_moe_causallm.h"
 #include <factory.h>
 #ifdef ENABLE_QNN
-#include "gauss3_6_qnn.h"
+// #include "gauss3_6_qnn.h"
 #include "gauss3_8_qnn.h"
+#include "gauss3_8_vit_qnn.h"
+#include "gauss3_8_vision_encoder_qnn.h"
+
 #endif
 #include <fstream>
 #include <sys/stat.h>
@@ -98,6 +101,7 @@ static CausalLmModel &get_default_handle() {
 static std::map<std::string, std::string> g_model_path_map = {
     {"QWEN3-0.6B", "qwen3-0.6b"},
     {"GAUSS2.5-1B", "gauss2.5-1b"},
+    {"QWEN3-1.7B-Q40", "qwen3-1.7b-q40-arm"},
 #ifdef ENABLE_QNN
     {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
     {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
@@ -199,16 +203,25 @@ static void register_models() {
               cfg, generation_cfg, nntr_cfg);
         });
 #ifdef ENABLE_QNN
-    causallm::Factory::Instance().registerModel(
-        "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
-          return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
-                                                          nntr_cfg);
+    // causallm::Factory::Instance().registerModel(
+    //     "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
+    //       return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
+    //                                                       nntr_cfg);
+    //     });
+    causallm::Factory::Instance ().registerModel (
+        "Gauss_3_8_QNN", [] (json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_8_QNN> (cfg, generation_cfg, nntr_cfg);
         });
-    causallm::Factory::Instance().registerModel(
-        "Gauss_3_8_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
-          return std::make_unique<causallm::Gauss3_8_QNN>(cfg, generation_cfg,
-                                                          nntr_cfg);
+    causallm::Factory::Instance ().registerModel ("Gauss_3_8_Visual_VIT_QNN",
+        [] (json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_8_VIT_QNN> (
+              cfg, generation_cfg, nntr_cfg);
         });
+    causallm::Factory::Instance ().registerModel ("Gauss_3_8_Visual_QNN",
+        [] (json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_8_Vision_Encoder_QNN> (
+              cfg, generation_cfg, nntr_cfg);
+        });    
 #endif
     // Register built-in configurations
     quick_dot_ai::register_builtin_configs();
@@ -221,6 +234,8 @@ static const char *get_model_name_from_type(ModelType type) {
     return "QWEN3-0.6B";
   case CAUSAL_LM_MODEL_GAUSS2_5:
     return "GAUSS2.5-1B";
+  case CAUSAL_LM_MODEL_QWEN3_1_7B_Q40:
+    return "QWEN3-1.7B-Q40";
 #ifdef ENABLE_QNN
   case CAUSAL_LM_MODEL_GAUSS3_6_QNN:
     return "GAUSS3.6-QNN";
@@ -260,8 +275,11 @@ static std::string apply_chat_template(const std::string &architecture,
   return input;
 }
 
-static std::string get_quantization_suffix(ModelQuantizationType type) {
-  switch (type) {
+static std::string get_quantization_suffix(ModelQuantizationType type)
+{
+  return "";
+  switch (type)
+  {
   case CAUSAL_LM_QUANTIZATION_W4A32:
     return "-w4a32";
   case CAUSAL_LM_QUANTIZATION_W16A16:
@@ -296,7 +314,7 @@ static std::string resolve_model_path(const std::string &model_key,
   }
 
   std::string model_path =
-      "./models/" + base_dir_name + get_quantization_suffix(quant_type);
+      "/models/" + base_dir_name + get_quantization_suffix(quant_type);
 
   return model_path;
 }
@@ -327,7 +345,7 @@ static void validate_models() {
       }
 
       // Resolve path for this combination
-      std::string resolved_path = resolve_model_path(key, qt);
+      std::string resolved_path = "." + resolve_model_path(key, qt);
 
       if (g_model_registry.find(lookup_key) != g_model_registry.end()) {
         // CASE 1: Configuration is registered in model_config.cpp
@@ -488,6 +506,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     json generation_cfg;
     json nntr_cfg;
     std::string model_dir_path;
+    std::string abs_model_dir;
+    std::string base_dir = "/sdcard/Android/data/com.example.sampletestapp/files";
 
     // Snapshot registry entries under the registry mutex so concurrent
     // loads on different handles don't race with each other (or with
@@ -516,7 +536,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       ModelRuntimeConfig &rc = rm.config;
 
       // Strategy: Resolve path to find the weight file
-      model_dir_path = resolve_model_path(target_model_name, quant_type);
+      model_dir_path = "."+resolve_model_path(target_model_name, quant_type);
       LOGD("[DEBUG] load_into_handle: model_dir_path = %s", model_dir_path.c_str());
 
       // Populate JSONs from Arch Struct
@@ -568,7 +588,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       nntr_cfg["model_file_name"] = std::string(rc.model_file_name);
 
       std::string t_file = rc.tokenizer_file;
-      nntr_cfg["tokenizer_file"] = "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer.json";
+      // nntr_cfg["tokenizer_file"] = "/sdcard/Android/data/com.example.sampleapp/files/models/gauss-3.6-qnn/tokenizer.json";
 
       if (strlen(rc.lmhead_dtype) > 0) {
         nntr_cfg["lmhead_dtype"] = std::string(rc.lmhead_dtype);
@@ -590,22 +610,27 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       model_dir_path = resolve_model_path(target_model_name, quant_type);
       LOGD("[DEBUG] load_into_handle: model_dir_path = %s", model_dir_path.c_str());
 
-      // Load configuration files
-      cfg = causallm::LoadJsonFile("/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/config.json");
-      generation_cfg =
-          causallm::LoadJsonFile("/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/generation_config.json");
-      nntr_cfg = causallm::LoadJsonFile("/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/nntr_config.json");
+      abs_model_dir = base_dir + model_dir_path;
+      LOGD("[DEBUG] load_into_handle: abs_model_dir = %s", abs_model_dir.c_str());
 
-      if (nntr_cfg.contains("tokenizer_file")) {
+      // Load configuration files
+      cfg = causallm::LoadJsonFile(abs_model_dir + "/config.json");
+      generation_cfg =
+          causallm::LoadJsonFile(abs_model_dir + "/generation_config.json");
+      nntr_cfg = causallm::LoadJsonFile(abs_model_dir + "/nntr_config.json");
+
+      if (nntr_cfg.contains("tokenizer_file"))
+      {
+        nntr_cfg["tokenizer_file"] = abs_model_dir + "/tokenizer.json";
         std::string t_file = nntr_cfg["tokenizer_file"];
-        nntr_cfg["tokenizer_file"] = "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer.json";
       }
     }
 
+    // TODO : fix
     // Load chat template from tokenizer_config.json if available
-    std::string tc_path = "/sdcard/Android/data/com.example.sampletestapp/files/models/gauss-3.8-qnn/tokenizer_config.json";
-    if (check_file_exists(tc_path)) {
-      LOGD("[DEBUG] load_into_handle: tc_path = %s", tc_path.c_str());      
+    std::string tc_path = abs_model_dir + "/tokenizer_config.json";
+    if (check_file_exists(tc_path))
+    {
       g_chat_template =
           causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
       if (g_chat_template.isAvailable()) {
@@ -633,8 +658,19 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
           "pytorch_model.bin"; // Default fallback if not specified
     }
 
-    const std::string weight_file = weight_file_name;
+    const std::string weight_file = abs_model_dir + "/" + weight_file_name;
     LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
+    nntr_cfg["model_file_name"] = weight_file;
+    std::string str=nntr_cfg["binary_config_path"].get<std::string>();
+    nntr_cfg["binary_config_path"]= abs_model_dir +"/"+str;
+    if(nntr_cfg.contains("image_newline_path")){
+      str = nntr_cfg["image_newline_path"].get<std::string>();
+      nntr_cfg["image_newline_path"] = abs_model_dir + "/" + str;
+    }
+    if(nntr_cfg.contains("embedding_file_name")){
+      str = nntr_cfg["embedding_file_name"].get<std::string>();
+      nntr_cfg["embedding_file_name"] = abs_model_dir + "/"+str;
+    }
 
     // Determine architecture from config or ModelType
     // Priority: Config file architecture > ModelType mapping (fallback)
@@ -651,7 +687,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     }
     LOGD("[DEBUG] load_into_handle: architecture = %s", architecture.c_str());
 
-    LOGD("[DEBUG] load_into_handle: Creating model via Factory...");
+    LOGD("[DEBUG] load_into_handle: Creating model via Factory...%s ", architecture.c_str());
+    
     h.model = causallm::Factory::Instance().create(architecture, cfg,
                                                    generation_cfg, nntr_cfg);
     if (!h.model) {
@@ -1091,4 +1128,109 @@ ErrorCode destroyModelHandle(CausalLmHandle handle) {
   }
   delete handle;
   return CAUSAL_LM_ERROR_NONE;
+}
+
+/*============================================================================
+ * Multimodal API Implementation (Stub)
+ *
+ * These functions provide the API surface for multimodal inference.
+ * Vision Encoder integration is planned for future implementation.
+ * Currently these functions return CAUSAL_LM_ERROR_UNSUPPORTED as stubs.
+ *============================================================================*/
+
+ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
+                                       const char *prompt,
+                                       const float *pixelValues,
+                                       int numPatches,
+                                       int originalHeight,
+                                       int originalWidth,
+                                       CausalLmTokenCallback callback,
+                                       void *user_data) {
+  LOGD("[DEBUG] runMultimodalHandleStreaming: START");
+  LOGD("[DEBUG]   handle=%p", handle);
+  LOGD("[DEBUG]   prompt=%s", prompt ? prompt : "(null)");
+  LOGD("[DEBUG]   pixelValues=%p", pixelValues);
+  LOGD("[DEBUG]   numPatches=%d", numPatches);
+  LOGD("[DEBUG]   originalHeight=%d", originalHeight);
+  LOGD("[DEBUG]   originalWidth=%d", originalWidth);
+  LOGD("[DEBUG]   callback=%p", (void*)callback);
+  LOGD("[DEBUG]   user_data=%p", user_data);
+
+  if (handle == nullptr || prompt == nullptr || pixelValues == nullptr ||
+      callback == nullptr) {
+    LOGE("[DEBUG] runMultimodalHandleStreaming: INVALID_PARAMETER"
+            " handle=%p prompt=%s pixelValues=%p callback=%p",
+            handle, prompt, pixelValues, (void*)callback);
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  // Log pixel values summary (first few values)
+  // Note: patch size is fixed at 512x512
+  const int PATCH_SIZE = 512;
+  int totalValues = numPatches * 3 * PATCH_SIZE * PATCH_SIZE;
+  LOGD("[DEBUG]   totalPixelValues=%d", totalValues);
+  if (totalValues > 0 && pixelValues != nullptr) {
+    LOGD("[DEBUG]   pixelValues[0..4]=%f, %f, %f, %f, %f",
+            pixelValues[0], pixelValues[1], pixelValues[2],
+            (totalValues > 3 ? pixelValues[3] : 0.0f),
+            (totalValues > 4 ? pixelValues[4] : 0.0f));
+  }
+
+  // TODO: Vision Encoder integration
+  // 1. Run vision encoder on pixelValues
+  // 2. Combine image embeddings with text embeddings
+  // 3. Run LLM inference with streaming
+
+  // Stub implementation - return unsupported until Vision Encoder is ready
+  LOGD("[DEBUG] runMultimodalHandleStreaming: Vision Encoder not yet implemented. "
+          "Returning UNSUPPORTED error.");
+
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
+}
+
+ErrorCode runMultimodalHandle(CausalLmHandle handle,
+                              const char *prompt,
+                              const float *pixelValues,
+                              int numPatches,
+                              int originalHeight,
+                              int originalWidth,
+                              const char **outputText) {
+  LOGD("[DEBUG] runMultimodalHandle: START");
+  LOGD("[DEBUG]   handle=%p", handle);
+  LOGD("[DEBUG]   prompt=%s", prompt ? prompt : "(null)");
+  LOGD("[DEBUG]   pixelValues=%p", pixelValues);
+  LOGD("[DEBUG]   numPatches=%d", numPatches);
+  LOGD("[DEBUG]   originalHeight=%d", originalHeight);
+  LOGD("[DEBUG]   originalWidth=%d", originalWidth);
+  LOGD("[DEBUG]   outputText=%p", outputText);
+
+  if (handle == nullptr || prompt == nullptr || pixelValues == nullptr ||
+      outputText == nullptr) {
+    LOGE("[DEBUG] runMultimodalHandle: INVALID_PARAMETER"
+            " handle=%p prompt=%s pixelValues=%p outputText=%p",
+            handle, prompt, pixelValues, outputText);
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  // Log pixel values summary (first few values)
+  // Note: patch size is fixed at 512x512
+  const int PATCH_SIZE = 512;
+  int totalValues = numPatches * 3 * PATCH_SIZE * PATCH_SIZE;
+  LOGD("[DEBUG]   totalPixelValues=%d", totalValues);
+  if (totalValues > 0 && pixelValues != nullptr) {
+    LOGD("[DEBUG]   pixelValues[0..4]=%f, %f, %f, %f, %f",
+            pixelValues[0], pixelValues[1], pixelValues[2],
+            (totalValues > 3 ? pixelValues[3] : 0.0f),
+            (totalValues > 4 ? pixelValues[4] : 0.0f));
+  }
+
+  // TODO: Vision Encoder integration
+  // Same as runMultimodalHandleStreaming but returns complete output
+
+  // Stub implementation - return unsupported until Vision Encoder is ready
+  LOGD("[DEBUG] runMultimodalHandle: Vision Encoder not yet implemented. "
+          "Returning UNSUPPORTED error.");
+
+  *outputText = nullptr;
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
 }

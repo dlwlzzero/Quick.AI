@@ -29,7 +29,7 @@ public:
 
   virtual ~Gauss3_6_QNN() = default;
 
-  void initialize() override;
+  void initialize_input_outputs() override;
 
   void run(const WSTR prompt, bool do_sample = false,
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
