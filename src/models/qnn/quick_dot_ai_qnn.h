@@ -87,6 +87,7 @@ public:
 protected:
   // nntr_config
   std::string model_file_name;
+  std::string embedding_path;
   std::string binary_config_path;
   std::vector<std::string> graphs_to_use;
 
