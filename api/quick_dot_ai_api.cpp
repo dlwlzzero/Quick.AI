@@ -38,7 +38,7 @@
 #include "qwen3_slim_moe_causallm.h"
 #include <factory.h>
 #ifdef ENABLE_QNN
-// #include "gauss3_6_qnn.h"
+#include "gauss3_6_qnn.h"
 #include "gauss3_8_qnn.h"
 #include "gauss3_8_vision_encoder_qnn.h"
 
@@ -207,11 +207,11 @@ static void register_models() {
               cfg, generation_cfg, nntr_cfg);
         });
 #ifdef ENABLE_QNN
-    // causallm::Factory::Instance().registerModel(
-    //     "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
-    //       return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
-    //                                                       nntr_cfg);
-    //     });
+    causallm::Factory::Instance().registerModel(
+        "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gauss3_6_QNN>(cfg, generation_cfg,
+                                                          nntr_cfg);
+        });
     causallm::Factory::Instance ().registerModel (
         "Gauss_3_8_QNN", [] (json cfg, json generation_cfg, json nntr_cfg) {
           return std::make_unique<causallm::Gauss3_8_QNN> (cfg, generation_cfg, nntr_cfg);

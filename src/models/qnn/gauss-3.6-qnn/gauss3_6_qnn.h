@@ -25,11 +25,16 @@ public:
   static constexpr const char *architectures = "Gauss_3_6_QNN";
 
   Gauss3_6_QNN(json &cfg, json &generation_cfg, json &nntr_cfg)
-      : Quick_Dot_AI_QNN(cfg, generation_cfg, nntr_cfg) {}
+      : Quick_Dot_AI_QNN(cfg, generation_cfg, nntr_cfg) {
+      LOGD("Gauss 3.6 parameters set up ");
+      setupParameters(cfg, generation_cfg, nntr_cfg);
+    }
 
   virtual ~Gauss3_6_QNN() = default;
 
-  void initialize_input_outputs() override;
+  void initialize();
+
+  void setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) override;
 
   void run(const WSTR prompt, bool do_sample = false,
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
@@ -58,13 +63,38 @@ private:
   float *input_sample;
   float *generation_sample;
 
-  std::vector<ml::train::TensorDim::IO_TensorType> prefill_inputs;
-  std::vector<ml::train::TensorDim::IO_TensorType> generation_inputs;
-
   // KV cache variables
   std::vector<uint16_t *> kvs;
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;
+
+  // Language model specific variables
+  // Config
+  int num_hidden_layers;
+  int max_window_layers;
+  int hidden_size;
+  int sequence_length;
+  int vocab_size;
+  int max_seq_len;
+  int sliding_window;
+  float local_rope_theta;
+  float rope_theta;
+  int context_size;
+  int pos_dim;
+  int head_dim;
+
+  // generation_config
+  int padding_token;
+  int eos_token;
+  int top_k;
+  float top_p;
+  float temperature;
+  float repetition_penalty;
+  float logit_scale;
+  int logit_offset;
+
+  // LoRA path (optional)
+  std::string lora_path;
 };
 
 } // namespace causallm

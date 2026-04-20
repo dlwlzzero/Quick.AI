@@ -10,6 +10,6 @@ qnn_inc = include_directories('.')
 quick_dot_ai_src += qnn_src
 quick_dot_ai_inc += qnn_inc
 
-# subdir('gauss-3.6-qnn')
+subdir('gauss-3.6-qnn')
 subdir('gauss-3.8-qnn')
 subdir('gauss-3.8-vit-qnn')
