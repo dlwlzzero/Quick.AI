@@ -40,7 +40,6 @@
 #ifdef ENABLE_QNN
 // #include "gauss3_6_qnn.h"
 #include "gauss3_8_qnn.h"
-#include "gauss3_8_vit_qnn.h"
 #include "gauss3_8_vision_encoder_qnn.h"
 
 #endif
@@ -59,6 +58,7 @@
 #endif
 
 using json = nlohmann::json;
+using causallm::multimodal_pointer;
 
 /**
  * @brief Per-handle state for a loaded CausalLM model instance.
@@ -107,8 +107,8 @@ static std::map<std::string, std::string> g_model_path_map = {
 #ifdef ENABLE_QNN
     {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
     {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
-    {"GAUSS3.8-VE-QNN", "gauss-3.8-visual-qnn"},
-    {"GAUSS3.8-Vit-QNN", "gauss-3.8-visual-vit-qnn"},      
+    {"GAUSS3.8-VISION-QNN", "gauss-3.8-vision-qnn"},
+    {"GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn"},      
 #endif
 };
 
@@ -216,12 +216,12 @@ static void register_models() {
         "Gauss_3_8_QNN", [] (json cfg, json generation_cfg, json nntr_cfg) {
           return std::make_unique<causallm::Gauss3_8_QNN> (cfg, generation_cfg, nntr_cfg);
         });
-    causallm::Factory::Instance ().registerModel ("Gauss_3_8_Visual_VIT_QNN",
-        [] (json cfg, json generation_cfg, json nntr_cfg) {
-          return std::make_unique<causallm::Gauss3_8_VIT_QNN> (
-              cfg, generation_cfg, nntr_cfg);
-        });
-    causallm::Factory::Instance ().registerModel ("Gauss_3_8_Visual_QNN",
+    // causallm::Factory::Instance ().registerModel ("Gauss_3_8_Visual_VIT_QNN",
+    //     [] (json cfg, json generation_cfg, json nntr_cfg) {
+    //       return std::make_unique<causallm::Gauss3_8_VIT_QNN> (
+    //           cfg, generation_cfg, nntr_cfg);
+    //     });
+    causallm::Factory::Instance ().registerModel ("Gauss_3_8_VEncoder_QNN",
         [] (json cfg, json generation_cfg, json nntr_cfg) {
           return std::make_unique<causallm::Gauss3_8_Vision_Encoder_QNN> (
               cfg, generation_cfg, nntr_cfg);
@@ -246,7 +246,7 @@ static const char *get_model_name_from_type(ModelType type) {
   case CAUSAL_LM_MODEL_GAUSS3_8_QNN:
     return "GAUSS3.8-QNN";
   case CAUSAL_LM_MODEL_GAUSS3_8_VE_QNN:
-    return "GAUSS3.8-VE-QNN";    
+    return "GAUSS3.8-VE-QNN";
   case CAUSAL_LM_MODEL_GAUSS3_8_VIT_QNN:
     return "GAUSS3.8-VIT-QNN";
 #endif
@@ -509,7 +509,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     LOGE("[DEBUG] load_into_handle: Invalid modeltype");
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
-  LOGD("[DEBUG] load_into_handle: target_model_name = %s", target_model_name);
+  LOGD("[DEBUG] load_into_handle: target_model_name = %s %d", target_model_name, modeltype);
 
   // Ensure models/configs are registered (thread-safe via call_once)
   LOGD("[DEBUG] load_into_handle: Calling register_models...");
@@ -524,7 +524,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     std::string input_name_upper = input_name;
     std::transform(input_name_upper.begin(), input_name_upper.end(),
                    input_name_upper.begin(), ::toupper);
-
+    LOGD("[DEBUG] load_into_handle: input_name = %s", input_name.c_str());
+    
     std::string quant_suffix = "";
     switch (quant_type) {
     case CAUSAL_LM_QUANTIZATION_W4A32:
@@ -662,7 +663,13 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       //   (b) the single-model fallback below.
       json top_nntr =
         causallm::LoadJsonFile(abs_model_dir + "/nntr_config.json");
+      
+      LOGD("[DEBUG] load_into_handle: abs_model_dir = %s",
+           abs_model_dir.c_str());
 
+      LOGD("[DEBUG] load_into_handle: top_nntr = %s",
+           (abs_model_dir + "/nntr_config.json").c_str());
+      
       const bool is_multi =
         top_nntr.contains("architectures") &&
         top_nntr["architectures"].is_array() &&
@@ -670,6 +677,9 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
         top_nntr["model_dirs"].is_array() &&
         !top_nntr["architectures"].empty() &&
         top_nntr["architectures"].size() == top_nntr["model_dirs"].size();
+      
+      LOGD("[DEBUG] load_into_handle: abs_model_dir = %d %d %d %d %d %d",top_nntr.contains("architectures"), top_nntr["architectures"].is_array(), top_nntr.contains("model_dirs"), top_nntr["model_dirs"].is_array(), top_nntr["architectures"].size(), top_nntr["model_dirs"].size());
+
 
       if (is_multi) {
         // ----------------------------------------------------------------
@@ -697,8 +707,12 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
                sub_dir.c_str());
 
           json sub_cfg = causallm::LoadJsonFile(sub_dir + "/config.json");
-          json sub_gen =
-            causallm::LoadJsonFile(sub_dir + "/generation_config.json");
+	  
+          json sub_gen;
+	  if(check_file_exists(sub_dir +"/generation_config.json")){
+            sub_gen=causallm::LoadJsonFile(sub_dir + "/generation_config.json");
+	  }
+
           json sub_nntr =
             causallm::LoadJsonFile(sub_dir + "/nntr_config.json");
 
@@ -754,11 +768,17 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       }
 
       // -------------------- single-model fallback --------------------
+      LOGD("single cfg : %s",(abs_model_dir+"/config.json").c_str());
       cfg = causallm::LoadJsonFile(abs_model_dir + "/config.json");
-      generation_cfg =
-          causallm::LoadJsonFile(abs_model_dir + "/generation_config.json");
-      nntr_cfg = std::move(top_nntr);
 
+      if (check_file_exists (abs_model_dir + "/generation_config.json")) {
+        generation_cfg = causallm::LoadJsonFile (abs_model_dir + "/generation_config.json");
+      }
+      
+      nntr_cfg = std::move (top_nntr);
+      
+      LOGD("single tokenizer : %s",(abs_model_dir+"/tokenizer.json").c_str());
+      
       if (nntr_cfg.contains("tokenizer_file")) {
         nntr_cfg["tokenizer_file"] = abs_model_dir + "/tokenizer.json";
       }
@@ -795,19 +815,26 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
     const std::string weight_file = abs_model_dir + "/" + weight_file_name;
     LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
+    
     nntr_cfg["model_file_name"] = weight_file;
     if (nntr_cfg.contains("binary_config_path")) {
       std::string str = nntr_cfg["binary_config_path"].get<std::string>();
       nntr_cfg["binary_config_path"] = abs_model_dir + "/" + str;
+      LOGD ("[DEBUG] bianry config data: file = %s",
+          nntr_cfg["binary_config_path"].get<std::string> ().c_str ());
     }
     if (nntr_cfg.contains("image_newline_path")) {
       std::string str = nntr_cfg["image_newline_path"].get<std::string>();
       nntr_cfg["image_newline_path"] = abs_model_dir + "/" + str;
+      LOGD ("[DEBUG] new line config data: file = %s",
+          nntr_cfg["image_newline_path"].get<std::string> ().c_str ());
     }
     if (nntr_cfg.contains("embedding_file_name")) {
       std::string str = nntr_cfg["embedding_file_name"].get<std::string>();
       nntr_cfg["embedding_file_name"] = abs_model_dir + "/" + str;
     }
+
+    LOGD ("[DEBUG] -------------------------- asdfasdfasdfasdfasdfasdf ");
 
     // Determine architecture from config or ModelType
     // Priority: Config file architecture > ModelType mapping (fallback)
@@ -1379,25 +1406,83 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   // Log pixel values summary (first few values)
   // Note: patch size is fixed at 512x512
   const int PATCH_SIZE = 512;
-  long long totalValues = 1LL * numPatches * 3 * PATCH_SIZE * PATCH_SIZE;
-  LOGD("[DEBUG]   totalPixelValues=%lld", totalValues);
-  if (totalValues > 0 && pixelValues != nullptr) {
-    LOGD("[DEBUG]   pixelValues[0..4]=%f, %f, %f, %f, %f", pixelValues[0],
-         pixelValues[1], pixelValues[2],
-            (totalValues > 3 ? pixelValues[3] : 0.0f),
-            (totalValues > 4 ? pixelValues[4] : 0.0f));
+
+  const size_t pixel_bytes = static_cast<size_t> (numPatches) * 3 * PATCH_SIZE
+                             * PATCH_SIZE * sizeof (float);
+  LOGD ("[DEBUG]   pixel_bytes=%zu (numPatches=%d)", pixel_bytes, numPatches);
+
+#ifdef ENABLE_QNN
+  auto *vision = dynamic_cast<causallm::Gauss3_8_Vision_Encoder_QNN *>(
+    h.models[0].get());
+  if (vision == nullptr) {
+    LOGE("[DEBUG] runMultimodalHandleStreaming: models[0] is not "
+         "Gauss3_8_Vision_Encoder_QNN (arch=%s)",
+         h.architectures.empty() ? "?" : h.architectures[0].c_str());
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
   }
 
-  // TODO: Vision Encoder + LLM pipeline
-  //   auto *vision = h.models[0].get();   // e.g. Gauss_3_8_Visual_QNN
-  //   auto *llm    = h.models[1].get();   // e.g. Gauss_3_8_QNN
-  //   1. vision->encode(pixelValues, numPatches, H, W) -> embeddings
-  //   2. combine embeddings with text prompt
-  //   3. llm->setStreamer(&streamer.base); llm->run(combined)
-  //   4. h.last_output = llm->getOutput(0);
-  LOGD("[DEBUG] runMultimodalHandleStreaming: Vision Encoder integration "
-       "not yet implemented. Returning UNSUPPORTED.");
+  // Initialize streamer the same way runModelHandleStreaming does.
+  // For the vision-only path, attach to models[0] so anything the
+  // encoder emits per-token reaches the callback. Step 4 will move
+  // the attachment to models[1] (LLM) around the generation loop.
+  LOGD("[DEBUG] runMultimodalHandleStreaming: Initializing callback streamer");
+  CallbackStreamer streamer;
+  callback_streamer_init(&streamer, callback, user_data);
+
+  LOGD("[DEBUG] runMultimodalHandleStreaming: Attaching streamer to vision");
+  vision->setStreamer(&streamer.base);
+
+  // RAII detach so the stack-local streamer never outlives this call.
+  struct Detach {
+    causallm::Transformer *t;
+    ~Detach() {
+      LOGD("[DEBUG] runMultimodalHandleStreaming::Detach: Clearing streamer");
+      t->setStreamer(nullptr);
+    }
+  } detach_guard{vision};
+
+  causallm::multimodal_pointer image_in{const_cast<float *>(pixelValues),
+                                        pixel_bytes};
+
+  try {
+    LOGD("[DEBUG] runMultimodalHandleStreaming: calling vision->run_image()");
+    causallm::multimodal_pointer image_embeds =
+      vision->run_image(std::string(prompt), image_in, originalHeight,
+                        originalWidth, /*do_sample=*/false, /*system=*/"",
+                        /*tail=*/"", /*log_output=*/g_verbose);
+    LOGD("[DEBUG] runMultimodalHandleStreaming: vision->run_image() done "
+         "(embed.ptr=%p embed.size=%zu)",
+         image_embeds.first, image_embeds.second);
+
+    // Placeholder until LLM step is wired.
+    h.last_output = "[vision-only] " + std::string(prompt);
+    
+  } catch (const std::exception &e) {
+    LOGE("[DEBUG] runMultimodalHandleStreaming: vision->run_image() threw: %s",
+         e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  } catch (...) {
+    LOGE("[DEBUG] runMultimodalHandleStreaming: vision->run_image() threw "
+         "non-std exception");
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+
+  
+  // TODO(step 4): wire the LLM (models[1]) here.
+  //   auto *llm = dynamic_cast<causallm::Gauss3_8_QNN *>(h.models[1].get());
+  //   vision->setStreamer(nullptr);   // detach from vision
+  //   llm->setStreamer(&streamer.base);
+  //   // hand image_embeds to llm (API TBD) and run
+  //   llm->run(prompt, ...);
+  //   h.last_output = llm->getOutput(0);
+  //   (detach_guard would need to be updated to point at llm for that phase)
+
+  LOGD("[DEBUG] runMultimodalHandleStreaming: END (vision-only SUCCESS)");
+  return CAUSAL_LM_ERROR_NONE;
+#else
+  LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
   return CAUSAL_LM_ERROR_UNSUPPORTED;
+#endif
 }
 
 ErrorCode runMultimodalHandle(CausalLmHandle handle,

@@ -35,8 +35,7 @@ public:
 
   void initialize();
 
-  void setupParameters(json &cfg, json &generation_cfg,
-                       json &nntr_cfg) override;
+  void setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) override;
 
   void run(const WSTR prompt, bool do_sample = false,
            const WSTR system_prompt = "", const WSTR tail_prompt = "",

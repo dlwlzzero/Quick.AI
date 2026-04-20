@@ -16,6 +16,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOG_TAG "QuickAI"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+#define LOGD(fmt, ...) fprintf(stdout, fmt "\n", ##__VA_ARGS__)
+#define LOGE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#endif
+
 namespace causallm {
 
 /**
@@ -26,14 +37,16 @@ namespace causallm {
 class Gauss3_8_Vision_Encoder_QNN : public Quick_Dot_AI_QNN {
 
 public:
-  static constexpr const char *architectures = "Gauss_3_8_Visual_QNN";
+  static constexpr const char *architectures = "Gauss_3_8_VEncoder_QNN";
 
   Gauss3_8_Vision_Encoder_QNN(json &cfg, json &generation_cfg, json &nntr_cfg)
       : Quick_Dot_AI_QNN(cfg, generation_cfg, nntr_cfg) {
     // Load image_newline file using mmap
+    LOGD("--------------------------------- Vsion Ecoder QNN");
+    
     if (nntr_cfg.contains("image_newline_path")) {
       std::string image_newline_path = nntr_cfg["image_newline_path"];
-
+      LOGD("Vsion Ecoder QNN :  newline path %s", image_newline_path.c_str());
       int fd = ::open(image_newline_path.c_str(), O_RDONLY);
       NNTR_THROW_IF((fd == -1), std::invalid_argument)
           << "Cannot open file: " << image_newline_path;
@@ -44,7 +57,7 @@ public:
 
       image_newline_mmap_size = static_cast<size_t>(st.st_size);
       image_newline_mmap_ptr = ::mmap(nullptr, image_newline_mmap_size,
-                                      PROT_READ, MAP_PRIVATE, fd, 0);
+                                      PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
       ::close(fd);
 
       NNTR_THROW_IF((image_newline_mmap_ptr == MAP_FAILED), std::runtime_error)

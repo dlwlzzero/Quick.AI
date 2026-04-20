@@ -44,6 +44,7 @@ class Quick_Dot_AI_QNN : public Transformer {
 public:
   Quick_Dot_AI_QNN(json &cfg, json &generation_cfg, json &nntr_cfg)
       : Transformer(cfg, generation_cfg, nntr_cfg, ModelType::MODEL) {
+    LOGD("--------------------------------- Quick_Dot_AI_QNN");
     setupParameters(cfg, generation_cfg, nntr_cfg);
   }
 
