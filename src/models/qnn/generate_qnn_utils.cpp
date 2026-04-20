@@ -85,6 +85,15 @@ void fill_attention_mask_with_length(int rows, int columns, int length,
   }
 }
 
+void fill_attention_mask_with_prev_length(int rows, int columns, int length, 
+                                          uint16_t *attention_mask) {
+  for(int i = 0; i < rows; i++) {
+    for(int j = 0; j < length; j++) {
+      attention_mask[i * columns + j] = std::numeric_limits<uint16_t>::max();
+    }
+  }                                            
+}
+
 uint16_t *get_zero_memory(int size, int zero_point) {
   uint16_t *memory = (uint16_t *)allocate(size * sizeof(uint16_t));
   for (int i = 0; i < size; i++)

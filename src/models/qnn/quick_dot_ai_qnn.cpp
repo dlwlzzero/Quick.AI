@@ -189,6 +189,12 @@ void causallm::Quick_Dot_AI_QNN::load_weight(const std::string &weight_path) {
   for (const auto &[key, value] : models) {
     value.model_handle->load(model_file_name, ModelFormat::MODEL_FORMAT_QNN);
   }
+  for (const auto &[key, value] : models) {
+    value.model_handle->load(embedding_path);
+  }
+  for (const auto &[key, value] : models) {
+    value.model_handle->load(embedding_path);
+  }
   // Allocate tensors for inference - required for input/output buffers
   for (auto &[key, value] : models) {
     value.model_handle->allocate(ExecutionMode::INFERENCE);
@@ -205,6 +211,7 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   // Read nntr_config parameters
   LOGD("----------------in Quick_Dot_AI_QNN : setupParameters");  
   model_file_name = nntr_cfg["model_file_name"].get<std::string>();
+  embedding_path = nntr_cfg["embedding_file_name"].get<std::string>();
   LOGD("----------------binary_config_path : %s", model_file_name.c_str());    
   binary_config_path = nntr_cfg["binary_config_path"].get<std::string>();
   LOGD("----------------binary_config_path : %s", binary_config_path.c_str());
