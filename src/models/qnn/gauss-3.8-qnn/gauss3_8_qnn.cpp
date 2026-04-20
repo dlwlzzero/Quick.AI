@@ -377,8 +377,10 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     std::memcpy(prefill_swa_position_ids_cos, swa_position_ids_cos + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
     std::memcpy(prefill_swa_position_ids_sin, swa_position_ids_sin + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
 
-    std::cout << "before prefill model run..." << std::endl;
     outputs = prefill_model->inference(1, prefill_inputs);
+
+    // Remove output_hidden_states from outputs
+    outputs.erase(outputs.begin() + 96);
 
     // KV Cache Copy
 #pragma omp parallel for
@@ -416,7 +418,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
 
   auto start = std::chrono::system_clock::now();
   int idx;
-  for (idx = _len; idx < context_size; idx++) {
+  for (idx = _len; idx < (max_seq_len - context_size); idx++) {
     generation_sample[0] = token;
 
     generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
@@ -433,32 +435,33 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
                 swa_position_ids_sin + idx * pos_dim,
                 pos_dim * sizeof(uint16_t));
 
-    // Remove output_hidden_states from outputs
-    outputs.erase(outputs.begin() + 96);
-
+    if(idx > _len) {
+      // Remove output_hidden_states from outputs
+      outputs.erase(outputs.begin() + 96);
 #pragma omp parallel for
-    for (int i = 0; i < this->kvs.size(); i++) {
-      bool is_key = i % 4 > 1;
-      int kv_idx = i / 4 * 4 + (i + 2) % 4;
-      int layer_idx = i / 4;
-      int dest_row_length = layer_idx % 5 == 4 ? max_seq_len - context_size
-                                               : sliding_window - context_size;
-      int src_row_length = idx == _len ? 256 : 1;
+      for (int i = 0; i < this->kvs.size(); i++) {
+        bool is_key = i % 4 > 1;
+        int kv_idx = i / 4 * 4 + (i + 2) % 4;
+        int layer_idx = i / 4;
+        int dest_row_length = layer_idx % 5 == 4 ? max_seq_len - context_size
+                                                 : sliding_window - context_size;
+        int src_row_length = idx == _len ? 256 : 1;
 
-      auto output = std::get<uint8_t *>(outputs[i]);
-      auto dest = (uint8_t *)this->kvs[kv_idx];
-      // key cache or value cache
-      int num_row = idx == _len ? _len : 1;
-      int num_column = 128;
-      if (is_key) {
-        // format: 1:1:col:row
-        process_key(output, num_row, num_column, dest, idx == _len ? 0 : idx,
-                    dest_row_length, src_row_length);
-      } else {
-        // format: 1:1:row:col
-        process_value(output, num_row, num_column, dest, idx == _len ? 0 : idx);
-      }
-    };
+        auto output = std::get<uint8_t *>(outputs[i]);
+        auto dest = (uint8_t *)this->kvs[kv_idx];
+        // key cache or value cache
+        int num_row = idx == _len ? _len : 1;
+        int num_column = 128;
+        if (is_key) {
+          // format: 1:1:col:row
+          process_key(output, num_row, num_column, dest, idx == _len ? 0 : idx,
+                      dest_row_length, src_row_length);
+        } else {
+          // format: 1:1:row:col
+          process_value(output, num_row, num_column, dest, idx == _len ? 0 : idx);
+        }
+      };
+    }
 
     outputs = generation_model->inference(1, generation_inputs);
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
@@ -467,7 +470,6 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     
     output.push_back(token);
     if (token == eos_token) {
-      std::cout << "Finished generating, break..." << std::endl;
       break;
     } else {
       std::string decoded= tokenizer->Decode({token});
