@@ -9,7 +9,9 @@
   "embedding_dtype": "FP16",
   "fc_layer_dtype": "FP16",
   "model_file_name": "/data/local/tmp/Quick.AI/models/gauss-3.6-qnn/vision-lora-251016-merged-quantized.serialized_234.bin",
+  "binary_config_path": "/data/local/tmp/Quick.AI/models/gauss-3.6-qnn/binary_config.json",
   "embedding_file_name": "/data/local/tmp/Quick.AI/models/gauss-3.6-qnn/gauss_3b_embed_quantized.bin",
+  "graphs_to_use": ["vision_lora_251016_prefill", "vision_lora_251016_generation"],
   "sample_input": "<|begin_of_text|><|turn_start|>System\n<|turn_end|>\n<|turn_start|>User\nWhat is 1/3 + 1/4?\n<|turn_end|>\n<|turn_start|>Assistant\n",
   "tokenizer_file": "/data/local/tmp/Quick.AI/models/gauss-3.6-qnn/tokenizer.json"
 }
