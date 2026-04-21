@@ -285,6 +285,16 @@ void causallm::Gauss3_6_QNN::initialize() {
           (uint16_t *)get_zero_memory(size, 128 * 256 + 128));
     }
   }
+
+  for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
+    const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
+    if (name.find("past_") == 0) {
+      // Found a KV cache tensor
+      auto *kv_ptr = std::get<uint8_t *>(prefill_inputs[idx]);
+      int size = GraphParser::get_tensor_size(info);
+      std::fill_n(kv_ptr, size, 128);
+    }
+  }
   LOGD("----------------------- initialize() done");  
 }
 
@@ -353,20 +363,24 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
 
   auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
 
+  std::cout << "n_chunk: " << _n_chunks << ", len: " << _len << std::endl;
+
   std::vector<int> output;
   std::vector<ml::train::TensorDim::IO_TensorType> outputs;
 
   for(int c = 0; c < _n_chunks; c++) {
     int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
 
+    std::cout << "chunk_num: " << c << ", chunk_len: " << _chunk_len << std::endl;
+
     for(int i = 0; i < context_size; i++)
       input_sample[i] = (i < _chunk_len) ? _input[c * 256 + i] : padding_token;
 
-    fill_attention_mask_with_length(context_size, max_seq_len, _len, attention_mask);
-    fill_attention_mask_with_prev_length(context_size, sliding_window, c * 256, sliding_attention_mask);
+    fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len, attention_mask);
+    fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256, attention_mask);
 
     fill_attention_mask_with_length(context_size, sliding_window, _chunk_len, sliding_attention_mask);
-    int sliding_window_length = (c > 4) ? sliding_window : (c * 256);
+    int sliding_window_length = (c > 4) ? (sliding_window - context_size) : (c * 256);
     fill_attention_mask_with_prev_length(context_size, sliding_window, sliding_window_length, sliding_attention_mask);
 
     std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
@@ -441,22 +455,20 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
         bool is_key = i % 4 > 1;
         int kv_idx = i / 4 * 4 + (i + 2) % 4;
         int layer_idx = i / 4;
-        int dest_row_length = layer_idx % 5 == 4 ? max_seq_len - 1
-                                                 : sliding_window - context_size - 1;
-        int src_row_length = idx == _len ? 256 : 1;
+        int dest_row_length = (layer_idx % 5 == 4 ? max_seq_len : sliding_window - context_size) - 1;
+        int src_row_length = 1;
 
         auto output = std::get<uint8_t *>(outputs[i]);
         auto dest = (uint8_t *)this->kvs[kv_idx];
         // key cache or value cache
-        int num_row = idx == _len ? _len : 1;
+        int num_row = 1;
         int num_column = 128;
         if (is_key) {
           // format: 1:1:col:row
-          process_key(output, num_row, num_column, dest, idx == _len ? 0 : idx,
-                      dest_row_length, src_row_length);
+          process_key(output, num_row, num_column, dest, idx, dest_row_length, src_row_length);
         } else {
           // format: 1:1:row:col
-          process_value(output, num_row, num_column, dest, idx == _len ? 0 : idx);
+          process_value(output, num_row, num_column, dest, idx);
         }
       };
     }                
