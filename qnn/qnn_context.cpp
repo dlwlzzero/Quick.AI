@@ -244,7 +244,7 @@ int QNNContext::init() {
   if (StatusCode::SUCCESS != this->initializeProfiling()) {
     LOGE("init: Profiling Initialization failure");
     ml_loge("Profiling Initialization failure");
-    return -1;    
+    return -1;
   }
 
   LOGD("init: Registering Op Packages");
@@ -276,17 +276,23 @@ const int QNNContext::registerFactory(const FactoryType<T> factory,
 
   const std::lock_guard<std::mutex> lock(qnn_factory_mutex);
   if (str_map.find(assigned_key) != str_map.end()) {
-    std::stringstream ss;
-    ss << "qnn_context: cannot register factory with already taken key: "
-       << key;
-    throw std::invalid_argument(ss.str().c_str());
+    // std::stringstream ss;
+    // ss << "qnn_context: cannot register factory with already taken key: "
+    //    << key;
+    // throw std::invalid_argument(ss.str().c_str());
+    for (const auto &[ik, sk] : int_map)
+    {
+      if (sk == assigned_key)
+        return ik;
+    }
+    return -1;
   }
-
   if (int_key != -1 && int_map.find(int_key) != int_map.end()) {
-    std::stringstream ss;
-    ss << "qnn_context: cannot register factory with already taken int key: "
-       << int_key;
-    throw std::invalid_argument(ss.str().c_str());
+    // std::stringstream ss;
+    // ss << "qnn_context: cannot register factory with already taken int key: "
+    //    << int_key;
+    // throw std::invalid_argument(ss.str().c_str());
+    return int_key;
   }
 
   int assigned_int_key = int_key == -1 ? str_map.size() + 1 : int_key;
