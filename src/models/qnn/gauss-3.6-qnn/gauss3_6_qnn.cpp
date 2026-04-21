@@ -379,9 +379,18 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len, attention_mask);
     fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256, attention_mask);
 
-    fill_attention_mask_with_length(context_size, sliding_window, _chunk_len, sliding_attention_mask);
-    int sliding_window_length = (c > 4) ? (sliding_window - context_size) : (c * 256);
-    fill_attention_mask_with_prev_length(context_size, sliding_window, sliding_window_length, sliding_attention_mask);
+    
+    if (c >= 4) {
+      std::fill_n(sliding_attention_mask, context_size * sliding_window, std::numeric_limits<uint16_t>::min());
+      for(int i = 0; i < _chunk_len; i++) {
+        for(int j = (i+1); j < (i+1024); j++) {
+          sliding_attention_mask[i * sliding_window + j] = std::numeric_limits<uint16_t>::max();
+        }
+      }
+    } else {
+      fill_attention_mask_with_length(context_size, sliding_window, _chunk_len, sliding_attention_mask);
+      fill_attention_mask_with_prev_length(context_size, sliding_window, c * 256, sliding_attention_mask);
+    }                       
 
     std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_position_ids_sin, context_size * pos_dim, 32768);
@@ -402,21 +411,36 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
       bool is_key = i % 4 > 1;
       int kv_idx = i / 4 * 4 + (i + 2) % 4;
       int layer_idx = i / 4;
-      int dest_row_length = (layer_idx % 5 == 4 ? max_seq_len : sliding_window - context_size) - 1;
+      bool is_sliding = layer_idx % 5 !=  4;
+      int dest_row_length = (!is_sliding ? max_seq_len : sliding_window - context_size) - 1;
       int src_row_length = context_size;
 
       auto output = std::get<uint8_t *>(outputs[i]);
-      auto dest = (uint8_t *)this->kvs[kv_idx];
+      auto dest = (uint8_t *)this->kvs[kv_idx]; 
       // key cache or value cache
       int num_column = 128;
+
+      int target_idx = c * 256;
+      if(is_sliding && (c * 256) > dest_row_length) {
+        target_idx = dest_row_length - _chunk_len;
+        if(is_key) {
+          for(int col = 0; col < num_column; ++col) {
+            uint8_t *col_base = dest + col * dest_row_length;
+            std::memmove(col_base, col_base + _chunk_len, dest_row_length - _chunk_len);
+          }
+        } else {
+          std::memmove(dest, dest + _chunk_len * num_column, (dest_row_length - _chunk_len) * num_column);
+        }
+      }
+
       if (is_key) {
-        // format: 1:1:col:row
-        process_key(output, _chunk_len, num_column, dest, c * 256, dest_row_length, src_row_length);
+        process_key (output, _chunk_len, num_column, dest, target_idx, dest_row_length, src_row_length);
       } else {
-        // format: 1:1:row:col
-        process_value(output, _chunk_len, num_column, dest, c * 256);
+        process_value (output, _chunk_len, num_column, dest, target_idx);
       }
     };
+
+    std::cout << "Prefill KV Cache copy finished!" << std::endl;
   }
 
   std::fill_n(generation_attention_mask, max_seq_len, 0);
@@ -427,8 +451,11 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
   
   for (int i = 0; i < _len; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < _len; i++)
+  
+  int len = (_len <= sliding_window - context_size) ? _len : sliding_window - context_size;
+  for (int i = 0; i < len; i++){
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
+  }
 
   auto start = std::chrono::system_clock::now();
   int idx;
@@ -436,8 +463,7 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     generation_sample[0] = token;
 
     generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
-    generation_sliding_attention_mask[idx] =
-        std::numeric_limits<uint16_t>::max();
+    generation_sliding_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
     std::memcpy(generation_position_ids_cos, position_ids_cos + idx * pos_dim,
                 pos_dim * sizeof(uint16_t));
     std::memcpy(generation_position_ids_sin, position_ids_sin + idx * pos_dim,
@@ -455,7 +481,8 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
         bool is_key = i % 4 > 1;
         int kv_idx = i / 4 * 4 + (i + 2) % 4;
         int layer_idx = i / 4;
-        int dest_row_length = (layer_idx % 5 == 4 ? max_seq_len : sliding_window - context_size) - 1;
+        bool is_sliding = (layer_idx % 5 != 4);
+        int dest_row_length = (!is_sliding ? max_seq_len : sliding_window - context_size) - 1;
         int src_row_length = 1;
 
         auto output = std::get<uint8_t *>(outputs[i]);
@@ -463,12 +490,24 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
         // key cache or value cache
         int num_row = 1;
         int num_column = 128;
+
+        int target_idx = idx;
+        if (is_sliding && (idx + 1) > dest_row_length) {
+          target_idx = dest_row_length - 1;
+          if (is_key) {
+            for (int col = 0; col < num_column; ++col) {
+              uint8_t *col_base = dest + col * dest_row_length;
+              std::memmove (col_base, col_base + 1, dest_row_length - 1);
+            }
+          } else {
+            std::memmove (dest, dest + num_column, (dest_row_length - 1) * num_column);
+          }
+        }
+
         if (is_key) {
-          // format: 1:1:col:row
-          process_key(output, num_row, num_column, dest, idx, dest_row_length, src_row_length);
+          process_key (output, 1, num_column, dest, target_idx, dest_row_length, 1);
         } else {
-          // format: 1:1:row:col
-          process_value(output, num_row, num_column, dest, idx);
+          process_value (output, 1, num_column, dest, target_idx);
         }
       };
     }                
@@ -480,6 +519,7 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     
     output.push_back(token);
     if (token == eos_token) {
+      std::cout << "Finished generating, break..." << std::endl;
       break;
     } else {
       std::string decoded= tokenizer->Decode({token});
