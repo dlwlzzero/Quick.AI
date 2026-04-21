@@ -108,7 +108,7 @@ static std::map<std::string, std::string> g_model_path_map = {
     {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
     {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
     {"GAUSS3.8-VISION-QNN", "gauss-3.8-vision-qnn"},
-    {"GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn"},      
+    {"GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn"},
 #endif
 };
 
@@ -225,7 +225,7 @@ static void register_models() {
         [] (json cfg, json generation_cfg, json nntr_cfg) {
           return std::make_unique<causallm::Gauss3_8_Vision_Encoder_QNN> (
               cfg, generation_cfg, nntr_cfg);
-        });    
+        });
 #endif
     // Register built-in configurations
     quick_dot_ai::register_builtin_configs();
@@ -853,7 +853,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
     LOGD("[DEBUG] load_into_handle: Creating model via Factory...%s ",
          architecture.c_str());
-    
+
     auto m = causallm::Factory::Instance().create(architecture, cfg,
                                                    generation_cfg, nntr_cfg);
     if (!m) {
@@ -1339,6 +1339,39 @@ ErrorCode destroyModelHandle(CausalLmHandle handle) {
     handle->initialized = false;
   }
   delete handle;
+  return CAUSAL_LM_ERROR_NONE;
+}
+
+ErrorCode cancelModelHandle(CausalLmHandle handle) {
+  LOGD("[DEBUG] cancelModelHandle: handle=%p", (void *)handle);
+
+  if (handle == nullptr) {
+    LOGE("[DEBUG] cancelModelHandle: handle is nullptr, returning INVALID_PARAMETER");
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  // NOTE: We intentionally do NOT take the mutex here to avoid blocking
+  // when run() is holding the lock. The requestStop() method is thread-safe
+  // (uses atomic<bool>), and the models vector is not modified during run()
+  // (only during load/unload which do take the mutex). This allows immediate
+  // cancellation from any thread (e.g., UI cancel button handler).
+  LOGD("[DEBUG] cancelModelHandle: checking state without mutex, initialized=%d, models.size=%zu",
+       handle->initialized, handle->models.size());
+
+  if (!handle->initialized || handle->models.empty()) {
+    LOGE("[DEBUG] cancelModelHandle: not initialized, returning NOT_INITIALIZED");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  // Set stop flag on all models (primarily affects models[0] for LLM)
+  for (size_t i = 0; i < handle->models.size(); ++i) {
+    if (handle->models[i]) {
+      LOGD("[DEBUG] cancelModelHandle: calling requestStop() on model[%zu]", i);
+      handle->models[i]->requestStop();
+    }
+  }
+
+  LOGD("[DEBUG] cancelModelHandle: returning NONE (success)");
   return CAUSAL_LM_ERROR_NONE;
 }
 
