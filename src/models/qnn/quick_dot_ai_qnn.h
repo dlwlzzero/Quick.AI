@@ -99,6 +99,11 @@ protected:
 
   bool uses_embedding = true;
 
+  // Optional external embedding file path (absolute after fix_paths).
+  // Only used when uses_embedding=false — derived classes mmap this
+  // and provide per-token lookup during generation.
+  std::string embedding_file_name;
+
   // Streaming support
   ::BaseStreamer *streamer_ = nullptr;
   std::string last_output_;  

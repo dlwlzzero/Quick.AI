@@ -157,10 +157,16 @@ WIN_EXPORT ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
  * block each other. Each handle owns its own model, its own last-output
  * buffer, and its own mutex.
  *
+ * A single handle may internally carry multiple sub-models (e.g. vision
+ * encoder + LLM) when loaded from a top-level nntr_config.json that
+ * specifies "architectures" and "model_dirs" arrays. The single-model
+ * run API (runModelHandle / runModelHandleStreaming) drives models[0]
+ * only; the multimodal API (runMultimodalHandle*) drives the full set.
+ *
  * Typical usage:
  *   CausalLmHandle h = NULL;
  *   loadModelHandle(CAUSAL_LM_BACKEND_CPU, CAUSAL_LM_MODEL_QWEN3_0_6B,
- *                   CAUSAL_LM_QUANTIZATION_W4A32, &h);
+ *                   CAUSAL_LM_QUANTIZATION_W4A32, NULL, &h);
  *   const char *out = NULL;
  *   runModelHandle(h, "Hello", &out);
  *   // ... use out (owned by h, valid until the next run or destroy) ...
@@ -200,6 +206,10 @@ WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
  * is destroyed. Different handles are safe to call concurrently from
  * different threads; the same handle is serialized by its own internal
  * mutex.
+ *
+ * Single-model API: drives models[0] only even when the handle was
+ * populated with multiple sub-models. Use runMultimodalHandle for
+ * compositions such as vision-encoder + LLM.
  *
  * @param handle          Handle returned by loadModelHandle
  * @param inputTextPrompt Input prompt
@@ -290,8 +300,13 @@ WIN_EXPORT ErrorCode runModelHandleStreaming(CausalLmHandle handle,
    * The pixel values are passed as preprocessed FloatArray (CHW format) from
    * the Kotlin image processor (LlavaNextImageProcessor).
    *
+   * The handle must have been loaded from a multi-model nntr_config.json
+   * (architectures[] + model_dirs[]) with at least [vision_encoder, llm];
+   * a single-model handle returns CAUSAL_LM_ERROR_UNSUPPORTED.
+   *
    * Vision Encoder integration is planned for future implementation.
-   * Currently these functions return CAUSAL_LM_ERROR_UNSUPPORTED as stubs.
+   * Currently these functions return CAUSAL_LM_ERROR_UNSUPPORTED as stubs
+   * once the multi-model precondition is satisfied.
    *============================================================================*/
 
   /**

@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+/**
+ * @file   quick_dot_ai_qnn.cpp
+ * @brief  QNN model implementation for Quick.AI template
+ * @note   This file implements a layer that executes QNN binary file within
+ * transformer.h architecture.
+ */
+
 #include "quick_dot_ai_qnn.h"
 #include "android_memory_allocator.h"
 #include "engine.h"
@@ -32,7 +40,13 @@ get_qnn_input_data(TensorInfo tensor_object) {
 }
 
 causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN() {
-  for(auto &[model_name, model]:models){
+  // Tear down each graph's NeuralNetwork (and the QNNGraph layer inside it)
+  // FIRST, so ~QNNGraph releases its zero-copy references to our input
+  // buffers before we free them. Without this, the deallocate loop below
+  // would free memory that QNNGraph still tracks, and ~QNNGraph — invoked
+  // later as part of `models` member destruction — would touch freed
+  // memory.
+  for (auto &[model_name, model] : models) {
     model.model_handle.reset();
   }
   for (const auto &[model_name, model] : models) {
@@ -189,12 +203,14 @@ void causallm::Quick_Dot_AI_QNN::load_weight(const std::string &weight_path) {
   for (const auto &[key, value] : models) {
     value.model_handle->load(model_file_name, ModelFormat::MODEL_FORMAT_QNN);
   }
+  if(uses_embedding && !embedding_file_name.empty()){
   for (const auto &[key, value] : models) {
-    value.model_handle->load(embedding_path);
+    value.model_handle->load(embedding_file_name);
   }
   for (const auto &[key, value] : models) {
-    value.model_handle->load(embedding_path);
+    value.model_handle->load(embedding_file_name);
   }
+}
   // Allocate tensors for inference - required for input/output buffers
   for (auto &[key, value] : models) {
     value.model_handle->allocate(ExecutionMode::INFERENCE);
@@ -212,8 +228,6 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   LOGD("----------------in Quick_Dot_AI_QNN : setupParameters");  
   model_file_name = nntr_cfg["model_file_name"].get<std::string>();
   LOGD("----------------binary_config_path : %s", model_file_name.c_str());
-  embedding_path = nntr_cfg["embedding_file_name"].get<std::string>();  
-  LOGD("----------------binary_config_path : %s", embedding_path.c_str());
   binary_config_path = nntr_cfg["binary_config_path"].get<std::string>();
   LOGD("----------------binary_config_path : %s", binary_config_path.c_str());
   graphs_to_use = nntr_cfg["graphs_to_use"].get<std::vector<std::string>>();
@@ -222,6 +236,22 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   }
   vocab_size = cfg["vocab_size"].get<int>();
   LOGD("----------------vocab size : %d", vocab_size);
+
+  // Multimodal opt-in: when uses_embedding=false, the LLM graph's
+  // inputs_embeds tensor is fed with pre-computed uint16 embeddings
+  // rather than token IDs via an embedding layer. Derived classes
+  // also mmap embedding_file_name for per-token lookup during
+  // generation (see e.g. Gauss3_8_QNN::lookupEmbedding).
+  if (nntr_cfg.contains("uses_embedding")) {
+    uses_embedding = nntr_cfg["uses_embedding"].get<bool>();
+  }
+  LOGD("---------------- uses_embedding : %d", uses_embedding);
+
+  if (nntr_cfg.contains("embedding_file_name")) {
+    embedding_file_name = nntr_cfg["embedding_file_name"].get<std::string>();
+    LOGD("---------------- embedding_file_name : %s",
+         embedding_file_name.c_str());
+  }
 }
 
 void causallm::Quick_Dot_AI_QNN::constructModel() {

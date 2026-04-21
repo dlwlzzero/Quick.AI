@@ -63,10 +63,12 @@ using causallm::multimodal_pointer;
 /**
  * @brief Per-handle state for a loaded CausalLM model instance.
  *
- * The handle-based API (loadModelHandle / runModelHandle / ...) allocates
- * one of these per loaded model, which allows multiple models to live
- * simultaneously and multiple threads to drive different handles in
- * parallel without blocking each other.
+ * Each handle may carry one or more sub-models so that compositions like
+ * vision-encoder + LLM can live behind a single handle. The vectors are
+ * kept parallel: models[i] ↔ architectures[i] ↔ model_dirs[i] ↔
+ * initialization_duration_ms[i]. The single-model API paths
+ * (runModelHandle / runModelHandleStreaming) operate on models[0] and
+ * ignore the rest; the multimodal API drives the full set.
  *
  * Note: the legacy non-handle API (loadModel / runModel / ...) is
  * implemented on top of a single static "default" instance of this struct
@@ -107,8 +109,8 @@ static std::map<std::string, std::string> g_model_path_map = {
 #ifdef ENABLE_QNN
     {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
     {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
-    {"GAUSS3.8-VISION-QNN", "gauss-3.8-vision-qnn"},
     {"GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn"},      
+    {"GAUSS3.8-VIT-QNN", "gauss3.8-vit-qnn"},
 #endif
 };
 
@@ -143,11 +145,11 @@ void register_model(const char *model_name, const char *arch_name,
 
 } // namespace quick_dot_ai
 
-// Helper to register models (similar to main.cpp)
-// ensuring factory is populated.
-// @note: Factory registration is singleton and persistent, but we do it once
-// here to be sure. Since main.cpp is not linked, we must duplicate registration
-// or share it. Assuming this lib is used independently of main.cpp.
+// Helper to register models (similar to main.cpp) ensuring factory is
+// populated. Factory registration is singleton and persistent, but we do it
+// once here to be sure. Since mquiain.cpp is not linked, we must duplicate
+// registration or share it. Assuming this lib is used independently of
+// main.cpp.
 static void register_models() {
   static std::once_flag flag;
   std::call_once(flag, []() {
@@ -167,10 +169,9 @@ static void register_models() {
                                                            nntr_cfg);
         });
     causallm::Factory::Instance().registerModel(
-        "Qwen3MoeForCausalLM",
-        [](json cfg, json generation_cfg, json nntr_cfg) {
-          return std::make_unique<causallm::Qwen3MoECausalLM>(
-              cfg, generation_cfg, nntr_cfg);
+      "Qwen3MoeForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::Qwen3MoECausalLM>(cfg, generation_cfg,
+                                                            nntr_cfg);
         });
     causallm::Factory::Instance().registerModel(
         "Qwen3SlimMoeForCausalLM",
@@ -631,8 +632,9 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       nntr_cfg["fc_layer_dtype"] = std::string(rc.fc_layer_dtype);
       nntr_cfg["model_file_name"] = std::string(rc.model_file_name);
 
-      std::string t_file = rc.tokenizer_file;
-      // nntr_cfg["tokenizer_file"] = "/sdcard/Android/data/com.example.sampleapp/files/models/gauss-3.6-qnn/tokenizer.json";
+      // tokenizer_file path is set later from abs_model_dir in the shared
+      // post-processing block below.
+      (void)rc.tokenizer_file;
 
       if (strlen(rc.lmhead_dtype) > 0) {
         nntr_cfg["lmhead_dtype"] = std::string(rc.lmhead_dtype);
@@ -717,6 +719,24 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
             causallm::LoadJsonFile(sub_dir + "/nntr_config.json");
 
           fix_paths(sub_nntr, sub_dir);
+
+          // Optional per-sub-model overrides from the top-level config.
+          // Lets callers flip flags like uses_embedding / add keys like
+          // embedding_file_name without duplicating the sub-model's own
+          // nntr_config.json. fix_paths is run again so any newly
+          // introduced path-like key (e.g. embedding_file_name) is
+          // resolved relative to sub_dir just like the native keys.
+          if (top_nntr.contains("model_options") &&
+              top_nntr["model_options"].is_array() &&
+              i < top_nntr["model_options"].size() &&
+              top_nntr["model_options"][i].is_object()) {
+            for (auto it = top_nntr["model_options"][i].begin();
+                 it != top_nntr["model_options"][i].end(); ++it) {
+              sub_nntr[it.key()] = it.value();
+              LOGD("[DEBUG]   override sub[%zu] %s", i, it.key().c_str());
+            }
+            fix_paths(sub_nntr, sub_dir);
+          }
 
           auto m = causallm::Factory::Instance().create(arch_i, sub_cfg,
                                                         sub_gen, sub_nntr);
@@ -1353,6 +1373,114 @@ ErrorCode destroyModelHandle(CausalLmHandle handle) {
  * CAUSAL_LM_ERROR_UNSUPPORTED.
  *============================================================================*/
 
+#ifdef ENABLE_QNN
+/**
+ * @brief Shared multimodal pipeline: tokenize, compose
+ *        [text_pre | image | text_post] embeddings, attach streamer,
+ *        drive llm->run_with_embeddings(). Assumes h.mtx is held and
+ *        `llm` and `image_embeds` are valid.
+ *
+ * Ownership: takes ownership of image_embeds.first (frees via
+ * std::free before returning, on both success and failure paths).
+ */
+static ErrorCode
+execute_multimodal_llm(CausalLmModel &h, causallm::Gauss3_8_QNN *llm,
+                       causallm::multimodal_pointer image_embeds,
+                       const std::string &prompt,
+                       CausalLmTokenCallback callback, void *user_data) {
+  auto *tok = llm->getTokenizer();
+  if (tok == nullptr) {
+    LOGE("[DEBUG] execute_multimodal_llm: LLM has no tokenizer");
+    std::free(image_embeds.first);
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
+  std::vector<int> text_ids = tok->Encode(prompt);
+  int32_t image_token_id = tok->TokenToId("<|image|>");
+
+  const size_t bpt = llm->embeddingBytesPerToken();
+  if (bpt == 0) {
+    LOGE("[DEBUG] execute_multimodal_llm: embedding table not loaded "
+         "(set uses_embedding=false + embedding_file_name on LLM config)");
+    std::free(image_embeds.first);
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
+  if (image_embeds.second % bpt != 0) {
+    LOGE("[DEBUG] execute_multimodal_llm: image_embeds.size=%zu not a "
+         "multiple of bpt=%zu",
+         image_embeds.second, bpt);
+    std::free(image_embeds.first);
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+  const size_t n_image = image_embeds.second / bpt;
+
+  // Locate <|image|> placeholder; if absent, prepend image embeddings.
+  auto it_img = (image_token_id >= 0)
+                  ? std::find(text_ids.begin(), text_ids.end(),
+                              image_token_id)
+                  : text_ids.end();
+  const bool has_placeholder = (it_img != text_ids.end());
+  const size_t img_pos =
+    has_placeholder
+      ? static_cast<size_t>(std::distance(text_ids.begin(), it_img))
+      : 0;
+  const size_t n_text_kept = text_ids.size() - (has_placeholder ? 1 : 0);
+  const size_t n_total = n_text_kept + n_image;
+  LOGD("[DEBUG] execute_multimodal_llm: text=%zu image=%zu total=%zu "
+       "placeholder=%d pos=%zu",
+       text_ids.size(), n_image, n_total, has_placeholder, img_pos);
+
+  // Compose combined buffer: [pre-image text | image | post-image text].
+  std::vector<uint8_t> combined(n_total * bpt);
+  uint8_t *dst = combined.data();
+  auto copy_text_range = [&](size_t start, size_t end) -> bool {
+    for (size_t i = start; i < end; ++i) {
+      const void *e = llm->lookupEmbedding(text_ids[i]);
+      if (e == nullptr) {
+        LOGE("[DEBUG] execute_multimodal_llm: lookupEmbedding(%d) null",
+             text_ids[i]);
+        return false;
+      }
+      std::memcpy(dst, e, bpt);
+      dst += bpt;
+    }
+    return true;
+  };
+  if (!copy_text_range(0, img_pos)) {
+    std::free(image_embeds.first);
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+  std::memcpy(dst, image_embeds.first, n_image * bpt);
+  dst += n_image * bpt;
+  const size_t after_start = has_placeholder ? img_pos + 1 : img_pos;
+  if (!copy_text_range(after_start, text_ids.size())) {
+    std::free(image_embeds.first);
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+  std::free(image_embeds.first);
+  image_embeds.first = nullptr;
+
+  // Attach streamer and drive generation.
+  CallbackStreamer streamer;
+  callback_streamer_init(&streamer, callback, user_data);
+  llm->setStreamer(&streamer.base);
+  struct Detach {
+    causallm::Transformer *t;
+    ~Detach() { t->setStreamer(nullptr); }
+  } detach_guard{llm};
+
+  try {
+    llm->run_with_embeddings(combined.data(), n_total, text_ids,
+                             /*do_sample=*/false,
+                             /*log_output=*/g_verbose);
+  } catch (const std::exception &e) {
+    LOGE("[DEBUG] execute_multimodal_llm: llm threw: %s", e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+
+  return CAUSAL_LM_ERROR_NONE;
+}
+#endif  // ENABLE_QNN
+
 ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
                                        const char *prompt,
                                        const float *pixelValues,
@@ -1406,79 +1534,49 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   // Log pixel values summary (first few values)
   // Note: patch size is fixed at 512x512
   const int PATCH_SIZE = 512;
-
-  const size_t pixel_bytes = static_cast<size_t> (numPatches) * 3 * PATCH_SIZE
-                             * PATCH_SIZE * sizeof (float);
-  LOGD ("[DEBUG]   pixel_bytes=%zu (numPatches=%d)", pixel_bytes, numPatches);
+  long long totalValues = 1LL * numPatches * 3 * PATCH_SIZE * PATCH_SIZE;
+  LOGD("[DEBUG]   totalPixelValues=%lld", totalValues);
+  if (totalValues > 0 && pixelValues != nullptr) {
+    LOGD("[DEBUG]   pixelValues[0..4]=%f, %f, %f, %f, %f", pixelValues[0],
+         pixelValues[1], pixelValues[2],
+         (totalValues > 3 ? pixelValues[3] : 0.0f),
+         (totalValues > 4 ? pixelValues[4] : 0.0f));
+  }
 
 #ifdef ENABLE_QNN
   auto *vision = dynamic_cast<causallm::Gauss3_8_Vision_Encoder_QNN *>(
     h.models[0].get());
-  if (vision == nullptr) {
-    LOGE("[DEBUG] runMultimodalHandleStreaming: models[0] is not "
-         "Gauss3_8_Vision_Encoder_QNN (arch=%s)",
-         h.architectures.empty() ? "?" : h.architectures[0].c_str());
+  auto *llm = dynamic_cast<causallm::Gauss3_8_QNN *>(h.models[1].get());
+  if (vision == nullptr || llm == nullptr) {
+    LOGE("[DEBUG] runMultimodalHandleStreaming: unexpected sub-model types "
+         "(arch[0]=%s arch[1]=%s)",
+         h.architectures.size() > 0 ? h.architectures[0].c_str() : "?",
+         h.architectures.size() > 1 ? h.architectures[1].c_str() : "?");
     return CAUSAL_LM_ERROR_UNSUPPORTED;
   }
 
-  // Initialize streamer the same way runModelHandleStreaming does.
-  // For the vision-only path, attach to models[0] so anything the
-  // encoder emits per-token reaches the callback. Step 4 will move
-  // the attachment to models[1] (LLM) around the generation loop.
-  LOGD("[DEBUG] runMultimodalHandleStreaming: Initializing callback streamer");
-  CallbackStreamer streamer;
-  callback_streamer_init(&streamer, callback, user_data);
-
-  LOGD("[DEBUG] runMultimodalHandleStreaming: Attaching streamer to vision");
-  vision->setStreamer(&streamer.base);
-
-  // RAII detach so the stack-local streamer never outlives this call.
-  struct Detach {
-    causallm::Transformer *t;
-    ~Detach() {
-      LOGD("[DEBUG] runMultimodalHandleStreaming::Detach: Clearing streamer");
-      t->setStreamer(nullptr);
-    }
-  } detach_guard{vision};
-
+  // --- Step 1: vision encoder -> image embeddings ---
+  const size_t pixel_bytes =
+    static_cast<size_t>(numPatches) * 3 * PATCH_SIZE * PATCH_SIZE *
+    sizeof(float);
   causallm::multimodal_pointer image_in{const_cast<float *>(pixelValues),
                                         pixel_bytes};
-
+  causallm::multimodal_pointer image_embeds{nullptr, 0};
   try {
-    LOGD("[DEBUG] runMultimodalHandleStreaming: calling vision->run_image()");
-    causallm::multimodal_pointer image_embeds =
-      vision->run_image(std::string(prompt), image_in, originalHeight,
-                        originalWidth, /*do_sample=*/false, /*system=*/"",
-                        /*tail=*/"", /*log_output=*/g_verbose);
-    LOGD("[DEBUG] runMultimodalHandleStreaming: vision->run_image() done "
-         "(embed.ptr=%p embed.size=%zu)",
+    LOGD("[DEBUG] runMultimodalHandleStreaming: vision->run_image() ...");
+    image_embeds = vision->run_image(
+      std::string(prompt), image_in, originalHeight, originalWidth,
+      /*do_sample=*/false, /*system=*/"", /*tail=*/"",
+      /*log_output=*/g_verbose);
+    LOGD("[DEBUG] runMultimodalHandleStreaming: vision done ptr=%p size=%zu",
          image_embeds.first, image_embeds.second);
-
-    // Placeholder until LLM step is wired.
-    h.last_output = "[vision-only] " + std::string(prompt);
-    
   } catch (const std::exception &e) {
-    LOGE("[DEBUG] runMultimodalHandleStreaming: vision->run_image() threw: %s",
-         e.what());
-    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
-  } catch (...) {
-    LOGE("[DEBUG] runMultimodalHandleStreaming: vision->run_image() threw "
-         "non-std exception");
+    LOGE("[DEBUG] runMultimodalHandleStreaming: vision threw: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
-  
-  // TODO(step 4): wire the LLM (models[1]) here.
-  //   auto *llm = dynamic_cast<causallm::Gauss3_8_QNN *>(h.models[1].get());
-  //   vision->setStreamer(nullptr);   // detach from vision
-  //   llm->setStreamer(&streamer.base);
-  //   // hand image_embeds to llm (API TBD) and run
-  //   llm->run(prompt, ...);
-  //   h.last_output = llm->getOutput(0);
-  //   (detach_guard would need to be updated to point at llm for that phase)
-
-  LOGD("[DEBUG] runMultimodalHandleStreaming: END (vision-only SUCCESS)");
-  return CAUSAL_LM_ERROR_NONE;
+  return execute_multimodal_llm(h, llm, image_embeds, std::string(prompt),
+                                callback, user_data);
 #else
   LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
   return CAUSAL_LM_ERROR_UNSUPPORTED;
@@ -1542,10 +1640,55 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
             (totalValues > 4 ? pixelValues[4] : 0.0f));
   }
 
-  // TODO: Vision Encoder integration (see runMultimodalHandleStreaming).
-  LOGD("[DEBUG] runMultimodalHandle: Vision Encoder integration not yet "
-       "implemented. Returning UNSUPPORTED.");
+#ifdef ENABLE_QNN
+  auto *vision = dynamic_cast<causallm::Gauss3_8_Vision_Encoder_QNN *>(
+    h.models[0].get());
+  auto *llm = dynamic_cast<causallm::Gauss3_8_QNN *>(h.models[1].get());
+  if (vision == nullptr || llm == nullptr) {
+    LOGE("[DEBUG] runMultimodalHandle: unexpected sub-model types");
+    *outputText = nullptr;
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
 
+  const size_t pixel_bytes =
+    static_cast<size_t>(numPatches) * 3 * PATCH_SIZE * PATCH_SIZE *
+    sizeof(float);
+  causallm::multimodal_pointer image_in{const_cast<float *>(pixelValues),
+                                        pixel_bytes};
+  causallm::multimodal_pointer image_embeds{nullptr, 0};
+  try {
+    image_embeds = vision->run_image(
+      std::string(prompt), image_in, originalHeight, originalWidth,
+      /*do_sample=*/false, "", "", /*log_output=*/g_verbose);
+  } catch (const std::exception &e) {
+    LOGE("[DEBUG] runMultimodalHandle: vision threw: %s", e.what());
+    *outputText = nullptr;
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+
+  // Blocking path = streaming path + accumulator callback that appends
+  // each delta into h.last_output. *outputText is then served from that
+  // same string so it remains valid until the next run/destroy.
+  h.last_output.clear();
+  auto accumulate_cb = +[](const char *delta, void *user_data) -> int {
+    auto *s = static_cast<std::string *>(user_data);
+    if (delta != nullptr)
+      s->append(delta);
+    return 0;
+  };
+
+  ErrorCode ec = execute_multimodal_llm(h, llm, image_embeds,
+                                        std::string(prompt), accumulate_cb,
+                                        static_cast<void *>(&h.last_output));
+  if (ec != CAUSAL_LM_ERROR_NONE) {
+    *outputText = nullptr;
+    return ec;
+  }
+  *outputText = h.last_output.c_str();
+  return CAUSAL_LM_ERROR_NONE;
+#else
+  LOGE("[DEBUG] runMultimodalHandle: built without ENABLE_QNN");
   *outputText = nullptr;
   return CAUSAL_LM_ERROR_UNSUPPORTED;
+#endif
 }
