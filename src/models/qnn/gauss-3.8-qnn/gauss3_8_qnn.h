@@ -33,7 +33,7 @@ public:
 
   virtual ~Gauss3_8_QNN() = default;
 
-  void initialize();
+  void initialize() override;
 
   void setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) override;
 
