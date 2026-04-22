@@ -283,6 +283,11 @@ static std::string apply_chat_template(const std::string &architecture,
     // <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
     return "<start_of_turn>user\n" + input +
            "<end_of_turn>\n<start_of_turn>model\n";
+  } else if (architecture == "Gauss_3_6_QNN" ||
+             architecture == "Gauss_3_8_QNN") {
+    return "<|begin_of_text|><|turn_start|>System\n<|turn_end|>\n<|turn_start|>"
+           "User\n" +
+           input + "\n<|turn_end|>\n<|turn_start|>Assistant\n";
   }
   return input;
 }
