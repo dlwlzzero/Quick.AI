@@ -30,7 +30,7 @@ public:
     setupParameters(cfg, generation_cfg, nntr_cfg);
   }
 
-  virtual ~Quick_Dot_AI_QNN_OLD() = default;
+  ~Quick_Dot_AI_QNN_OLD();
 
   void initialize() override;
 
@@ -130,6 +130,18 @@ protected:
   bool uses_embedding = true;
 
   ::BaseStreamer *streamer_ = nullptr;
+  std::string last_output_;
+
+  // LoRA path (optional)
+  std::string lora_path;
+
+  // mmap-backed pre-quantized text embedding table. Loaded lazily in
+  // initialize() when uses_embedding=false. Used both by the external
+  // multimodal composer (via lookupEmbedding) and by this class's
+  // generation loop to fetch the next token's embedding per step.
+  void *embedding_mmap_ptr = nullptr;
+  size_t embedding_mmap_size = 0;
+  size_t embedding_bytes_per_token = 0; // hidden_size * sizeof(uint16_t)
 };
 
 } // namespace causallm

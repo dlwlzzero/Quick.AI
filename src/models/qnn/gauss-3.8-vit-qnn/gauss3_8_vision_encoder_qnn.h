@@ -16,7 +16,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-
 #ifdef __ANDROID__
 #include <android/log.h>
 #define LOG_TAG "QuickAI"
@@ -43,7 +42,7 @@ public:
       : Quick_Dot_AI_QNN(cfg, generation_cfg, nntr_cfg) {
     // Load image_newline file using mmap
     LOGD("--------------------------------- Vsion Ecoder QNN");
-    
+
     if (nntr_cfg.contains("image_newline_path")) {
       std::string image_newline_path = nntr_cfg["image_newline_path"];
       LOGD("Vsion Ecoder QNN :  newline path %s", image_newline_path.c_str());
@@ -56,8 +55,9 @@ public:
           << "Cannot get file info (fstat): " << image_newline_path;
 
       image_newline_mmap_size = static_cast<size_t>(st.st_size);
-      image_newline_mmap_ptr = ::mmap(nullptr, image_newline_mmap_size,
-                                      PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+      image_newline_mmap_ptr =
+          ::mmap(nullptr, image_newline_mmap_size, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE, fd, 0);
       ::close(fd);
 
       NNTR_THROW_IF((image_newline_mmap_ptr == MAP_FAILED), std::runtime_error)
@@ -85,17 +85,15 @@ public:
                                const WSTR system_prompt = "",
                                const WSTR tail_prompt = "",
                                bool log_output = true);
+  void set_quant_param(float scale, int offset);
 
 private:
   // Also hard-coded in Goka's genie
   std::vector<std::pair<int, int>> grid_pinpoints = {
-      {512, 1024},  {512, 1536},  {512, 2048},  {512, 2560},  {512, 3072},
-      {512, 3584},  {512, 4096},  {512, 4608},  {512, 5120},  {512, 5632},
-      {512, 6144},  {1024, 512},  {1024, 1024}, {1024, 1536}, {1024, 2048},
-      {1024, 2560}, {1024, 3072}, {1536, 512},  {1536, 1024}, {1536, 1536},
-      {1536, 2048}, {2048, 512},  {2048, 1024}, {2048, 1536}, {2560, 512},
-      {2560, 1024}, {3072, 512},  {3072, 1024}, {3584, 512},  {4096, 512},
-      {4608, 512},  {5120, 512},  {5632, 512},  {6144, 512}};
+      {512, 1024},  {512, 1536}, {512, 2048},  {512, 2560},  {512, 3072},
+      {512, 3584},  {512, 4096}, {1024, 512},  {1024, 1024}, {1024, 1536},
+      {1024, 2048}, {1536, 512}, {1536, 1024}, {2048, 512},  {2048, 1024},
+      {2560, 512},  {3072, 512}, {3584, 512},  {4096, 512}};
   int image_patch_size = 512;
   int encode_patch_size = 16;
 
@@ -105,6 +103,10 @@ private:
   // mmap state for image_newline (for cleanup in destructor)
   void *image_newline_mmap_ptr = nullptr;
   size_t image_newline_mmap_size = 0;
+
+  bool llm_quant_param_given = false;
+  float llm_scale;
+  int llm_offset;
 };
 
 } // namespace causallm

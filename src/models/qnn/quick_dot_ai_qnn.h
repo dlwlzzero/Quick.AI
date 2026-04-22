@@ -20,7 +20,6 @@
 #define LOGE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
 #endif
 
-
 #include "graph_parser.h"
 #include <transformer.h>
 
@@ -113,6 +112,9 @@ public:
                                      std::string input_name) override;
 
   void registerCustomLayers() override;
+
+  static void quantize_uint16_memcpy(float *src, uint16_t *dest, int count,
+                                     float scale, int offset);
 
 protected:
   // nntr_config

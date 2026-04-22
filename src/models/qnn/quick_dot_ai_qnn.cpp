@@ -66,9 +66,9 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
 
   NNTR_THROW_IF(ct_engine.registerContext("libqnn_context.so", ""),
                 std::runtime_error)
-    << "Fail to register QNN Context";
+      << "Fail to register QNN Context";
 
-  LOGD("qnn_engine registering done "); 
+  LOGD("qnn_engine registering done ");
 
   GraphParser graph_parser = GraphParser();
   auto graphs_info = graph_parser.parseJsonFile(binary_config_path);
@@ -203,14 +203,14 @@ void causallm::Quick_Dot_AI_QNN::load_weight(const std::string &weight_path) {
   for (const auto &[key, value] : models) {
     value.model_handle->load(model_file_name, ModelFormat::MODEL_FORMAT_QNN);
   }
-  if(uses_embedding && !embedding_file_name.empty()){
-  for (const auto &[key, value] : models) {
-    value.model_handle->load(embedding_file_name);
+  if (uses_embedding && !embedding_file_name.empty()) {
+    for (const auto &[key, value] : models) {
+      value.model_handle->load(embedding_file_name);
+    }
+    for (const auto &[key, value] : models) {
+      value.model_handle->load(embedding_file_name);
+    }
   }
-  for (const auto &[key, value] : models) {
-    value.model_handle->load(embedding_file_name);
-  }
-}
   // Allocate tensors for inference - required for input/output buffers
   for (auto &[key, value] : models) {
     value.model_handle->allocate(ExecutionMode::INFERENCE);
@@ -225,13 +225,13 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
                                                  json &generation_cfg,
                                                  json &nntr_cfg) {
   // Read nntr_config parameters
-  LOGD("----------------in Quick_Dot_AI_QNN : setupParameters");  
+  LOGD("----------------in Quick_Dot_AI_QNN : setupParameters");
   model_file_name = nntr_cfg["model_file_name"].get<std::string>();
   LOGD("----------------binary_config_path : %s", model_file_name.c_str());
   binary_config_path = nntr_cfg["binary_config_path"].get<std::string>();
   LOGD("----------------binary_config_path : %s", binary_config_path.c_str());
   graphs_to_use = nntr_cfg["graphs_to_use"].get<std::vector<std::string>>();
-  for(auto s : graphs_to_use){
+  for (auto s : graphs_to_use) {
     LOGD("----------------graphs_to_use : %s", s.c_str());
   }
   vocab_size = cfg["vocab_size"].get<int>();
@@ -281,4 +281,23 @@ causallm::Quick_Dot_AI_QNN::createMlp(const int layer_id, int dim,
 
 void causallm::Quick_Dot_AI_QNN::registerCustomLayers() {
   // Unimplemented.
+}
+
+void causallm::Quick_Dot_AI_QNN::quantize_uint16_memcpy(float *src,
+                                                        uint16_t *dest,
+                                                        int count, float scale,
+                                                        int offset) {
+  for (int i = 0; i < count; i++) {
+    if (std::isfinite(src[i])) {
+      int quantized_value = src[i] / scale - offset;
+      if (quantized_value > 65535)
+        quantized_value = 65535;
+      if (quantized_value < 0)
+        quantized_value = 0;
+      dest[i] = quantized_value;
+    } else {
+      // Warning message?
+      dest[i] = 0;
+    }
+  }
 }
