@@ -239,6 +239,21 @@ WIN_EXPORT ErrorCode getPerformanceMetricsHandle(CausalLmHandle handle,
  */
 WIN_EXPORT ErrorCode destroyModelHandle(CausalLmHandle handle);
 
+
+/**
+ * @brief Request cancellation of an in-progress run on a handle.
+ *
+ * Sets the stop flag on the model, causing the token generation loop
+ * to exit at the next token boundary. Thread-safe: can be called from
+ * any thread (e.g., from a UI cancel button handler).
+ *
+ * If no run is in progress, this function is a no-op.
+ *
+ * @param handle Handle returned by loadModelHandle
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode cancelModelHandle(CausalLmHandle handle);
+
 /**
  * @brief Unload the model from a handle without destroying the handle.
  *

@@ -109,7 +109,7 @@ static std::map<std::string, std::string> g_model_path_map = {
 #ifdef ENABLE_QNN
     {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
     {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
-    {"GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn"},      
+    {"GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn"},
     {"GAUSS3.8-VIT-QNN", "gauss3.8-vit-qnn"},
 #endif
 };
@@ -226,7 +226,7 @@ static void register_models() {
         [] (json cfg, json generation_cfg, json nntr_cfg) {
           return std::make_unique<causallm::Gauss3_8_Vision_Encoder_QNN> (
               cfg, generation_cfg, nntr_cfg);
-        });    
+        });
 #endif
     // Register built-in configurations
     quick_dot_ai::register_builtin_configs();
@@ -526,7 +526,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     std::transform(input_name_upper.begin(), input_name_upper.end(),
                    input_name_upper.begin(), ::toupper);
     LOGD("[DEBUG] load_into_handle: input_name = %s", input_name.c_str());
-    
+
     std::string quant_suffix = "";
     switch (quant_type) {
     case CAUSAL_LM_QUANTIZATION_W4A32:
@@ -665,13 +665,13 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       //   (b) the single-model fallback below.
       json top_nntr =
         causallm::LoadJsonFile(abs_model_dir + "/nntr_config.json");
-      
+
       LOGD("[DEBUG] load_into_handle: abs_model_dir = %s",
            abs_model_dir.c_str());
 
       LOGD("[DEBUG] load_into_handle: top_nntr = %s",
            (abs_model_dir + "/nntr_config.json").c_str());
-      
+
       const bool is_multi =
         top_nntr.contains("architectures") &&
         top_nntr["architectures"].is_array() &&
@@ -679,7 +679,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
         top_nntr["model_dirs"].is_array() &&
         !top_nntr["architectures"].empty() &&
         top_nntr["architectures"].size() == top_nntr["model_dirs"].size();
-      
+
       LOGD("[DEBUG] load_into_handle: abs_model_dir = %d %d %d %d %d %d",top_nntr.contains("architectures"), top_nntr["architectures"].is_array(), top_nntr.contains("model_dirs"), top_nntr["model_dirs"].is_array(), top_nntr["architectures"].size(), top_nntr["model_dirs"].size());
 
 
@@ -709,7 +709,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
                sub_dir.c_str());
 
           json sub_cfg = causallm::LoadJsonFile(sub_dir + "/config.json");
-	  
+
           json sub_gen;
 	  if(check_file_exists(sub_dir +"/generation_config.json")){
             sub_gen=causallm::LoadJsonFile(sub_dir + "/generation_config.json");
@@ -794,11 +794,11 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       if (check_file_exists (abs_model_dir + "/generation_config.json")) {
         generation_cfg = causallm::LoadJsonFile (abs_model_dir + "/generation_config.json");
       }
-      
+
       nntr_cfg = std::move (top_nntr);
-      
+
       LOGD("single tokenizer : %s",(abs_model_dir+"/tokenizer.json").c_str());
-      
+
       if (nntr_cfg.contains("tokenizer_file")) {
         nntr_cfg["tokenizer_file"] = abs_model_dir + "/tokenizer.json";
       }
@@ -835,7 +835,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
     const std::string weight_file = abs_model_dir + "/" + weight_file_name;
     LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
-    
+
     nntr_cfg["model_file_name"] = weight_file;
     if (nntr_cfg.contains("binary_config_path")) {
       std::string str = nntr_cfg["binary_config_path"].get<std::string>();
@@ -873,7 +873,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
     LOGD("[DEBUG] load_into_handle: Creating model via Factory...%s ",
          architecture.c_str());
-    
+
     auto m = causallm::Factory::Instance().create(architecture, cfg,
                                                    generation_cfg, nntr_cfg);
     if (!m) {
@@ -1359,6 +1359,39 @@ ErrorCode destroyModelHandle(CausalLmHandle handle) {
     handle->initialized = false;
   }
   delete handle;
+  return CAUSAL_LM_ERROR_NONE;
+}
+
+ErrorCode cancelModelHandle(CausalLmHandle handle) {
+  LOGD("[DEBUG] cancelModelHandle: handle=%p", (void *)handle);
+
+  if (handle == nullptr) {
+    LOGE("[DEBUG] cancelModelHandle: handle is nullptr, returning INVALID_PARAMETER");
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  // NOTE: We intentionally do NOT take the mutex here to avoid blocking
+  // when run() is holding the lock. The requestStop() method is thread-safe
+  // (uses atomic<bool>), and the models vector is not modified during run()
+  // (only during load/unload which do take the mutex). This allows immediate
+  // cancellation from any thread (e.g., UI cancel button handler).
+  LOGD("[DEBUG] cancelModelHandle: checking state without mutex, initialized=%d, models.size=%zu",
+       handle->initialized, handle->models.size());
+
+  if (!handle->initialized || handle->models.empty()) {
+    LOGE("[DEBUG] cancelModelHandle: not initialized, returning NOT_INITIALIZED");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  // Set stop flag on all models (primarily affects models[0] for LLM)
+  for (size_t i = 0; i < handle->models.size(); ++i) {
+    if (handle->models[i]) {
+      LOGD("[DEBUG] cancelModelHandle: calling requestStop() on model[%zu]", i);
+      handle->models[i]->requestStop();
+    }
+  }
+
+  LOGD("[DEBUG] cancelModelHandle: returning NONE (success)");
   return CAUSAL_LM_ERROR_NONE;
 }
 

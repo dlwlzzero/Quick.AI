@@ -244,7 +244,7 @@ int QNNContext::init() {
   if (StatusCode::SUCCESS != this->initializeProfiling()) {
     LOGE("init: Profiling Initialization failure");
     ml_loge("Profiling Initialization failure");
-    return -1;    
+    return -1;
   }
 
   LOGD("init: Registering Op Packages");
@@ -287,7 +287,6 @@ const int QNNContext::registerFactory(const FactoryType<T> factory,
 
     return -1;
   }
-
   if (int_key != -1 && int_map.find(int_key) != int_map.end()) {
     // std::stringstream ss;
     // ss << "qnn_context: cannot register factory with already taken int key: "
