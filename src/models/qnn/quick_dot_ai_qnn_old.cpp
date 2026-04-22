@@ -39,9 +39,11 @@ void causallm::Quick_Dot_AI_QNN_OLD::initialize() {
          withKey("input_shape", "1:" + std::to_string(sequence_length)),
          withKey("out_dim", hidden_size)}));
   } else {
-    prefill_model->addLayer(
-        createLayer("input", {withKey("name", "inputs_embeds"),
-                              withKey("input_shape", "1:256:3072")}));
+    prefill_model->addLayer(createLayer(
+        "input",
+        {withKey("name", "inputs_embeds"),
+         withKey("input_shape", "1:" + std::to_string(sequence_length) + ":" +
+                                    std::to_string(hidden_size))}));
   }
 
   NNTR_THROW_IF(prefill_non_embed_input_names.size() !=
@@ -86,10 +88,17 @@ void causallm::Quick_Dot_AI_QNN_OLD::initialize() {
 
   generation_model = createModel(ml::train::ModelType::NEURAL_NET);
 
-  generation_model->addLayer(createLayer(
-      "embedding",
-      {withKey("name", "inputs_embeds"), withKey("in_dim", vocab_size),
-       withKey("input_shape", "1:1"), withKey("out_dim", hidden_size)}));
+  if (uses_embedding) {
+    generation_model->addLayer(createLayer(
+        "embedding",
+        {withKey("name", "inputs_embeds"), withKey("in_dim", vocab_size),
+         withKey("input_shape", "1:1"), withKey("out_dim", hidden_size)}));
+  } else {
+    generation_model->addLayer(createLayer(
+        "input",
+        {withKey("name", "inputs_embeds"),
+         withKey("input_shape", "1:1:" + std::to_string(hidden_size))}));
+  }
 
   NNTR_THROW_IF(generation_non_embed_input_names.size() !=
                     generation_non_embed_input_dims.size(),

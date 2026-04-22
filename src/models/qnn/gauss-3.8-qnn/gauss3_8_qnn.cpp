@@ -137,11 +137,11 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
     uint8_t *data_ptr = static_cast<uint8_t *>(mapped);
 
     for (int i = 0; i < lora_sizes.size(); i++) {
-      auto lora_pointer = get_zero_memory(lora_sizes[i], 0);
-      memcpy(lora_pointer, data_ptr, lora_sizes[i]);
+      auto lora_pointer = get_zero_memory(sizeof(uint16_t) * lora_sizes[i], 0);
+      memcpy(lora_pointer, data_ptr, sizeof(uint16_t) * lora_sizes[i]);
       prefill_inputs.push_back(lora_pointer);
       generation_inputs.push_back(lora_pointer);
-      data_ptr += lora_sizes[i];
+      data_ptr += sizeof(uint16_t) * lora_sizes[i];
     }
 
     LOGD("----------------------- initialize() 7");
@@ -367,7 +367,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
 
   for (int i = 0; i < _len; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < _len; i++)
+  for (int i = 0; i < _len && i < sliding_window - context_size; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
 
   auto start = std::chrono::system_clock::now();
@@ -539,9 +539,16 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
                                c * context_size * hidden_size;
     std::memcpy(input_sample_u16, src_base, _chunk_len * bytes_per_token);
     if (_chunk_len < context_size) {
-      // TODO change to padding token
-      std::memset(input_sample_u16 + _chunk_len * hidden_size, 0,
-                  (context_size - _chunk_len) * bytes_per_token);
+      const void *pad_emb = lookupEmbedding(padding_token);
+      if (pad_emb == nullptr) {
+        throw std::runtime_error(
+            "run_with_embeddings: lookupEmbedding(padding_token=" +
+            std::to_string(padding_token) + ") returned null");
+      }
+      for (int i = _chunk_len; i < context_size; i++) {
+        std::memcpy(input_sample_u16 + i * hidden_size, pad_emb,
+                    bytes_per_token);
+      }
     }
 
     fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len,
@@ -645,12 +652,10 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
   for (int i = 0; i < _len; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < _len; i++)
+  for (int i = 0; i < _len && i < sliding_window - context_size; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
 
   int token = 0;
-
-  LOGD("line: %d", __LINE__);
 
   auto start = std::chrono::system_clock::now();
   int idx;
