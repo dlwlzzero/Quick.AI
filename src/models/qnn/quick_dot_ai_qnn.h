@@ -20,7 +20,6 @@
 #define LOGE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
 #endif
 
-
 #include "graph_parser.h"
 #include <transformer.h>
 
@@ -66,7 +65,6 @@ public:
    *        Passing nullptr detaches any currently-attached streamer.
    */
   void setStreamer(::BaseStreamer *streamer) override { streamer_ = streamer; }
-  
 
   std::vector<LayerHandle>
   createTransformerDecoderBlock(const int layer_id,
@@ -83,6 +81,9 @@ public:
                                      std::string input_name) override;
 
   void registerCustomLayers() override;
+
+  static void quantize_uint16_memcpy(float *src, uint16_t *dest, int count,
+                                     float scale, int offset);
 
 protected:
   // nntr_config
@@ -106,7 +107,7 @@ protected:
 
   // Streaming support
   ::BaseStreamer *streamer_ = nullptr;
-  std::string last_output_;  
+  std::string last_output_;
 };
 
 } // namespace causallm

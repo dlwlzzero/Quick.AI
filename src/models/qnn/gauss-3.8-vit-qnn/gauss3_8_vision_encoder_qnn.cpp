@@ -99,20 +99,26 @@ std::pair<int, int> select_best_resolution(
   return best_fit;
 }
 
+void causallm::Gauss3_8_Vision_Encoder_QNN::set_quant_param(float scale,
+                                                            int offset) {
+  llm_quant_param_given = true;
+  llm_scale = scale;
+  llm_offset = offset;
+}
+
 void causallm::Gauss3_8_Vision_Encoder_QNN::requantEmbedding(void *from,
                                                              void *to,
                                                              size_t length) {
   auto output_info = get_output_info();
-  auto input_info = get_input_info();
   std::string encoderOutputDataType = output_info.data_type;
-  std::string modelInputDataType = input_info.data_type;
-  double requant_scale = output_info.scale / input_info.scale;
-  double requant_offset =
-      requant_scale * output_info.offset - input_info.offset;
+  std::string modelInputDataType = "QNN_DATATYPE_UFIXED_POINT_16";
+  NNTR_THROW_IF(!llm_quant_param_given, std::runtime_error)
+      << "Please give LLM quant param!";
+  double requant_scale = output_info.scale / llm_scale;
+  double requant_offset = requant_scale * output_info.offset - llm_offset;
 
-
-  LOGD ("%d : %s, %s, %f, %f", length, encoderOutputDataType.c_str (),
-      modelInputDataType.c_str (), requant_scale, requant_offset);
+  LOGD("%d : %s, %s, %f, %f", length, encoderOutputDataType.c_str(),
+       modelInputDataType.c_str(), requant_scale, requant_offset);
 
   for (int i = 0; i < length; i++) {
     if (encoderOutputDataType == "QNN_DATATYPE_SFIXED_POINT_8" &&
@@ -165,14 +171,19 @@ causallm::multimodal_pointer causallm::Gauss3_8_Vision_Encoder_QNN::run_image(
   auto output_info = get_output_info();
 
   int num_bytes_per_inference = GraphParser::get_tensor_size(input_info);
-  
-  NNTR_THROW_IF(image.second % num_bytes_per_inference, std::invalid_argument)
+  int num_elements_per_inference = GraphParser::get_tensor_count(input_info);
+
+  NNTR_THROW_IF(image.second % (num_bytes_per_inference *
+                                (sizeof(float) / sizeof(uint16_t))),
+                std::invalid_argument)
       << "Image input data size " << image.second << " is not a multiple of "
       << num_bytes_per_inference;
 
-  int num_inference = image.second / (num_bytes_per_inference*(sizeof(float)/sizeof(uint16_t)));
+  int num_inference = image.second / (num_bytes_per_inference *
+                                      (sizeof(float) / sizeof(uint16_t)));
 
-  LOGD("image.second %d, num_bytes_per_inference : %d, num_inference: %d", image.second, num_bytes_per_inference, num_inference);
+  LOGD("image.second %d, num_bytes_per_inference : %d, num_inference: %d",
+       image.second, num_bytes_per_inference, num_inference);
 
   auto [height, width] = select_best_resolution(
       std::make_pair(image_height, image_width), grid_pinpoints);
@@ -187,16 +198,17 @@ causallm::multimodal_pointer causallm::Gauss3_8_Vision_Encoder_QNN::run_image(
   int base_image_offset = encode_patch_size * encode_patch_size;
   int next_row_offset = width * encode_patch_size + 1;
   int next_patch_offset = (width * encode_patch_size + 1) * encode_patch_size;
-  int output_bw = GraphParser::get_tensor_bit_width (output_info);
+  int output_bw = GraphParser::get_tensor_bit_width(output_info);
   int total_embedding_size = num_tokens * out_embedding_size * output_bw;
 
-  LOGD ("[REQUANT-DEBUG] num_tokens=%d out_embedding_size=%d output_bw=%d "
-        "total_embedding_size=%d num_inference=%d h=%d w=%d encode_patch_size=%d "
-        "image_newline.second=%zu",
+  LOGD(
+      "[REQUANT-DEBUG] num_tokens=%d out_embedding_size=%d output_bw=%d "
+      "total_embedding_size=%d num_inference=%d h=%d w=%d encode_patch_size=%d "
+      "image_newline.second=%zu",
       num_tokens, out_embedding_size, output_bw, total_embedding_size,
       num_inference, height, width, encode_patch_size, image_newline.second);
 
-  void *my_output = malloc (total_embedding_size);
+  void *my_output = malloc(total_embedding_size);
 
   NNTR_THROW_IF(out_embedding_size * output_bw != image_newline.second,
                 std::invalid_argument)
@@ -205,16 +217,10 @@ causallm::multimodal_pointer causallm::Gauss3_8_Vision_Encoder_QNN::run_image(
       << image_newline.second;
 
   for (int i = 0; i < num_inference; i++) {
-    std::string qnn_dtype_input = input_info.data_type;
-    if (qnn_dtype_input == "QNN_DATATYPE_UFIXED_POINT_16") {
-      memcpy(std::get<uint16_t *>(model_input[0]), image.first,
-             num_bytes_per_inference);
-    } else if (qnn_dtype_input == "QNN_DATATYPE_UFIXED_POINT_8") {
-      memcpy(std::get<uint8_t *>(model_input[0]), image.first,
-             num_bytes_per_inference);
-    } else {
-      throw std::invalid_argument("qnn_dtype_input is " + qnn_dtype_input);
-    }
+    auto src = ((float *)image.first) + i * num_elements_per_inference;
+    quantize_uint16_memcpy(src, std::get<uint16_t *>(model_input[0]),
+                           num_elements_per_inference, input_info.scale,
+                           input_info.offset);
     auto qnn_output = model->inference(1, model_input)[0];
     void *vision_encoder_output = std::visit(
         [](auto *p) -> void * { return static_cast<void *>(p); }, qnn_output);

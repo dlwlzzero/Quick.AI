@@ -4,8 +4,21 @@
 
 #include <iostream>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 using namespace ml::train;
 using namespace nntrainer;
+
+causallm::Quick_Dot_AI_QNN_OLD::~Quick_Dot_AI_QNN_OLD() {
+  if (embedding_mmap_ptr != nullptr) {
+    ::munmap(embedding_mmap_ptr, embedding_mmap_size);
+    embedding_mmap_ptr = nullptr;
+    embedding_mmap_size = 0;
+  }
+}
 
 void causallm::Quick_Dot_AI_QNN_OLD::initialize() {
   int status;
@@ -19,17 +32,16 @@ void causallm::Quick_Dot_AI_QNN_OLD::initialize() {
 
   prefill_model = createModel(ml::train::ModelType::NEURAL_NET);
 
-  if(uses_embedding) {
+  if (uses_embedding) {
     prefill_model->addLayer(createLayer(
-      "embedding",
-      {withKey("name", "inputs_embeds"), withKey("in_dim", vocab_size),
-       withKey("input_shape", "1:" + std::to_string(sequence_length)),
-       withKey("out_dim", hidden_size)}));
+        "embedding",
+        {withKey("name", "inputs_embeds"), withKey("in_dim", vocab_size),
+         withKey("input_shape", "1:" + std::to_string(sequence_length)),
+         withKey("out_dim", hidden_size)}));
   } else {
-    prefill_model->addLayer(createLayer(
-      "input", 
-      {withKey("name", "inputs_embeds"), 
-       withKey("input_shape", "1:256:3072")}));
+    prefill_model->addLayer(
+        createLayer("input", {withKey("name", "inputs_embeds"),
+                              withKey("input_shape", "1:256:3072")}));
   }
 
   NNTR_THROW_IF(prefill_non_embed_input_names.size() !=
@@ -123,7 +135,8 @@ void causallm::Quick_Dot_AI_QNN_OLD::initialize() {
   // TODO check tokenizer initialization after API change
 }
 
-void causallm::Quick_Dot_AI_QNN_OLD::load_weight(const std::string &weight_path) {
+void causallm::Quick_Dot_AI_QNN_OLD::load_weight(
+    const std::string &weight_path) {
   prefill_model->load(model_path, ModelFormat::MODEL_FORMAT_QNN);
   prefill_model->load(embedding_path);
   prefill_model->allocate();
@@ -136,13 +149,14 @@ void causallm::Quick_Dot_AI_QNN_OLD::load_weight(const std::string &weight_path)
   initialize_input_outputs();
 }
 
-void causallm::Quick_Dot_AI_QNN_OLD::save_weight(const std::string &weight_path) {
+void causallm::Quick_Dot_AI_QNN_OLD::save_weight(
+    const std::string &weight_path) {
   // Unimplemented.
 }
 
 void causallm::Quick_Dot_AI_QNN_OLD::setupParameters(json &cfg,
-                                                 json &generation_cfg,
-                                                 json &nntr_cfg) {
+                                                     json &generation_cfg,
+                                                     json &nntr_cfg) {
   // Read nntr_config parameters
   model_path = nntr_cfg["model_file_name"].get<std::string>();
   embedding_path = nntr_cfg["embedding_file_name"].get<std::string>();
@@ -211,6 +225,9 @@ void causallm::Quick_Dot_AI_QNN_OLD::setupParameters(json &cfg,
   repetition_penalty = generation_cfg["repetition_penalty"].get<float>();
   logit_scale = generation_cfg["logit_scale"].get<float>();
   logit_offset = generation_cfg["logit_offset"].get<int>();
+
+  // Read optional lora_path
+  lora_path = nntr_cfg.value("lora_path", "");
 }
 
 void causallm::Quick_Dot_AI_QNN_OLD::constructModel() {
@@ -224,16 +241,16 @@ causallm::Quick_Dot_AI_QNN_OLD::createTransformerDecoderBlock(
   return std::vector<LayerHandle>();
 }
 
-std::vector<causallm::LayerHandle> causallm::Quick_Dot_AI_QNN_OLD::createAttention(
+std::vector<causallm::LayerHandle>
+causallm::Quick_Dot_AI_QNN_OLD::createAttention(
     const int layer_id, int sequence_length, int n_heads, int head_dim,
     std::string query_name, std::string key_name, std::string value_name) {
   // Unimplemented.
   return std::vector<LayerHandle>();
 }
 
-std::vector<causallm::LayerHandle>
-causallm::Quick_Dot_AI_QNN_OLD::createMlp(const int layer_id, int dim,
-                                      int hidden_dim, std::string input_name) {
+std::vector<causallm::LayerHandle> causallm::Quick_Dot_AI_QNN_OLD::createMlp(
+    const int layer_id, int dim, int hidden_dim, std::string input_name) {
   // Unimplemented.
   return std::vector<LayerHandle>();
 }
