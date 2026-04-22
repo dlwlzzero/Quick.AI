@@ -5,3 +5,4 @@ subdir('gauss-2.5')
 if enable_qnn
     subdir('qnn')
 endif
+subdir('gauss-3')

@@ -56,7 +56,8 @@ CAUSALLM_ALL_SRC := \
     $(wildcard $(CAUSALLM_ROOT)/models/*.cpp) \
     $(wildcard $(CAUSALLM_ROOT)/models/*/*.cpp)
 # Exclude main.cpp — we add it explicitly in the executable module
-CAUSALLM_ALL_SRC := $(filter-out %/main.cpp,$(CAUSALLM_ALL_SRC))
+# Exclude quantize.cpp — built as separate executable
+CAUSALLM_ALL_SRC := $(filter-out %/main.cpp %/quantize.cpp,$(CAUSALLM_ALL_SRC))
 
 # ══════════════════════════════════════════════════════════════════════════
 # Module: libcausallm.so  (CausalLM shared library for API use)
@@ -100,7 +101,8 @@ LOCAL_ALLOW_UNDEFINED_SYMBOLS := true
 LOCAL_MODULE := quick_dot_ai
 
 LOCAL_SRC_FILES := \
-     ../models/gauss-2.5/gauss2_5_causallm.cpp
+     ../models/gauss-2.5/gauss2_5_causallm.cpp \
+     ../models/gauss-3/gauss3_causallm.cpp
 
 LOCAL_SRC_FILES += \
 	../models/qnn/android_memory_allocator.cpp \
@@ -112,11 +114,13 @@ LOCAL_SRC_FILES += \
 	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
 #	../models/gauss-3.6-qnn/gauss3_6_qnn.cpp \
 
+
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_LDLIBS := -llog -landroid
 
 LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
     $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/gauss-3
     $(LOCAL_PATH)/../models/qnn \
     $(LOCAL_PATH)/../models/gauss-3.8-qnn \
     $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
@@ -138,7 +142,8 @@ LOCAL_CXXFLAGS += -std=c++17 -frtti
 LOCAL_MODULE := quick_dot_ai_static
 
 LOCAL_SRC_FILES := \
-     ../models/gauss-2.5/gauss2_5_causallm.cpp
+     ../models/gauss-2.5/gauss2_5_causallm.cpp \
+     ../models/gauss-3/gauss3_causallm.cpp
 
 LOCAL_SRC_FILES += \
 	../models/qnn/android_memory_allocator.cpp \
@@ -149,12 +154,14 @@ LOCAL_SRC_FILES += \
 	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vision_encoder_qnn.cpp \
 	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
 #	../models/qnn/gauss-3.6-qnn/gauss3_6_qnn.cpp \
+    
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_LDLIBS := -llog -landroid
 
 LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
     $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/gauss-3 \
     $(LOCAL_PATH)/../models/qnn \
     $(LOCAL_PATH)/../models/gauss-3.8-qnn \
     $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
@@ -163,7 +170,7 @@ LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
 include $(BUILD_STATIC_LIBRARY)
 
 # ══════════════════════════════════════════════════════════════════════════
-# Module 3: quick_dot_ai  (standalone executable)
+# Module 3: quick_dot_ai_exe (standalone executable)
 #
 # Same structure as the original Applications/CausalLM/jni/Android.mk:
 # all CausalLM sources compiled directly into the executable.
@@ -195,9 +202,38 @@ LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
 
 LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
     $(LOCAL_PATH)/../models/gauss-2.5 \
+    $(LOCAL_PATH)/../models/gauss-3 \
     $(LOCAL_PATH)/../models/qnn \
     $(LOCAL_PATH)/../models/gauss-3.8-qnn \
     $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
 #    $(LOCAL_PATH)/../models/qnn/gauss-3.6 \
+
+include $(BUILD_EXECUTABLE)
+
+# ══════════════════════════════════════════════════════════════════════════
+# Module 4: quantize_exe (standalone quantize tool)
+#
+# Separate executable for model quantization.
+# ══════════════════════════════════════════════════════════════════════════
+include $(CLEAR_VARS)
+
+LOCAL_ARM_NEON := true
+LOCAL_CFLAGS += $(COMMON_CFLAGS)
+LOCAL_CXXFLAGS += -std=c++17 -frtti
+LOCAL_LDFLAGS += $(COMMON_LDFLAGS)
+LOCAL_MODULE_TAGS := optional
+LOCAL_ARM_MODE := arm
+LOCAL_MODULE := quantize_exe
+LOCAL_LDLIBS := -llog -landroid -fopenmp -static-openmp
+
+# quantize.cpp + all CausalLM sources (for quantize tool)
+LOCAL_SRC_FILES := \
+    $(CAUSALLM_ROOT)/quantize.cpp \
+    $(CAUSALLM_ALL_SRC)
+
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+LOCAL_STATIC_LIBRARIES := tokenizers_c
+
+LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES)
 
 include $(BUILD_EXECUTABLE)

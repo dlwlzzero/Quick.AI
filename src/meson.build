@@ -51,7 +51,7 @@ quick_dot_ai_inc = []
 
 subdir('models')
 
-ext_inc = include_directories('models/gauss-2.5')
+ext_inc = include_directories('models/gauss-2.5', 'models/gauss-3')
 
 # ── Build model plugin (.so for LD_PRELOAD mode) ──────────────────────
 quick_dot_ai_plugin = shared_library('quick_dot_ai',

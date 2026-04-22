@@ -19,3 +19,9 @@ include/
 res/
 
 cross/android-aarch64.cross
+
+*.dex
+*.bin
+*.json
+*.so
+*.log

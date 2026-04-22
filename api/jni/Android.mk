@@ -79,5 +79,6 @@ LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
     $(QUICK_DOT_AI_ROOT)/models/qnn/gauss-3.8-qnn \
     $(QUICK_DOT_AI_ROOT)/models/qnn/gauss-3.8-vit-qnn \
     $(QUICK_DOT_AI_ROOT)/models/qnn/gauss-3.6-qnn \
+    $(QUICK_DOT_AI_ROOT)/models/gauss-3 \
 
 include $(BUILD_SHARED_LIBRARY)

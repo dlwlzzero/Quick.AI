@@ -36,6 +36,7 @@
 #include "qwen3_causallm.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
+#include "multilingual_tinybert_16mb.h"
 #include <factory.h>
 #ifdef ENABLE_QNN
 #include "gauss3_6_qnn.h"
@@ -74,7 +75,8 @@ using causallm::multimodal_pointer;
  * implemented on top of a single static "default" instance of this struct
  * so that existing callers (e.g. test_api) keep working unchanged.
  */
-struct CausalLmModel {
+struct CausalLmModel
+{
   std::mutex mtx;
   std::vector<std::unique_ptr<causallm::Transformer>> models;
   std::vector<std::string> architectures;
@@ -88,7 +90,7 @@ struct CausalLmModel {
 // Globals shared across all handles — options set via setOptions() apply
 // process-wide regardless of which handle is active.
 static std::mutex g_registry_mutex;
-static bool g_use_chat_template = true;
+static bool g_use_chat_template = false;
 static bool g_verbose = false;
 static std::string g_last_output = "";
 static double g_initialization_duration_ms = 0.0;
@@ -97,7 +99,8 @@ static std::string g_formatted_template;
 static std::string g_chat_template_name = "default";
 
 // Default handle backing the legacy non-handle API.
-static CausalLmModel &get_default_handle() {
+static CausalLmModel &get_default_handle()
+{
   static CausalLmModel instance;
   return instance;
 }
@@ -106,6 +109,9 @@ static std::map<std::string, std::string> g_model_path_map = {
     {"QWEN3-0.6B", "qwen3-0.6b"},
     {"GAUSS2.5-1B", "gauss2.5-1b"},
     {"QWEN3-1.7B-Q40", "qwen3-1.7b-q40-arm"},
+    {"GAUSS3.6", "gauss-3.6"},
+    {"TINY_BERT", "tiny_bert"},
+
 #ifdef ENABLE_QNN
     {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
     {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
@@ -117,7 +123,8 @@ static std::map<std::string, std::string> g_model_path_map = {
 /**
  * @brief RegisteredModel
  */
-struct RegisteredModel {
+struct RegisteredModel
+{
   std::string arch_name;
   ModelRuntimeConfig config;
 };
@@ -126,22 +133,25 @@ static std::map<std::string, ModelArchConfig> g_arch_config_map;
 
 // Internal C++ registration functions — called from model_config.cpp
 // These bypass extern "C" PLT and write directly to our static maps.
-namespace quick_dot_ai {
+namespace quick_dot_ai
+{
 
-void register_arch(const char *arch_name, ModelArchConfig config) {
-  std::string name(arch_name);
-  std::transform(name.begin(), name.end(), name.begin(), ::toupper);
-  g_arch_config_map[name] = config;
-}
+  void register_arch(const char *arch_name, ModelArchConfig config)
+  {
+    std::string name(arch_name);
+    std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+    g_arch_config_map[name] = config;
+  }
 
-void register_model(const char *model_name, const char *arch_name,
-                    ModelRuntimeConfig config) {
-  std::string name(model_name);
-  std::transform(name.begin(), name.end(), name.begin(), ::toupper);
-  std::string aname(arch_name);
-  std::transform(aname.begin(), aname.end(), aname.begin(), ::toupper);
-  g_model_registry[name] = {aname, config};
-}
+  void register_model(const char *model_name, const char *arch_name,
+                      ModelRuntimeConfig config)
+  {
+    std::string name(model_name);
+    std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+    std::string aname(arch_name);
+    std::transform(aname.begin(), aname.end(), aname.begin(), ::toupper);
+    g_model_registry[name] = {aname, config};
+  }
 
 } // namespace quick_dot_ai
 
@@ -152,7 +162,8 @@ void register_model(const char *model_name, const char *arch_name,
 // main.cpp.
 static void register_models() {
   static std::once_flag flag;
-  std::call_once(flag, []() {
+  std::call_once(flag, []()
+                 {
     causallm::Factory::Instance().registerModel(
         "LlamaForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
           return std::make_unique<causallm::CausalLM>(cfg, generation_cfg,
@@ -207,6 +218,12 @@ static void register_models() {
           return std::make_unique<causallm::Gauss2_5_Causallm>(
               cfg, generation_cfg, nntr_cfg);
         });
+  causallm::Factory::Instance().registerModel(
+    "MultilingualTinyBert", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::MultilingualTinyBert>(
+        cfg, generation_cfg, nntr_cfg);
+    });
+
 #ifdef ENABLE_QNN
     causallm::Factory::Instance().registerModel(
         "Gauss_3_6_QNN", [](json cfg, json generation_cfg, json nntr_cfg) {
@@ -229,18 +246,23 @@ static void register_models() {
         });
 #endif
     // Register built-in configurations
-    quick_dot_ai::register_builtin_configs();
-  });
+    quick_dot_ai::register_builtin_configs(); });
 }
 
-static const char *get_model_name_from_type(ModelType type) {
-  switch (type) {
+static const char *get_model_name_from_type(ModelType type)
+{
+  switch (type)
+  {
   case CAUSAL_LM_MODEL_QWEN3_0_6B:
     return "QWEN3-0.6B";
   case CAUSAL_LM_MODEL_GAUSS2_5:
     return "GAUSS2.5-1B";
   case CAUSAL_LM_MODEL_QWEN3_1_7B_Q40:
     return "QWEN3-1.7B-Q40";
+  case CAUSAL_LM_MODEL_GAUSS3_6:
+    return "GAUSS3.6";
+  case CAUSAL_LM_MODEL_TINY_BERT:
+    return "TINY_BERT";
 #ifdef ENABLE_QNN
   case CAUSAL_LM_MODEL_GAUSS3_6_QNN:
     return "GAUSS3.6-QNN";
@@ -257,25 +279,34 @@ static const char *get_model_name_from_type(ModelType type) {
 }
 
 static std::string apply_chat_template(const std::string &architecture,
-                                       const std::string &input) {
+                                       const std::string &input)
+{
   // Use dynamic chat template from tokenizer_config.json if available
-  if (g_chat_template.isAvailable()) {
+  if (g_chat_template.isAvailable())
+  {
     return g_chat_template.apply(input);
   }
 
+  LOGE("----------------APPLY CHAT FALLBACKS!!!!!!-------------");
+
   // Fallback: hardcoded per-architecture templates
-  if (architecture == "LlamaForCausalLM") {
+  if (architecture == "LlamaForCausalLM")
+  {
     // Llama 2/3 chat format: [INST] {prompt} [/INST]
     return "[INST] " + input + " [/INST]";
-  } else if (architecture == "Qwen2ForCausalLM" ||
-             architecture == "Qwen3ForCausalLM" ||
-             architecture == "Qwen3MoeForCausalLM" ||
-             architecture == "Qwen3SlimMoeForCausalLM" ||
-             architecture == "Qwen3CachedSlimMoeForCausalLM") {
+  }
+  else if (architecture == "Qwen2ForCausalLM" ||
+           architecture == "Qwen3ForCausalLM" ||
+           architecture == "Qwen3MoeForCausalLM" ||
+           architecture == "Qwen3SlimMoeForCausalLM" ||
+           architecture == "Qwen3CachedSlimMoeForCausalLM")
+  {
     // Qwen chat format
     // <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
     return "<|im_start|>user\n" + input + "<|im_end|>\n<|im_start|>assistant\n";
-  } else if (architecture == "Gemma3ForCausalLM") {
+  }
+  else if (architecture == "Gemma3ForCausalLM")
+  {
     // Gemma chat format:
     // <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
     return "<start_of_turn>user\n" + input +
@@ -303,7 +334,8 @@ static std::string get_quantization_suffix(ModelQuantizationType type)
 }
 
 static std::string resolve_model_path(const std::string &model_key,
-                                      ModelQuantizationType quant_type) {
+                                      ModelQuantizationType quant_type)
+{
   std::string path_upper = model_key;
   std::transform(path_upper.begin(), path_upper.end(), path_upper.begin(),
                  ::toupper);
@@ -311,9 +343,12 @@ static std::string resolve_model_path(const std::string &model_key,
   std::string base_dir_name = "";
 
   // 1. Try to find base directory name from map
-  if (g_model_path_map.find(path_upper) != g_model_path_map.end()) {
+  if (g_model_path_map.find(path_upper) != g_model_path_map.end())
+  {
     base_dir_name = g_model_path_map[path_upper];
-  } else {
+  }
+  else
+  {
     // Fallback: use lowercased key as base dir name if not found in map
     // or just return empty? For restricted API, we should probably fail
     // earlier, but here we can return constructed path.
@@ -339,13 +374,17 @@ static std::string resolve_model_path(const std::string &model_key,
  * Absolute values (leading '/') are left untouched so the caller can
  * override a specific file with a system-wide path if they want.
  */
-static void fix_paths(json &nntr_cfg, const std::string &sub_dir) {
+static void fix_paths(json &nntr_cfg, const std::string &sub_dir)
+{
   static const char *kKeys[] = {
-    "tokenizer_file",     "model_file_name",
-    "binary_config_path", "image_newline_path",
-    "embedding_file_name",
+      "tokenizer_file",
+      "model_file_name",
+      "binary_config_path",
+      "image_newline_path",
+      "embedding_file_name",
   };
-  for (const char *k : kKeys) {
+  for (const char *k : kKeys)
+  {
     if (!nntr_cfg.contains(k) || !nntr_cfg[k].is_string())
       continue;
     std::string v = nntr_cfg[k].get<std::string>();
@@ -355,27 +394,31 @@ static void fix_paths(json &nntr_cfg, const std::string &sub_dir) {
   }
 }
 
-
-static bool check_file_exists(const std::string &path) {
+static bool check_file_exists(const std::string &path)
+{
   struct stat buffer;
   return (stat(path.c_str(), &buffer) == 0);
 }
 
-static void validate_models() {
-  std::cout << "[DEBUG] Validating model files..." << std::endl;
+static void validate_models()
+{
+  LOGD("[DEBUG] Validating model files...");
   // Iterate over all known model names in map
-  for (auto const &[key, val] : g_model_path_map) {
+  for (auto const &[key, val] : g_model_path_map)
+  {
     // We want to check for each Quantization Type if it exists
     // List of quant types to check: UNKNOWN (default), W4A32, W16A16, W32A32
     std::vector<ModelQuantizationType> quant_types = {
         CAUSAL_LM_QUANTIZATION_UNKNOWN, CAUSAL_LM_QUANTIZATION_W4A32,
         CAUSAL_LM_QUANTIZATION_W16A16, CAUSAL_LM_QUANTIZATION_W32A32};
 
-    for (auto qt : quant_types) {
+    for (auto qt : quant_types)
+    {
       std::string quant_suffix = get_quantization_suffix(qt);
 
       std::string lookup_key = key;
-      if (qt != CAUSAL_LM_QUANTIZATION_UNKNOWN) {
+      if (qt != CAUSAL_LM_QUANTIZATION_UNKNOWN)
+      {
         std::transform(quant_suffix.begin(), quant_suffix.end(),
                        quant_suffix.begin(), ::toupper); // "-W4A32"
         lookup_key += quant_suffix;
@@ -384,7 +427,8 @@ static void validate_models() {
       // Resolve path for this combination
       std::string resolved_path = "." + resolve_model_path(key, qt);
 
-      if (g_model_registry.find(lookup_key) != g_model_registry.end()) {
+      if (g_model_registry.find(lookup_key) != g_model_registry.end())
+      {
         // CASE 1: Configuration is registered in model_config.cpp
         // For these models, we only check if the binary weight file exists.
         // The configurations (config.json, etc.) are embedded in the library.
@@ -392,46 +436,54 @@ static void validate_models() {
         std::string bin_file_name = rm.config.model_file_name;
         std::string full_path = resolved_path + "/" + bin_file_name;
 
-        if (check_file_exists(full_path)) {
-          std::cout << "  [OK] Reg Config: " << lookup_key << " -> "
-                    << full_path << std::endl;
-        } else {
-          std::cout << "  [FAIL] Reg Config: " << lookup_key
-                    << " -> Missing binary: " << full_path << std::endl;
+        if (check_file_exists(full_path))
+        {
+          LOGD("  [OK] Reg Config: %s -> %s", lookup_key.c_str(), full_path.c_str());
         }
-
-      } else {
+        else
+        {
+          LOGD("  [FAIL] Reg Config: %s -> Missing binary: %s", lookup_key.c_str(), full_path.c_str());
+        }
+      }
+      else
+      {
         // CASE 2: No internal config, but model type exists (via map
         // iteration). For these models, we require external configuration files
         // (config.json, nntr_config.json) to be present in the directory.
-        if (check_file_exists(resolved_path)) {
+        if (check_file_exists(resolved_path))
+        {
           bool has_config = check_file_exists(resolved_path + "/config.json");
           bool has_nntr =
               check_file_exists(resolved_path + "/nntr_config.json");
 
-          if (has_config && has_nntr) {
-            std::cout << "  [OK] External Config: " << lookup_key << " -> "
-                      << resolved_path << std::endl;
+          if (has_config && has_nntr)
+          {
+            LOGD("  [OK] External Config: %s -> %s", lookup_key.c_str(), resolved_path.c_str());
             // Optional: Parse nntr_config to check bin
-            try {
+            try
+            {
               json nntr =
                   causallm::LoadJsonFile(resolved_path + "/nntr_config.json");
-              if (nntr.contains("model_file_name")) {
+              if (nntr.contains("model_file_name"))
+              {
                 std::string bin = nntr["model_file_name"];
-                if (check_file_exists(resolved_path + "/" + bin)) {
-                  std::cout << "       (Binary confirmed: " << bin << ")"
-                            << std::endl;
-                } else {
-                  std::cout << "       (MISSING BINARY: " << bin << ")"
-                            << std::endl;
+                if (check_file_exists(resolved_path + "/" + bin))
+                {
+                  LOGD("       (Binary confirmed: %s)", bin.c_str());
+                }
+                else
+                {
+                  LOGD("       (MISSING BINARY: %s)", bin.c_str());
                 }
               }
-            } catch (...) {
             }
-          } else {
-            std::cout << "  [FAIL] External Config: " << lookup_key
-                      << " -> Missing configs in " << resolved_path
-                      << std::endl;
+            catch (...)
+            {
+            }
+          }
+          else
+          {
+            LOGD("  [FAIL] External Config: %s -> Missing configs in %s", lookup_key.c_str(), resolved_path.c_str());
           }
         }
       }
@@ -439,14 +491,16 @@ static void validate_models() {
   }
 }
 
-ErrorCode setOptions(Config config) {
+ErrorCode setOptions(Config config)
+{
   // Currently no options are being handled
   g_use_chat_template = config.use_chat_template;
   g_verbose = config.verbose;
   g_chat_template_name = (config.chat_template_name != nullptr)
                              ? config.chat_template_name
                              : "default";
-  if (config.debug_mode) {
+  if (config.debug_mode)
+  {
     // Ensure models are registered so we can validate them
     register_models();
     validate_models();
@@ -455,7 +509,8 @@ ErrorCode setOptions(Config config) {
 }
 
 ErrorCode registerModelArchitecture(const char *arch_name,
-                                    ModelArchConfig config) {
+                                    ModelArchConfig config)
+{
   if (arch_name == nullptr)
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   std::string name(arch_name);
@@ -465,7 +520,8 @@ ErrorCode registerModelArchitecture(const char *arch_name,
 }
 
 ErrorCode registerModel(const char *model_name, const char *arch_name,
-                        ModelRuntimeConfig config) {
+                        ModelRuntimeConfig config)
+{
   if (model_name == nullptr || arch_name == nullptr)
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   std::string name(model_name);
@@ -495,9 +551,10 @@ ErrorCode registerModel(const char *model_name, const char *arch_name,
  *     the pre-existing flow.
  */
 static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
-                                   ModelType modeltype,
-                                   ModelQuantizationType quant_type,
-                                   const char *native_lib_dir) {
+                                  ModelType modeltype,
+                                  ModelQuantizationType quant_type,
+                                  const char *native_lib_dir)
+{
   LOGD("[DEBUG] load_into_handle: START");
   LOGD("[DEBUG]   compute: %d", compute);
   LOGD("[DEBUG]   modeltype: %d", modeltype);
@@ -506,7 +563,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
   auto start_init = std::chrono::high_resolution_clock::now();
 
   const char *target_model_name = get_model_name_from_type(modeltype);
-  if (target_model_name == nullptr) {
+  if (target_model_name == nullptr)
+  {
     LOGE("[DEBUG] load_into_handle: Invalid modeltype");
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
@@ -518,7 +576,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
   LOGD("[DEBUG] load_into_handle: register_models done");
 
   std::lock_guard<std::mutex> lock(h.mtx);
-  try {
+  try
+  {
 
     // Check if it's a registered in-memory config
     std::string input_name = std::string(target_model_name);
@@ -528,7 +587,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     LOGD("[DEBUG] load_into_handle: input_name = %s", input_name.c_str());
 
     std::string quant_suffix = "";
-    switch (quant_type) {
+    switch (quant_type)
+    {
     case CAUSAL_LM_QUANTIZATION_W4A32:
       quant_suffix = "-W4A32";
       break;
@@ -560,7 +620,11 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     std::lock_guard<std::mutex> reg_lock(g_registry_mutex);
 
     // Check in-memory map first
-    if (g_model_registry.find(lookup_name) != g_model_registry.end()) {
+    // if (g_model_registry.find(lookup_name) != g_model_registry.end()) {
+
+    // always goto case2
+    if (0)
+    {
       LOGD("[DEBUG] load_into_handle: CASE 1 - Internal config found for %s", lookup_name.c_str());
       // ------------------------------------------------------------------------
       // CASE 1: Model Configuration is Internal (Registered in
@@ -571,7 +635,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       RegisteredModel &rm = g_model_registry[lookup_name];
 
       // Find architecture config
-      if (g_arch_config_map.find(rm.arch_name) == g_arch_config_map.end()) {
+      if (g_arch_config_map.find(rm.arch_name) == g_arch_config_map.end())
+      {
         LOGE("[DEBUG] load_into_handle: Architecture '%s' not found for model '%s'",
              rm.arch_name.c_str(), lookup_name.c_str());
         return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
@@ -581,7 +646,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       ModelRuntimeConfig &rc = rm.config;
 
       // Strategy: Resolve path to find the weight file
-      model_dir_path = "."+resolve_model_path(target_model_name, quant_type);
+      model_dir_path = "." + resolve_model_path(target_model_name, quant_type);
       LOGD("[DEBUG] load_into_handle: model_dir_path = %s", model_dir_path.c_str());
 
       // Populate JSONs from Arch Struct
@@ -598,15 +663,19 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       cfg["rope_theta"] = ac.rope_theta;
       cfg["rms_norm_eps"] = ac.rms_norm_eps;
       cfg["tie_word_embeddings"] = ac.tie_word_embeddings;
-      if (ac.sliding_window != UINT_MAX) {
+      if (ac.sliding_window != UINT_MAX)
+      {
         cfg["sliding_window"] = ac.sliding_window;
-      } else {
+      }
+      else
+      {
         cfg["sliding_window"] = nullptr;
       }
       cfg["sliding_window_pattern"] = ac.sliding_window_pattern;
       cfg["architectures"] = {std::string(ac.architecture)};
 
-      if (ac.num_eos_token_ids > 0) {
+      if (ac.num_eos_token_ids > 0)
+      {
         std::vector<unsigned int> eos_ids;
         for (unsigned int i = 0; i < ac.num_eos_token_ids; ++i)
           eos_ids.push_back(ac.eos_token_ids[i]);
@@ -636,7 +705,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       // post-processing block below.
       (void)rc.tokenizer_file;
 
-      if (strlen(rc.lmhead_dtype) > 0) {
+      if (strlen(rc.lmhead_dtype) > 0)
+      {
         nntr_cfg["lmhead_dtype"] = std::string(rc.lmhead_dtype);
       }
 
@@ -644,8 +714,9 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       for (unsigned int i = 0; i < rc.num_bad_word_ids; ++i)
         bad_ids.push_back(rc.bad_word_ids[i]);
       nntr_cfg["bad_word_ids"] = bad_ids;
-
-    } else {
+    }
+    else
+    {
       LOGD("[DEBUG] load_into_handle: CASE 2 - External config (file-based)");
       // --------------------------------------------------
       // CASE 2: External Model Configuration (File-based)
@@ -664,7 +735,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       //   (a) multi-model dispatch (architectures[] + model_dirs[]), and
       //   (b) the single-model fallback below.
       json top_nntr =
-        causallm::LoadJsonFile(abs_model_dir + "/nntr_config.json");
+          causallm::LoadJsonFile(abs_model_dir + "/nntr_config.json");
 
       LOGD("[DEBUG] load_into_handle: abs_model_dir = %s",
            abs_model_dir.c_str());
@@ -683,7 +754,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       LOGD("[DEBUG] load_into_handle: abs_model_dir = %d %d %d %d %d %d",top_nntr.contains("architectures"), top_nntr["architectures"].is_array(), top_nntr.contains("model_dirs"), top_nntr["model_dirs"].is_array(), top_nntr["architectures"].size(), top_nntr["model_dirs"].size());
 
 
-      if (is_multi) {
+      if (is_multi)
+      {
         // ----------------------------------------------------------------
         // Multi-model branch.
         //
@@ -697,12 +769,13 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
         // "architectures" entry inside sub-config — one source of truth.
         // ----------------------------------------------------------------
         auto archs =
-          top_nntr["architectures"].get<std::vector<std::string>>();
+            top_nntr["architectures"].get<std::vector<std::string>>();
         auto dirs = top_nntr["model_dirs"].get<std::vector<std::string>>();
         LOGD("[DEBUG] load_into_handle: MULTI-MODEL spec (N=%zu)",
              archs.size());
 
-        for (size_t i = 0; i < archs.size(); ++i) {
+        for (size_t i = 0; i < archs.size(); ++i)
+        {
           const std::string &arch_i = archs[i];
           const std::string sub_dir = abs_model_dir + "/" + dirs[i];
           LOGD("[DEBUG]   [%zu] arch=%s dir=%s", i, arch_i.c_str(),
@@ -716,7 +789,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 	  }
 
           json sub_nntr =
-            causallm::LoadJsonFile(sub_dir + "/nntr_config.json");
+              causallm::LoadJsonFile(sub_dir + "/nntr_config.json");
 
           fix_paths(sub_nntr, sub_dir);
 
@@ -740,7 +813,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
           auto m = causallm::Factory::Instance().create(arch_i, sub_cfg,
                                                         sub_gen, sub_nntr);
-          if (!m) {
+          if (!m)
+          {
             LOGE("[DEBUG] load_into_handle: Factory::create returned nullptr "
                  "for sub-model %zu (arch=%s)",
                  i, arch_i.c_str());
@@ -748,23 +822,26 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
           }
 
           auto sub_t0 = std::chrono::high_resolution_clock::now();
-          if (native_lib_dir != nullptr && strlen(native_lib_dir) > 0) {
+          if (native_lib_dir != nullptr && strlen(native_lib_dir) > 0)
+          {
             setenv("ADSP_LIBRARY_PATH", native_lib_dir, 1);
             m->initialize(std::string(native_lib_dir));
-          } else {
+          }
+          else
+          {
             m->initialize();
           }
 
           std::string weight_file =
-            sub_nntr.contains("model_file_name")
-              ? sub_nntr["model_file_name"].get<std::string>()
-              : (sub_dir + "/pytorch_model.bin");
+              sub_nntr.contains("model_file_name")
+                  ? sub_nntr["model_file_name"].get<std::string>()
+                  : (sub_dir + "/pytorch_model.bin");
           m->load_weight(weight_file);
           auto sub_t1 = std::chrono::high_resolution_clock::now();
           double sub_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(sub_t1 -
-                                                                  sub_t0)
-              .count();
+              std::chrono::duration_cast<std::chrono::milliseconds>(sub_t1 -
+                                                                    sub_t0)
+                  .count();
 
           h.models.push_back(std::move(m));
           h.architectures.push_back(arch_i);
@@ -779,8 +856,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
         auto finish_init = std::chrono::high_resolution_clock::now();
         auto e2e = std::chrono::duration_cast<std::chrono::milliseconds>(
-                     finish_init - start_init)
-                     .count();
+                       finish_init - start_init)
+                       .count();
         LOGD("[DEBUG] load_into_handle: MULTI-MODEL SUCCESS "
              "(%zu models, %ld ms e2e)",
              h.models.size(), e2e);
@@ -799,37 +876,41 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
       LOGD("single tokenizer : %s",(abs_model_dir+"/tokenizer.json").c_str());
 
-      if (nntr_cfg.contains("tokenizer_file")) {
+      if (nntr_cfg.contains("tokenizer_file"))
+      {
         nntr_cfg["tokenizer_file"] = abs_model_dir + "/tokenizer.json";
       }
     }
 
     // Load chat template from tokenizer_config.json if available.
     std::string tc_path = abs_model_dir + "/tokenizer_config.json";
-    if (check_file_exists(tc_path)) {
+    if (check_file_exists(tc_path))
+    {
       g_chat_template =
           causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
-      if (g_chat_template.isAvailable()) {
-        std::cout << "[Info] Chat template loaded from tokenizer_config.json"
-                  << std::endl;
-      } else {
-        std::cerr
-            << "[Warning] tokenizer_config.json found but chat template could "
-               "not be loaded. Falling back to hardcoded templates."
-            << std::endl;
+      if (g_chat_template.isAvailable())
+      {
+        LOGD("[Info] Chat template loaded from tokenizer_config.json");
       }
-    } else {
+      else
+      {
+        LOGE("[Warning] tokenizer_config.json found but chat template could not be loaded. Falling back to hardcoded templates.");
+      }
+    }
+    else
+    {
       g_chat_template = causallm::ChatTemplate();
-      std::cerr << "[Warning] tokenizer_config.json not found in "
-                << model_dir_path << ". Using hardcoded chat templates."
-                << std::endl;
+      LOGE("[Warning] tokenizer_config.json not found in %s. Using hardcoded chat templates.", model_dir_path.c_str());
     }
 
     // Construct weight file path
     std::string weight_file_name;
-    if (nntr_cfg.contains("model_file_name")) {
+    if (nntr_cfg.contains("model_file_name"))
+    {
       weight_file_name = nntr_cfg["model_file_name"].get<std::string>();
-    } else {
+    }
+    else
+    {
       weight_file_name = "pytorch_model.bin";
     }
 
@@ -837,19 +918,22 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
 
     nntr_cfg["model_file_name"] = weight_file;
-    if (nntr_cfg.contains("binary_config_path")) {
+    if (nntr_cfg.contains("binary_config_path"))
+    {
       std::string str = nntr_cfg["binary_config_path"].get<std::string>();
       nntr_cfg["binary_config_path"] = abs_model_dir + "/" + str;
       LOGD ("[DEBUG] bianry config data: file = %s",
           nntr_cfg["binary_config_path"].get<std::string> ().c_str ());
     }
-    if (nntr_cfg.contains("image_newline_path")) {
+    if (nntr_cfg.contains("image_newline_path"))
+    {
       std::string str = nntr_cfg["image_newline_path"].get<std::string>();
       nntr_cfg["image_newline_path"] = abs_model_dir + "/" + str;
       LOGD ("[DEBUG] new line config data: file = %s",
           nntr_cfg["image_newline_path"].get<std::string> ().c_str ());
     }
-    if (nntr_cfg.contains("embedding_file_name")) {
+    if (nntr_cfg.contains("embedding_file_name"))
+    {
       std::string str = nntr_cfg["embedding_file_name"].get<std::string>();
       nntr_cfg["embedding_file_name"] = abs_model_dir + "/" + str;
     }
@@ -860,9 +944,12 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     // Priority: Config file architecture > ModelType mapping (fallback)
     std::string architecture;
     if (cfg.contains("architectures") && cfg["architectures"].is_array() &&
-        !cfg["architectures"].empty()) {
+        !cfg["architectures"].empty())
+    {
       architecture = cfg["architectures"].get<std::vector<std::string>>()[0];
-    } else {
+    }
+    else
+    {
       // No fallback mapping from specific ModelType instances to generic
       // architecture strings for now, as specific types should have config or
       // be loaded from valid file with config.json
@@ -875,8 +962,9 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
          architecture.c_str());
 
     auto m = causallm::Factory::Instance().create(architecture, cfg,
-                                                   generation_cfg, nntr_cfg);
-    if (!m) {
+                                                  generation_cfg, nntr_cfg);
+    if (!m)
+    {
       LOGE("[DEBUG] load_into_handle: Factory::create returned nullptr");
       return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
     }
@@ -886,10 +974,13 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       h.native_lib_dir = native_lib_dir;
 
     LOGD("[DEBUG] load_into_handle: Calling model->initialize()...");
-    if (native_lib_dir != nullptr && strlen(native_lib_dir) > 0) {
+    if (native_lib_dir != nullptr && strlen(native_lib_dir) > 0)
+    {
       setenv("ADSP_LIBRARY_PATH", native_lib_dir, 1);
       m->initialize(std::string(native_lib_dir));
-    } else {
+    }
+    else
+    {
       m->initialize();
     }
     LOGD("[DEBUG] load_into_handle: model->initialize() done");
@@ -906,13 +997,14 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     h.architectures.push_back(architecture);
     h.model_dirs.push_back(abs_model_dir);
     h.initialization_duration_ms.push_back(
-      static_cast<double>(init_duration.count()));
+        static_cast<double>(init_duration.count()));
     h.initialized = true;
 
     LOGD("[DEBUG] load_into_handle: SINGLE SUCCESS (init took %ld ms)",
          init_duration.count());
-
-} catch (...) {
+  }
+  catch (...)
+  {
     // RTTI may not match across shared libraries — query the current
     // exception's typeinfo directly via the Itanium ABI hook. This
     // works even when catching by concrete types fails due to typeinfo
@@ -921,8 +1013,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     const char *raw = ti ? ti->name() : "(null)";
     int status = 0;
     char *demangled =
-      (ti != nullptr) ? abi::__cxa_demangle(raw, nullptr, nullptr, &status)
-                      : nullptr;
+        (ti != nullptr) ? abi::__cxa_demangle(raw, nullptr, nullptr, &status)
+                        : nullptr;
     LOGE("[DEBUG] load_into_handle: unknown exception, type=%s",
          demangled ? demangled : raw);
     std::free(demangled);
@@ -930,12 +1022,17 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     // Also try once more via rethrow — in case std::exception RTTI does
     // match from this catch-site (we already tried above but leaving
     // this as a second chance is cheap).
-    try {
+    try
+    {
       throw;
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e)
+    {
       LOGE("[DEBUG] load_into_handle: rethrown std::exception what()=%s",
            e.what());
-    } catch (...) {
+    }
+    catch (...)
+    {
       LOGE("[DEBUG] load_into_handle: rethrown still non-std");
     }
     return CAUSAL_LM_ERROR_MODEL_LOAD_FAILED;
@@ -948,39 +1045,45 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
  * @brief Core runner shared by runModel and runModelHandle.
  */
 static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
-                               const char **outputText) {
-  if (inputTextPrompt == nullptr || outputText == nullptr) {
+                               const char **outputText)
+{
+  if (inputTextPrompt == nullptr || outputText == nullptr)
+  {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
   std::lock_guard<std::mutex> lock(h.mtx);
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  if (!h.initialized || h.models.empty() || !h.models[0])
+  {
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
-  try {
+  try
+  {
     auto &model = *h.models[0];
     const std::string &architecture = h.architectures[0];
 
     std::string input(inputTextPrompt);
 
-    if (g_use_chat_template) {
+    if (g_use_chat_template)
+    {
       input = apply_chat_template(architecture, input);
     }
 
 // We assume single batch request for this API
 #if defined(_WIN32)
     model.run(std::wstring(input.begin(), input.end()), false, L"", L"",
-                 g_verbose);
+              g_verbose);
 #else
     model.run(input, false, "", "", g_verbose);
 #endif
 
     h.last_output = model.getOutput(0);
     *outputText = h.last_output.c_str();
-
-  } catch (const std::exception &e) {
-    std::cerr << "Exception in runModel: " << e.what() << std::endl;
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("Exception in runModel: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
@@ -995,19 +1098,24 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
  * sum over all sub-models this handle owns.
  */
 static ErrorCode metrics_on_handle(CausalLmModel &h,
-                                   PerformanceMetrics *metrics) {
-  if (metrics == nullptr) {
+                                   PerformanceMetrics *metrics)
+{
+  if (metrics == nullptr)
+  {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
   std::lock_guard<std::mutex> lock(h.mtx);
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  if (!h.initialized || h.models.empty() || !h.models[0])
+  {
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
-  try {
+  try
+  {
     auto *model = h.models[0].get();
-    if (!model->hasRun()) {
+    if (!model->hasRun())
+    {
       return CAUSAL_LM_ERROR_INFERENCE_NOT_RUN;
     }
     auto im = model->getPerformanceMetrics();
@@ -1022,9 +1130,10 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
     for (double d : h.initialization_duration_ms)
       total_init += d;
     metrics->initialization_duration_ms = total_init;
-  } catch (const std::exception &e) {
-    std::cerr << "Exception in getPerformanceMetrics: " << e.what()
-              << std::endl;
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("Exception in getPerformanceMetrics: %s", e.what());
     return CAUSAL_LM_ERROR_UNKNOWN;
   }
 
@@ -1036,10 +1145,12 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
  *****************************************************************************/
 
 static std::vector<causallm::ChatMessage>
-convertMessages(const CausalLMChatMessage *messages, size_t num_messages) {
+convertMessages(const CausalLMChatMessage *messages, size_t num_messages)
+{
   std::vector<causallm::ChatMessage> result;
   result.reserve(num_messages);
-  for (size_t i = 0; i < num_messages; ++i) {
+  for (size_t i = 0; i < num_messages; ++i)
+  {
     causallm::ChatMessage msg;
     msg.role = messages[i].role ? messages[i].role : "";
     msg.content = messages[i].content ? messages[i].content : "";
@@ -1054,47 +1165,70 @@ convertMessages(const CausalLMChatMessage *messages, size_t num_messages) {
 static std::string
 apply_chat_template_messages(const std::string &architecture,
                              const std::vector<causallm::ChatMessage> &messages,
-                             bool add_generation_prompt) {
-  if (g_chat_template.isAvailable()) {
+                             bool add_generation_prompt)
+{
+  if (g_chat_template.isAvailable())
+  {
     return g_chat_template.apply(messages, add_generation_prompt);
   }
 
   std::string result;
 
-  if (architecture == "LlamaForCausalLM") {
-    for (const auto &msg : messages) {
-      if (msg.role == "system") {
+  if (architecture == "LlamaForCausalLM")
+  {
+    for (const auto &msg : messages)
+    {
+      if (msg.role == "system")
+      {
         result += "<<SYS>>\n" + msg.content + "\n<</SYS>>\n\n";
-      } else if (msg.role == "user") {
+      }
+      else if (msg.role == "user")
+      {
         result += "[INST] " + msg.content + " [/INST]";
-      } else if (msg.role == "assistant") {
+      }
+      else if (msg.role == "assistant")
+      {
         result += msg.content + "\n";
       }
     }
-  } else if (architecture == "Qwen2ForCausalLM" ||
-             architecture == "Qwen3ForCausalLM" ||
-             architecture == "Qwen3MoeForCausalLM" ||
-             architecture == "Qwen3SlimMoeForCausalLM" ||
-             architecture == "Qwen3CachedSlimMoeForCausalLM") {
-    for (const auto &msg : messages) {
+  }
+  else if (architecture == "Qwen2ForCausalLM" ||
+           architecture == "Qwen3ForCausalLM" ||
+           architecture == "Qwen3MoeForCausalLM" ||
+           architecture == "Qwen3SlimMoeForCausalLM" ||
+           architecture == "Qwen3CachedSlimMoeForCausalLM")
+  {
+    for (const auto &msg : messages)
+    {
       result += "<|im_start|>" + msg.role + "\n" + msg.content + "<|im_end|>\n";
     }
-    if (add_generation_prompt) {
+    if (add_generation_prompt)
+    {
       result += "<|im_start|>assistant\n";
     }
-  } else if (architecture == "Gemma3ForCausalLM") {
-    for (const auto &msg : messages) {
-      if (msg.role == "user") {
+  }
+  else if (architecture == "Gemma3ForCausalLM")
+  {
+    for (const auto &msg : messages)
+    {
+      if (msg.role == "user")
+      {
         result += "<start_of_turn>user\n" + msg.content + "<end_of_turn>\n";
-      } else if (msg.role == "assistant") {
+      }
+      else if (msg.role == "assistant")
+      {
         result += "<start_of_turn>model\n" + msg.content + "<end_of_turn>\n";
       }
     }
-    if (add_generation_prompt) {
+    if (add_generation_prompt)
+    {
       result += "<start_of_turn>model\n";
     }
-  } else {
-    for (const auto &msg : messages) {
+  }
+  else
+  {
+    for (const auto &msg : messages)
+    {
       result += msg.content + "\n";
     }
   }
@@ -1104,25 +1238,29 @@ apply_chat_template_messages(const std::string &architecture,
 
 ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
                             size_t num_messages, bool add_generation_prompt,
-                            const char **formattedText) {
-  if (messages == nullptr || num_messages == 0 || formattedText == nullptr) {
+                            const char **formattedText)
+{
+  if (messages == nullptr || num_messages == 0 || formattedText == nullptr)
+  {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
-  try {
+  try
+  {
     auto &h = get_default_handle();
     std::lock_guard<std::mutex> lock(h.mtx);
 
     auto chat_messages = convertMessages(messages, num_messages);
     std::string arch =
-      h.architectures.empty() ? std::string() : h.architectures[0];
+        h.architectures.empty() ? std::string() : h.architectures[0];
     g_formatted_template =
-      apply_chat_template_messages(arch, chat_messages, add_generation_prompt);
+        apply_chat_template_messages(arch, chat_messages, add_generation_prompt);
 
     *formattedText = g_formatted_template.c_str();
-
-  } catch (const std::exception &e) {
-    std::cerr << "Exception in applyChatTemplate: " << e.what() << std::endl;
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("Exception in applyChatTemplate: %s", e.what());
     return CAUSAL_LM_ERROR_UNKNOWN;
   }
 
@@ -1131,15 +1269,18 @@ ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
 
 ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
                                size_t num_messages, bool add_generation_prompt,
-                               const char **outputText) {
-  if (outputText == nullptr) {
+                               const char **outputText)
+{
+  if (outputText == nullptr)
+  {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
   const char *formattedInput = nullptr;
   ErrorCode err = applyChatTemplate(messages, num_messages,
                                     add_generation_prompt, &formattedInput);
-  if (err != CAUSAL_LM_ERROR_NONE) {
+  if (err != CAUSAL_LM_ERROR_NONE)
+  {
     return err;
   }
 
@@ -1150,15 +1291,18 @@ ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
  *============================================================================*/
 
 ErrorCode loadModel(BackendType compute, ModelType modeltype,
-                    ModelQuantizationType quant_type) {
+                    ModelQuantizationType quant_type)
+{
   return load_into_handle(get_default_handle(), compute, modeltype, quant_type, nullptr);
 }
 
-ErrorCode runModel(const char *inputTextPrompt, const char **outputText) {
+ErrorCode runModel(const char *inputTextPrompt, const char **outputText)
+{
   return run_on_handle(get_default_handle(), inputTextPrompt, outputText);
 }
 
-ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics) {
+ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics)
+{
   return metrics_on_handle(get_default_handle(), metrics);
 }
 
@@ -1167,9 +1311,10 @@ ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics) {
  *============================================================================*/
 
 ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
-                            ModelQuantizationType quant_type,
-                            const char *native_lib_dir,
-                            CausalLmHandle *out_handle) {
+                          ModelQuantizationType quant_type,
+                          const char *native_lib_dir,
+                          CausalLmHandle *out_handle)
+{
   LOGD("[DEBUG] loadModelHandle:%d START", __LINE__);
   LOGD("[DEBUG] loadModelHandle:%d   compute: %d", __LINE__, compute);
   LOGD("[DEBUG] loadModelHandle:%d   modeltype: %d", __LINE__, modeltype);
@@ -1179,12 +1324,14 @@ ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
   LOGD("[DEBUG] loadModelHandle:%d   out_handle ptr: %p", __LINE__,
        (void *)out_handle);
 
-  if (out_handle == nullptr) {
+  if (out_handle == nullptr)
+  {
     LOGE("[DEBUG] loadModelHandle:%d out_handle is nullptr", __LINE__);
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
   auto *h = new (std::nothrow) CausalLmModel();
-  if (h == nullptr) {
+  if (h == nullptr)
+  {
     LOGE("[DEBUG] loadModelHandle:%d Failed to allocate CausalLmModel",
          __LINE__);
     return CAUSAL_LM_ERROR_UNKNOWN;
@@ -1194,11 +1341,12 @@ ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
 
   LOGD("[DEBUG] loadModelHandle:%d Calling load_into_handle...", __LINE__);
   ErrorCode ec =
-    load_into_handle(*h, compute, modeltype, quant_type, native_lib_dir);
+      load_into_handle(*h, compute, modeltype, quant_type, native_lib_dir);
   LOGD("[DEBUG] loadModelHandle:%d load_into_handle returned: %d", __LINE__,
        ec);
 
-  if (ec != CAUSAL_LM_ERROR_NONE) {
+  if (ec != CAUSAL_LM_ERROR_NONE)
+  {
     LOGE("[DEBUG] loadModelHandle:%d load_into_handle failed, deleting handle",
          __LINE__);
     delete h;
@@ -1212,16 +1360,20 @@ ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
 }
 
 ErrorCode runModelHandle(CausalLmHandle handle, const char *inputTextPrompt,
-                         const char **outputText) {
-  if (handle == nullptr) {
+                         const char **outputText)
+{
+  if (handle == nullptr)
+  {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
   return run_on_handle(*handle, inputTextPrompt, outputText);
 }
 
 ErrorCode getPerformanceMetricsHandle(CausalLmHandle handle,
-                                      PerformanceMetrics *metrics) {
-  if (handle == nullptr) {
+                                      PerformanceMetrics *metrics)
+{
+  if (handle == nullptr)
+  {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
   return metrics_on_handle(*handle, metrics);
@@ -1230,7 +1382,8 @@ ErrorCode getPerformanceMetricsHandle(CausalLmHandle handle,
 ErrorCode runModelHandleStreaming(CausalLmHandle handle,
                                   const char *inputTextPrompt,
                                   CausalLmTokenCallback callback,
-                                  void *user_data) {
+                                  void *user_data)
+{
   LOGD("[DEBUG] runModelHandleStreaming: START");
   LOGD("[DEBUG]   handle: %p", (void *)handle);
   LOGD("[DEBUG]   inputTextPrompt: %s",
@@ -1238,7 +1391,8 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   LOGD("[DEBUG]   callback: %p", (void *)callback);
   LOGD("[DEBUG]   user_data: %p", user_data);
 
-  if (handle == nullptr || inputTextPrompt == nullptr || callback == nullptr) {
+  if (handle == nullptr || inputTextPrompt == nullptr || callback == nullptr)
+  {
     LOGE("[DEBUG] runModelHandleStreaming: INVALID_PARAMETER");
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
@@ -1248,7 +1402,8 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   std::lock_guard<std::mutex> lock(h.mtx);
   LOGD("[DEBUG] runModelHandleStreaming: Mutex lock acquired");
 
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  if (!h.initialized || h.models.empty() || !h.models[0])
+  {
     LOGE("[DEBUG] runModelHandleStreaming: NOT_INITIALIZED "
          "(initialized=%d, size=%zu)",
          h.initialized, h.models.size());
@@ -1277,51 +1432,86 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   // RAII detach: make sure the dangling stack pointer never survives
   // the return of this function, no matter which exception path we
   // exit through.
-  struct Detach {
+  struct Detach
+  {
     causallm::Transformer *t;
-    ~Detach() {
+    ~Detach()
+    {
       LOGD("[DEBUG] runModelHandleStreaming::Detach: Clearing streamer");
       t->setStreamer(nullptr);
     }
   } detach_guard{m};
 
-  try {
+  try
+  {
     LOGD("[DEBUG] runModelHandleStreaming: Preparing input text...");
     std::string input(inputTextPrompt);
     LOGD("[DEBUG]   raw input length: %zu", input.length());
     LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
 
-    if (g_use_chat_template) {
+    if (g_use_chat_template)
+    {
       LOGD("[DEBUG] runModelHandleStreaming: Applying chat template...");
       input = apply_chat_template(architecture, input);
       LOGD("[DEBUG]   templated input length: %zu", input.length());
-      LOGD("[DEBUG]   templated input preview: %.100s%s", input.c_str(),
-           input.length() > 100 ? "..." : "");
+      LOGD("[DEBUG]   templated input: %s", input.c_str());
+      // LOGD("[DEBUG]   templated input preview: %.100s%s", input.c_str(),
+      //      input.length() > 100 ? "..." : "");
     }
 
     LOGD("[DEBUG] runModelHandleStreaming: Calling model->run()...");
 #if defined(_WIN32)
     m->run(std::wstring(input.begin(), input.end()), false, L"", L"",
-                 g_verbose);
+           g_verbose);
 #else
-    m->run(input, false, "", "", g_verbose);
+    m->run(input, false, "", "", true);
 #endif
     LOGD("[DEBUG] runModelHandleStreaming: model->run() completed");
 
     LOGD("[DEBUG] runModelHandleStreaming: Getting output...");
     h.last_output = m->getOutput(0);
     LOGD("[DEBUG]   output length: %zu", h.last_output.length());
-    LOGD("[DEBUG]   output preview: %.100s%s", h.last_output.c_str(),
-         h.last_output.length() > 100 ? "..." : "");
+    LOGD("[DEBUG]   output: %s", h.last_output.c_str());
 
-  } catch (const std::exception &e) {
+    // Log performance metrics after successful run
+    if (m->hasRun())
+    {
+      auto im = m->getPerformanceMetrics();
+      double total_init = 0.0;
+      for (double d : h.initialization_duration_ms)
+        total_init += d;
+
+      LOGD("[PERF] Performance Metrics:");
+      LOGD("[PERF]   prefill_tokens: %u", im.prefill_tokens);
+      LOGD("[PERF]   prefill_duration_ms: %.2f", im.prefill_duration_ms);
+      LOGD("[PERF]   generation_tokens: %u", im.generation_tokens);
+      LOGD("[PERF]   generation_duration_ms: %.2f", im.generation_duration_ms);
+      LOGD("[PERF]   total_duration_ms: %.2f", im.total_duration_ms);
+      LOGD("[PERF]   peak_memory_kb: %.2f", im.peak_memory_kb);
+      LOGD("[PERF]   initialization_duration_ms: %.2f", total_init);
+
+      // Calculate tokens per second for prefill
+      if (im.prefill_duration_ms > 0)
+      {
+        double tokens_per_sec = (im.prefill_tokens * 1000.0) / im.prefill_duration_ms;
+        LOGD("[PERF]   prefill_tokens_per_sec: %.2f", tokens_per_sec);
+      }
+      // Calculate tokens per second for generation
+      if (im.generation_duration_ms > 0)
+      {
+        double tokens_per_sec = (im.generation_tokens * 1000.0) / im.generation_duration_ms;
+        LOGD("[PERF]   generation_tokens_per_sec: %.2f", tokens_per_sec);
+      }
+    }
+  }
+  catch (const std::exception &e)
+  {
     LOGE("[DEBUG] runModelHandleStreaming: Exception caught: %s", e.what());
-    std::cerr << "Exception in runModelHandleStreaming: " << e.what()
-              << std::endl;
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
-  } catch (...) {
+  }
+  catch (...)
+  {
     LOGE("[DEBUG] runModelHandleStreaming: Unknown exception caught");
-    std::cerr << "Unknown exception in runModelHandleStreaming" << std::endl;
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
@@ -1329,8 +1519,10 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   return CAUSAL_LM_ERROR_NONE;
 }
 
-ErrorCode unloadModelHandle(CausalLmHandle handle) {
-  if (handle == nullptr) {
+ErrorCode unloadModelHandle(CausalLmHandle handle)
+{
+  if (handle == nullptr)
+  {
     return CAUSAL_LM_ERROR_NONE;
   }
   std::lock_guard<std::mutex> lock(handle->mtx);
@@ -1342,8 +1534,10 @@ ErrorCode unloadModelHandle(CausalLmHandle handle) {
   return CAUSAL_LM_ERROR_NONE;
 }
 
-ErrorCode destroyModelHandle(CausalLmHandle handle) {
-  if (handle == nullptr) {
+ErrorCode destroyModelHandle(CausalLmHandle handle)
+{
+  if (handle == nullptr)
+  {
     return CAUSAL_LM_ERROR_NONE;
   }
   // Take the mutex to make sure no in-flight call on this handle is still
@@ -1521,7 +1715,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
                                        int originalHeight,
                                        int originalWidth,
                                        CausalLmTokenCallback callback,
-                                       void *user_data) {
+                                       void *user_data)
+{
   LOGD("[DEBUG] runMultimodalHandleStreaming: START");
   LOGD("[DEBUG]   handle=%p", handle);
   LOGD("[DEBUG]   prompt=%s", prompt ? prompt : "(null)");
@@ -1529,20 +1724,22 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   LOGD("[DEBUG]   numPatches=%d", numPatches);
   LOGD("[DEBUG]   originalHeight=%d", originalHeight);
   LOGD("[DEBUG]   originalWidth=%d", originalWidth);
-  LOGD("[DEBUG]   callback=%p", (void*)callback);
+  LOGD("[DEBUG]   callback=%p", (void *)callback);
   LOGD("[DEBUG]   user_data=%p", user_data);
 
   if (handle == nullptr || prompt == nullptr || pixelValues == nullptr ||
-      callback == nullptr) {
+      callback == nullptr)
+  {
     LOGE("[DEBUG] runMultimodalHandleStreaming: INVALID_PARAMETER"
-            " handle=%p prompt=%s pixelValues=%p callback=%p",
-            handle, prompt, pixelValues, (void*)callback);
+         " handle=%p prompt=%s pixelValues=%p callback=%p",
+         handle, prompt, pixelValues, (void *)callback);
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
   auto &h = *handle;
   std::lock_guard<std::mutex> lock(h.mtx);
-  if (!h.initialized || h.models.empty()) {
+  if (!h.initialized || h.models.empty())
+  {
     LOGE("[DEBUG] runMultimodalHandleStreaming: NOT_INITIALIZED");
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
@@ -1550,7 +1747,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   // Multimodal expects the handle to be loaded from a multi-model
   // nntr_config.json (architectures[] + model_dirs[]) with at least
   // [vision_encoder, llm]. A single-model handle cannot drive this path.
-  if (h.models.size() < 2) {
+  if (h.models.size() < 2)
+  {
     LOGE("[DEBUG] runMultimodalHandleStreaming: need >=2 sub-models "
          "(got %zu). Load with multi-model nntr_config.json.",
          h.models.size());
@@ -1559,7 +1757,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
 
   LOGD("[DEBUG] runMultimodalHandleStreaming: %zu sub-models loaded",
        h.models.size());
-  for (size_t i = 0; i < h.architectures.size(); ++i) {
+  for (size_t i = 0; i < h.architectures.size(); ++i)
+  {
     LOGD("[DEBUG]   models[%zu]: arch=%s dir=%s", i,
          h.architectures[i].c_str(), h.model_dirs[i].c_str());
   }
@@ -1569,7 +1768,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   const int PATCH_SIZE = 512;
   long long totalValues = 1LL * numPatches * 3 * PATCH_SIZE * PATCH_SIZE;
   LOGD("[DEBUG]   totalPixelValues=%lld", totalValues);
-  if (totalValues > 0 && pixelValues != nullptr) {
+  if (totalValues > 0 && pixelValues != nullptr)
+  {
     LOGD("[DEBUG]   pixelValues[0..4]=%f, %f, %f, %f, %f", pixelValues[0],
          pixelValues[1], pixelValues[2],
          (totalValues > 3 ? pixelValues[3] : 0.0f),
@@ -1622,7 +1822,8 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
                               int numPatches,
                               int originalHeight,
                               int originalWidth,
-                              const char **outputText) {
+                              const char **outputText)
+{
   LOGD("[DEBUG] runMultimodalHandle: START");
   LOGD("[DEBUG]   handle=%p", handle);
   LOGD("[DEBUG]   prompt=%s", prompt ? prompt : "(null)");
@@ -1633,22 +1834,25 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   LOGD("[DEBUG]   outputText=%p", outputText);
 
   if (handle == nullptr || prompt == nullptr || pixelValues == nullptr ||
-      outputText == nullptr) {
+      outputText == nullptr)
+  {
     LOGE("[DEBUG] runMultimodalHandle: INVALID_PARAMETER"
-            " handle=%p prompt=%s pixelValues=%p outputText=%p",
-            handle, prompt, pixelValues, outputText);
+         " handle=%p prompt=%s pixelValues=%p outputText=%p",
+         handle, prompt, pixelValues, outputText);
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
   auto &h = *handle;
   std::lock_guard<std::mutex> lock(h.mtx);
-  if (!h.initialized || h.models.empty()) {
+  if (!h.initialized || h.models.empty())
+  {
     LOGE("[DEBUG] runMultimodalHandle: NOT_INITIALIZED");
     *outputText = nullptr;
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
-  if (h.models.size() < 2) {
+  if (h.models.size() < 2)
+  {
     LOGE("[DEBUG] runMultimodalHandle: need >=2 sub-models (got %zu)",
          h.models.size());
     *outputText = nullptr;
@@ -1656,7 +1860,8 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   }
 
   LOGD("[DEBUG] runMultimodalHandle: %zu sub-models loaded", h.models.size());
-  for (size_t i = 0; i < h.architectures.size(); ++i) {
+  for (size_t i = 0; i < h.architectures.size(); ++i)
+  {
     LOGD("[DEBUG]   models[%zu]: arch=%s dir=%s", i,
          h.architectures[i].c_str(), h.model_dirs[i].c_str());
   }
@@ -1666,11 +1871,12 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   const int PATCH_SIZE = 512;
   long long totalValues = 1LL * numPatches * 3 * PATCH_SIZE * PATCH_SIZE;
   LOGD("[DEBUG]   totalPixelValues=%lld", totalValues);
-  if (totalValues > 0 && pixelValues != nullptr) {
+  if (totalValues > 0 && pixelValues != nullptr)
+  {
     LOGD("[DEBUG]   pixelValues[0..4]=%f, %f, %f, %f, %f", pixelValues[0],
          pixelValues[1], pixelValues[2],
-            (totalValues > 3 ? pixelValues[3] : 0.0f),
-            (totalValues > 4 ? pixelValues[4] : 0.0f));
+         (totalValues > 3 ? pixelValues[3] : 0.0f),
+         (totalValues > 4 ? pixelValues[4] : 0.0f));
   }
 
 #ifdef ENABLE_QNN
