@@ -28,7 +28,7 @@ void causallm::Quick_Dot_AI_QNN_OLD::initialize() {
   } else {
     prefill_model->addLayer(createLayer(
       "input", 
-      {withkey("name", "inputs_embeds"), 
+      {withKey("name", "inputs_embeds"), 
        withKey("input_shape", "1:256:3072")}));
   }
 

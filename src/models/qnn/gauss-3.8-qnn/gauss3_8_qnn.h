@@ -36,11 +36,15 @@ public:
            bool log_output = true) override;
 
   
-void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
+  void run_with_embeddings(const void *prefill_embeds,
                                                  size_t n_tokens,
                                                  std::vector<int> seed_tokens,
                                                  bool do_sample,
-                                                 bool log_output)
+                                                 bool log_output);
+
+  const void *lookupEmbedding(int token_id) const;                                                 
+
+  size_t embeddingBytesPerToken() const { return embedding_bytes_per_token; }
 
 private:
   // Input/output tensors
@@ -67,6 +71,13 @@ private:
 
   std::vector<ml::train::TensorDim::IO_TensorType> prefill_inputs;
   std::vector<ml::train::TensorDim::IO_TensorType> generation_inputs;
+
+  uint16_t *input_sample_u16 = nullptr;
+  uint16_t *generation_sample_u16 = nullptr;
+
+  void *embedding_mmap_ptr = nullptr;
+  size_t embedding_mmap_size = 0;
+  size_t embedding_bytes_per_token = 0; // hidden_size * sizeof(uint16_t)
 
   // KV cache variables
   std::vector<uint16_t *> kvs;

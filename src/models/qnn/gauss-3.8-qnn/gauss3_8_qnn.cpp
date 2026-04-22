@@ -344,28 +344,49 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
             << raw_exec_seconds.count() / (idx - _len) << std::endl;
 }
 
+const void *causallm::Gauss3_8_QNN::lookupEmbedding(int token_id) const {
+  if (embedding_mmap_ptr == nullptr || embedding_bytes_per_token == 0)
+    return nullptr;
+  if (token_id < 0)
+    return nullptr;
+  const size_t offset =
+      static_cast<size_t>(token_id) * embedding_bytes_per_token;
+  if (offset + embedding_bytes_per_token > embedding_mmap_size)
+    return nullptr;
+  return static_cast<const uint8_t *>(embedding_mmap_ptr) + offset;
+}
+
 void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
                                                  size_t n_tokens,
                                                  std::vector<int> seed_tokens,
                                                  bool do_sample,
                                                  bool log_output) {
+
   (void)do_sample;
+
+  if (input_sample_u16 == nullptr || generation_sample_u16 == nullptr) {
+    LOGE("run_with_embeddings: u16 input/generation sample not initialized "
+         "— was uses_embedding=false set?");
+    return;
+  }
+  if (embedding_mmap_ptr == nullptr) {
+    LOGE("run_with_embeddings: embedding table not loaded");
+    return;
+  }
+  if (prefill_embeds == nullptr || n_tokens == 0) {
+    LOGE("run_with_embeddings: empty prefill_embeds");
+    return;
+  } 
 
   // KV Cache Initialization
   for (int i = 0; i < this->kvs.size(); i++) {
     std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
   }
 
-  auto _input = tokenizer->Encode(prompt);
-
-  unsigned int _len = _input.size() - 1;
-  if(_len <= 0){
-    std::cout << "[Error] Input is empty or invalid" << std::endl;
-    return;
-  }
+  const size_t bytes_per_token = embedding_bytes_per_token;
+  const unsigned int _len = static_cast<unsigned int>(n_tokens) - 1;
 
   auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
-  auto token  = _input.back();
 
   std:: cout << "len: " << _len << ", n_chunks: " << _n_chunks << std::endl;
 
@@ -375,8 +396,13 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
   for(int c = 0; c < _n_chunks; c++){
     int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
 
-    for(int i = 0; i < context_size; i++)
-      input_sample[i] = (i < _chunk_len) ? _input[c * 256 + i] : padding_token;
+    const uint16_t *src_base = static_cast<const uint16_t *>(prefill_embeds) +
+                               c * context_size * hidden_size;
+    std::memcpy(input_sample_u16, src_base, _chunk_len * bytes_per_token);
+    if (_chunk_len < context_size) {
+      std::memset(input_sample_u16 + _chunk_len * hidden_size, 0,
+                  (context_size - _chunk_len) * bytes_per_token);
+    }
 
     fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len, attention_mask);
     fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256, attention_mask);
@@ -463,9 +489,26 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
   for (int i = 0; i < _len; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
   
+  int token  = 0;
+
   auto start = std::chrono::system_clock::now();
   int idx;
   for (idx = _len; idx < (max_seq_len - context_size); idx++) {
+    if (idx == _len) {
+      // First gen iter: use the LAST prefill embedding (position _len),
+      // which was deliberately excluded from the prefill batch — the
+      // same role _input.back() plays in the text run() path.
+      const uint16_t *last_embed =
+          static_cast<const uint16_t *>(prefill_embeds) + _len * hidden_size;
+      std::memcpy(generation_sample_u16, last_embed, bytes_per_token);
+    } else {
+      const void *emb = lookupEmbedding(token);
+      if (emb == nullptr) {
+        LOGE("run_with_embeddings: lookupEmbedding(%d) null", token);
+        break;
+      }
+      std::memcpy(generation_sample_u16, emb, bytes_per_token);
+    }
     generation_sample[0] = token;
 
     generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
@@ -526,18 +569,26 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
     }
 
     outputs = generation_model->inference(1, generation_inputs);
-    token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
-                   _input.data(), _input.size(), logit_scale, logit_offset,
-                   repetition_penalty, temperature, top_p, top_k);
+    outputs.erase(outputs.begin() + 96);
+    LOGD("After generation_model->inference");
+    int next_token =
+        sample(std::get<uint16_t *>(outputs.back()), vocab_size,
+               seed_tokens.data(), seed_tokens.size(), logit_scale,
+               logit_offset, repetition_penalty, temperature, top_p, top_k);
+    LOGD("next_token: %d", next_token);
 
-    output.push_back(token);
-    if (token == eos_token) {
-      // std::cout << "Finished generating, break..." << std::endl;
+    if (next_token == eos_token) {
+      std::cout << "Finished generating (eos)" << std::endl;
       break;
-    } else {
-      std::cout << tokenizer->Decode({token}) << std::flush;
-      _input.push_back(token);
     }
+
+    std::string decoded = tokenizer->Decode({next_token});
+    LOGD("%d : %s (idx %d)", next_token, decoded.c_str(), idx);
+
+    std::cout << decoded << std::flush;
+
+    seed_tokens.push_back(next_token);
+    token = next_token;
   }
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
