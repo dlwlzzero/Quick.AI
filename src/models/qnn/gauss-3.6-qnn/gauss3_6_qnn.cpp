@@ -379,7 +379,6 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len, attention_mask);
     fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256, attention_mask);
 
-    
     if (c >= 4) {
       std::fill_n(sliding_attention_mask, context_size * sliding_window, std::numeric_limits<uint16_t>::min());
       for(int i = 0; i < _chunk_len; i++) {

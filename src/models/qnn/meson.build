@@ -2,6 +2,7 @@ qnn_src = [
     meson.current_source_dir() / 'android_memory_allocator.cpp',
     meson.current_source_dir() / 'quick_dot_ai_qnn.cpp',
     meson.current_source_dir() / 'graph_parser.cpp',
+    meson.current_source_dir() / 'quick_dot_ai_qnn_old.cpp',
     meson.current_source_dir() / 'generate_qnn_utils.cpp',
 ]
 
