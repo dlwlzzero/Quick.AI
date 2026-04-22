@@ -35,6 +35,13 @@ public:
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
            bool log_output = true) override;
 
+  
+void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
+                                                 size_t n_tokens,
+                                                 std::vector<int> seed_tokens,
+                                                 bool do_sample,
+                                                 bool log_output)
+
 private:
   // Input/output tensors
   uint16_t *attention_mask;

@@ -343,3 +343,208 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
             << ", token generation time average: "
             << raw_exec_seconds.count() / (idx - _len) << std::endl;
 }
+
+void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
+                                                 size_t n_tokens,
+                                                 std::vector<int> seed_tokens,
+                                                 bool do_sample,
+                                                 bool log_output) {
+  (void)do_sample;
+
+  // KV Cache Initialization
+  for (int i = 0; i < this->kvs.size(); i++) {
+    std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
+  }
+
+  auto _input = tokenizer->Encode(prompt);
+
+  unsigned int _len = _input.size() - 1;
+  if(_len <= 0){
+    std::cout << "[Error] Input is empty or invalid" << std::endl;
+    return;
+  }
+
+  auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
+  auto token  = _input.back();
+
+  std:: cout << "len: " << _len << ", n_chunks: " << _n_chunks << std::endl;
+
+  std::vector<int> output;
+  std::vector<ml::train::TensorDim::IO_TensorType> outputs;
+
+  for(int c = 0; c < _n_chunks; c++){
+    int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
+
+    for(int i = 0; i < context_size; i++)
+      input_sample[i] = (i < _chunk_len) ? _input[c * 256 + i] : padding_token;
+
+    fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len, attention_mask);
+    fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256, attention_mask);
+
+    if (c > 4) {
+      std::fill_n(sliding_attention_mask, context_size * sliding_window,
+                  std::numeric_limits<uint16_t>::min());
+      for (int i = 0; i < _chunk_len; i++) {
+        for (int j = (i + 1); j < (i + 1025); j++) {
+          sliding_attention_mask[i * sliding_window + j] =
+              std::numeric_limits<uint16_t>::max();
+        }
+      }
+    } else {
+      fill_attention_mask_with_length(context_size, sliding_window, _chunk_len, sliding_attention_mask);
+      fill_attention_mask_with_prev_length(context_size, sliding_window, c * 256, sliding_attention_mask);
+    }
+
+    std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
+    std::fill_n(prefill_position_ids_sin, context_size * pos_dim, 32768);
+    std::fill_n(prefill_swa_position_ids_cos, context_size * pos_dim, 65535);
+    std::fill_n(prefill_swa_position_ids_sin, context_size * pos_dim, 32768);
+
+    auto pos_ids_offset = c * context_size * pos_dim;
+    std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_cos, swa_position_ids_cos + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_sin, swa_position_ids_sin + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
+
+    outputs = prefill_model->inference(1, prefill_inputs);
+
+    // Remove output_hidden_states from outputs
+    outputs.erase(outputs.begin() + 96);
+
+    // KV Cache Copy
+#pragma omp parallel for
+    for (int i = 0; i < (int)this->kvs.size(); i++) {
+      bool is_key = i % 4 > 1;
+      int kv_idx = i / 4 * 4 + (i + 2) % 4;
+      int layer_idx = i / 4;
+      bool is_sliding = (layer_idx % 5 != 4);
+      int dest_row_length = is_sliding ? sliding_window - context_size : max_seq_len - context_size;
+      
+      int src_row_length = 256;
+      int num_column = 128;
+
+      auto output = std::get<uint8_t *>(outputs[i]);
+      auto dest = (uint8_t *)this->kvs[kv_idx];
+
+      // Sliding KV wrap — only for sliding layers. Full-context layers
+      // have dest_row_length large enough for the whole prefill so they
+      // always fall through to the linear write at c * 256.
+      int target_idx = c * 256;
+      if (is_sliding && c * 256 + _chunk_len > dest_row_length) {
+        target_idx = dest_row_length - _chunk_len;
+        if (is_key) {
+          // K: column-major [num_column][dest_row_length]
+          for (int col = 0; col < num_column; ++col) {
+            uint8_t *col_base = dest + col * dest_row_length;
+            std::memmove(col_base, col_base + _chunk_len, dest_row_length - _chunk_len);
+          }
+        } else {
+          // V: row-major [dest_row_length][num_column]
+          std::memmove(dest, dest + _chunk_len * num_column, (dest_row_length - _chunk_len) * num_column);
+        }
+      }
+
+      if (is_key) {
+        process_key(output, _chunk_len, num_column, dest, target_idx, dest_row_length, src_row_length);
+      } else {
+        process_value(output, _chunk_len, num_column, dest, target_idx);
+      }
+    };
+  }
+
+  std::fill_n(generation_attention_mask, max_seq_len, 0);
+  std::fill_n(generation_sliding_attention_mask, sliding_window - context_size, 0);
+
+  generation_attention_mask[max_seq_len - 1] = std::numeric_limits<uint16_t>::max();
+  generation_sliding_attention_mask[(sliding_window - context_size) - 1] = std::numeric_limits<uint16_t>::max();
+  
+  for (int i = 0; i < _len; i++)
+    generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
+  for (int i = 0; i < _len; i++)
+    generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
+  
+  auto start = std::chrono::system_clock::now();
+  int idx;
+  for (idx = _len; idx < (max_seq_len - context_size); idx++) {
+    generation_sample[0] = token;
+
+    generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
+    if (idx < sliding_window - context_size)
+      generation_sliding_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
+
+    std::memcpy(generation_position_ids_cos, position_ids_cos + idx * pos_dim,
+                pos_dim * sizeof(uint16_t));
+    std::memcpy(generation_position_ids_sin, position_ids_sin + idx * pos_dim,
+                pos_dim * sizeof(uint16_t));
+    std::memcpy(generation_swa_position_ids_cos,
+                swa_position_ids_cos + idx * pos_dim,
+                pos_dim * sizeof(uint16_t));
+    std::memcpy(generation_swa_position_ids_sin,
+                swa_position_ids_sin + idx * pos_dim,
+                pos_dim * sizeof(uint16_t));
+
+    if(idx > _len) {
+      // Remove output_hidden_states from outputs
+      outputs.erase(outputs.begin() + 96);
+
+#pragma omp parallel for
+      for (int i = 0; i < this->kvs.size(); i++) {
+        bool is_key = i % 4 > 1;
+        int kv_idx = i / 4 * 4 + (i + 2) % 4;
+        int layer_idx = i / 4;
+        bool is_sliding = (layer_idx % 5 != 4);
+        int dest_row_length = layer_idx % 5 == 4 ? max_seq_len - context_size : sliding_window - context_size;
+        int src_row_length = 1;
+
+        auto output = std::get<uint8_t *>(outputs[i]);
+        auto dest = (uint8_t *)this->kvs[kv_idx];
+        // key cache or value cache
+        int num_row = 1;
+        int num_column = 128;
+
+        int target_idx = idx;
+        if (is_sliding && (idx + 1) > dest_row_length) {
+          target_idx = dest_row_length - 1;
+          if (is_key) {
+            for (int col = 0; col < num_column; ++col) {
+              uint8_t *col_base = dest + col * dest_row_length;
+              std::memmove(col_base, col_base + 1, dest_row_length - 1);
+            }
+          } else {
+            std::memmove(dest, dest + num_column,
+                         (dest_row_length - 1) * num_column);
+          }
+        }
+
+        if (is_key) {
+          process_key(output, 1, num_column, dest, target_idx, dest_row_length,
+                      1);
+        } else {
+          process_value(output, 1, num_column, dest, target_idx);
+        }
+      };
+    }
+
+    outputs = generation_model->inference(1, generation_inputs);
+    token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
+                   _input.data(), _input.size(), logit_scale, logit_offset,
+                   repetition_penalty, temperature, top_p, top_k);
+
+    output.push_back(token);
+    if (token == eos_token) {
+      // std::cout << "Finished generating, break..." << std::endl;
+      break;
+    } else {
+      std::cout << tokenizer->Decode({token}) << std::flush;
+      _input.push_back(token);
+    }
+  }
+  auto end = std::chrono::system_clock::now();
+  raw_exec_seconds = end - start;
+  std::cout << std::endl;
+  std::cout << std::endl;
+  std::cout << "Generation exec_time : " << raw_exec_seconds.count()
+            << ", token per second: " << (idx - _len) / raw_exec_seconds.count()
+            << ", token generation time average: "
+            << raw_exec_seconds.count() / (idx - _len) << std::endl;
+}

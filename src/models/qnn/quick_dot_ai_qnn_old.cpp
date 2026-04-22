@@ -19,11 +19,18 @@ void causallm::Quick_Dot_AI_QNN_OLD::initialize() {
 
   prefill_model = createModel(ml::train::ModelType::NEURAL_NET);
 
-  prefill_model->addLayer(createLayer(
+  if(uses_embedding) {
+    prefill_model->addLayer(createLayer(
       "embedding",
       {withKey("name", "inputs_embeds"), withKey("in_dim", vocab_size),
        withKey("input_shape", "1:" + std::to_string(sequence_length)),
        withKey("out_dim", hidden_size)}));
+  } else {
+    prefill_model->addLayer(createLayer(
+      "input", 
+      {withkey("name", "inputs_embeds"), 
+       withKey("input_shape", "1:256:3072")}));
+  }
 
   NNTR_THROW_IF(prefill_non_embed_input_names.size() !=
                     prefill_non_embed_input_dims.size(),
@@ -140,6 +147,9 @@ void causallm::Quick_Dot_AI_QNN_OLD::setupParameters(json &cfg,
   model_path = nntr_cfg["model_file_name"].get<std::string>();
   embedding_path = nntr_cfg["embedding_file_name"].get<std::string>();
   tokenizer_path = nntr_cfg["tokenizer_file"].get<std::string>();
+  if (nntr_cfg.contains("uses_embedding")) {
+    uses_embedding = nntr_cfg["uses_embedding"].get<bool>();
+  }
 
   // Read config parameters - prefill graph
   prefill_graph_name = cfg["prefill_graph_name"].get<std::string>();

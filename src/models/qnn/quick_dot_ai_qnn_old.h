@@ -65,6 +65,8 @@ public:
 
   void registerCustomLayers() override;
 
+  void setStreamer(::BaseStreamer *streamer) override { streamer_ = streamer; }
+
 protected:
   // nntr_config
   std::string model_path;
@@ -124,6 +126,10 @@ protected:
   float repetition_penalty;
   float logit_scale;
   int logit_offset;
+
+  bool uses_embedding = true;
+
+  ::BaseStreamer *streamer_ = nullptr;
 };
 
 } // namespace causallm
