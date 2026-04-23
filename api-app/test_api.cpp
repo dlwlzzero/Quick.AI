@@ -100,6 +100,7 @@ static void print_usage(const char *prog) {
   print_kv("chat_tpl", "true | false  (default: true)", clr::yellow);
   print_kv("quant", "W4A32 | W16A16 | W8A16 | W32A32", clr::yellow);
   print_kv("verbose", "true | false  (default: true)", clr::yellow);
+  print_kv("model_base_path", "Base directory for models (or set QUICKAI_MODEL_BASE_PATH)", clr::yellow);
   print_section_end(clr::yellow);
 }
 
@@ -142,6 +143,20 @@ int main(int argc, char *argv[]) {
     verbose = (arg == "1" || arg == "true");
   }
 
+  // Model base path: CLI arg > env var > nullptr (uses C API default)
+  const char *model_base_path = nullptr;
+  std::string model_base_path_storage;
+  if (argc >= 7) {
+    model_base_path_storage = argv[6];
+    model_base_path = model_base_path_storage.c_str();
+  } else {
+    const char *env_path = std::getenv("QUICKAI_MODEL_BASE_PATH");
+    if (env_path != nullptr && strlen(env_path) > 0) {
+      model_base_path_storage = env_path;
+      model_base_path = model_base_path_storage.c_str();
+    }
+  }
+
   // ── Banner ─────────────────────────────────────────────────────────────
   print_banner();
 
@@ -152,6 +167,7 @@ int main(int argc, char *argv[]) {
   print_kv("Chat Template", use_chat_template ? "Yes" : "No", clr::cyan);
   print_kv("Quantization", quant_str, clr::cyan);
   print_kv("Verbose", verbose ? "Yes" : "No", clr::cyan);
+  print_kv("Model Base Path", model_base_path ? model_base_path : "(C API default)", clr::cyan);
   print_section_end(clr::cyan);
 
   // ── Set options ────────────────────────────────────────────────────────
@@ -204,7 +220,7 @@ int main(int argc, char *argv[]) {
   std::cout << clr::blue << "│" << clr::reset << "  Loading " << clr::bold_white
             << model_name << clr::reset << " (" << quant_str << ") ...\n";
 
-  err = loadModel(CAUSAL_LM_BACKEND_CPU, model_type, quant_type);
+  err = loadModel(CAUSAL_LM_BACKEND_CPU, model_type, quant_type, model_base_path);
   if (err != CAUSAL_LM_ERROR_NONE) {
     print_error("Failed to load model (code " + std::to_string(err) + ")");
     return 1;
