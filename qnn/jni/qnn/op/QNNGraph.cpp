@@ -13,6 +13,8 @@
 
 #include "QNNGraph.h"
 #include "QnnTypes.h"
+#include <engine.h>
+#include <qnn_context.h>
 #include <cstdint>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -55,8 +57,34 @@ QNNGraph::~QNNGraph() {
   if (m_context) {
     if (QNN_CONTEXT_NO_ERROR !=
         m_qnnFunctionPointers.qnnInterface.contextFree(m_context, nullptr)) {
-      ml_loge("Faile to free Context");
+      ml_loge("Failed to free Context");
     }
+  }
+
+  // Free the QNN context stored in QNNVar::ct_map using the stored bin_path.
+  // Access QNNContext through Engine (same pattern as NeuralNetwork::load).
+  if (!bin_path.empty()) {
+    LOGD("[QNNGraph] ~QNNGraph: freeing context for bin_path=%s",
+         bin_path.c_str());
+    auto *ctx = Engine::Global().getRegisteredContext("qnn");
+    if (ctx) {
+      auto *qnn_ctx = static_cast<QNNContext *>(ctx);
+      auto qnn_data = qnn_ctx->getQnnData();
+      if (qnn_data && qnn_data->findContext(bin_path).has_value()) {
+        LOGD("[QNNGraph] ~QNNGraph: calling freeContext for bin_path=%s",
+             bin_path.c_str());
+        qnn_data->freeContext(bin_path);
+        LOGD("[QNNGraph] ~QNNGraph: freeContext completed for bin_path=%s",
+             bin_path.c_str());
+      } else {
+        LOGD("[QNNGraph] ~QNNGraph: context not found in ct_map for bin_path=%s",
+             bin_path.c_str());
+      }
+    } else {
+      LOGD("[QNNGraph] ~QNNGraph: qnn context not registered in Engine");
+    }
+  } else {
+    LOGD("[QNNGraph] ~QNNGraph: bin_path is empty, skipping freeContext");
   }
 }
 

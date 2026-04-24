@@ -122,6 +122,72 @@ struct QNNVar {
     return std::nullopt;
   }
 
+  StatusCode freeContext(const std::string &bin_path) {
+    auto it = ct_map.find(bin_path);
+    if (it == ct_map.end()) {
+      ml_logw("Context not found for: %s", bin_path.c_str());
+      return StatusCode::FAILURE;
+    }
+
+    auto &ctx = it->second;
+
+    // 1. QNN context handle 해제
+    if (ctx.m_context != nullptr &&
+        m_qnnFunctionPointers.qnnInterface.contextFree != nullptr) {
+      if (QNN_CONTEXT_NO_ERROR !=
+          m_qnnFunctionPointers.qnnInterface.contextFree(ctx.m_context,
+                                                         nullptr)) {
+        ml_loge("Failed to free QNN context for: %s", bin_path.c_str());
+      }
+      ctx.m_context = nullptr;
+    }
+
+    // 2. graphsInfo 해제 (use QnnModel_freeGraphsInfo pattern)
+    if (ctx.m_graphsInfo != nullptr) {
+      for (uint32_t i = 0; i < ctx.m_graphsCount; i++) {
+        if (ctx.m_graphsInfo[i] != nullptr) {
+          free(ctx.m_graphsInfo[i]->graphName);
+          qnn_wrapper_api::freeQnnTensors(ctx.m_graphsInfo[i]->inputTensors,
+                                          ctx.m_graphsInfo[i]->numInputTensors);
+          qnn_wrapper_api::freeQnnTensors(
+            ctx.m_graphsInfo[i]->outputTensors,
+            ctx.m_graphsInfo[i]->numOutputTensors);
+        }
+      }
+      free(*ctx.m_graphsInfo);
+      free(ctx.m_graphsInfo);
+      ctx.m_graphsInfo = nullptr;
+    }
+
+    // 3. contextConfig 해제
+    if (ctx.m_contextConfig != nullptr) {
+      for (int i = 0; ctx.m_contextConfig[i] != nullptr; i++) {
+        free(ctx.m_contextConfig[i]);
+      }
+      free(ctx.m_contextConfig);
+      ctx.m_contextConfig = nullptr;
+    }
+
+    // 4. ct_map에서 엔트리 제거
+    ct_map.erase(it);
+
+    ml_logi("Freed QNN context for: %s", bin_path.c_str());
+    return StatusCode::SUCCESS;
+  }
+
+  StatusCode freeAllContexts() {
+    // 반복 중 erase하면 안 되므로 키를 먼저 복사
+    std::vector<std::string> keys;
+    keys.reserve(ct_map.size());
+    for (auto &[k, _] : ct_map) {
+      keys.push_back(k);
+    }
+    for (auto &k : keys) {
+      freeContext(k);
+    }
+    return StatusCode::SUCCESS;
+  }
+
   StatusCode makeContext(props::FilePath bin) {
 
     if (findContext(bin.get())) {

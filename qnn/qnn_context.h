@@ -80,6 +80,10 @@ public:
 
   ~QNNContext() {
     auto qnn_data = getQnnData();
+    // Free all remaining QNN contexts in ct_map before releasing backend
+    if (qnn_data) {
+      qnn_data->freeAllContexts();
+    }
     if ((qnn_data->m_isBackendInitialized &&
          nullptr != qnn_data->m_qnnFunctionPointers.qnnInterface.backendFree) &&
         QNN_BACKEND_NO_ERROR !=
