@@ -220,7 +220,9 @@ int main(int argc, char *argv[]) {
   std::cout << clr::blue << "│" << clr::reset << "  Loading " << clr::bold_white
             << model_name << clr::reset << " (" << quant_str << ") ...\n";
 
-  err = loadModel(CAUSAL_LM_BACKEND_CPU, model_type, quant_type, model_base_path);
+  CausalLmHandle handle = nullptr;
+  err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
+                        nullptr, model_base_path, &handle);
   if (err != CAUSAL_LM_ERROR_NONE) {
     print_error("Failed to load model (code " + std::to_string(err) + ")");
     return 1;
@@ -238,7 +240,7 @@ int main(int argc, char *argv[]) {
   std::cout << clr::green << "│" << clr::reset << "\n";
 
   const char *outputText = nullptr;
-  err = runModel(prompt, &outputText);
+  err = runModelHandle(handle, prompt, &outputText);
   if (err != CAUSAL_LM_ERROR_NONE) {
     print_error("Inference failed (code " + std::to_string(err) + ")");
     return 1;
@@ -257,7 +259,7 @@ int main(int argc, char *argv[]) {
 
   PerformanceMetrics metrics;
   memset(&metrics, 0, sizeof(metrics));
-  err = getPerformanceMetrics(&metrics);
+  err = getPerformanceMetricsHandle(handle, &metrics);
   if (err == CAUSAL_LM_ERROR_NONE) {
     double prefill_tps =
         metrics.prefill_duration_ms > 0
@@ -297,6 +299,9 @@ int main(int argc, char *argv[]) {
               << "(metrics not available)" << clr::reset << "\n";
   }
   print_section_end(clr::magenta);
+
+  // ── Cleanup ────────────────────────────────────────────────────────────
+  destroyModelHandle(handle);
 
   // ── Done ───────────────────────────────────────────────────────────────
   std::cout << clr::bold_green << "  Done." << clr::reset << "\n\n";
