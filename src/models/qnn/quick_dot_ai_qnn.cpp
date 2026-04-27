@@ -26,17 +26,37 @@ std::string qnn_to_nntrainer_datatype(std::string qnn_dtype) {
 }
 
 ml::train::TensorDim::IO_TensorType
-get_qnn_input_data(TensorInfo tensor_object) {
+get_qnn_input_data(TensorInfo tensor_object, std::set<void *> &allocated_ptrs) {
   int size = GraphParser::get_tensor_size(tensor_object);
   std::string qnn_dtype = tensor_object.data_type;
 
   if (qnn_dtype == "QNN_DATATYPE_UFIXED_POINT_16") {
-    return (uint16_t *)allocate(size);
+    auto *ptr = (uint16_t *)allocate(size);
+    allocated_ptrs.insert(ptr);
+    return ptr;
   } else if (qnn_dtype == "QNN_DATATYPE_UFIXED_POINT_8") {
-    return (uint8_t *)allocate(size);
+    auto *ptr = (uint8_t *)allocate(size);
+    allocated_ptrs.insert(ptr);
+    return ptr;
   } else {
     throw std::invalid_argument("qnn_dtype is " + qnn_dtype);
   }
+}
+
+void *causallm::Quick_Dot_AI_QNN::tracked_allocate(size_t size) {
+  void *ptr = allocate(size);
+  allocated_ptrs_.insert(ptr);
+  return ptr;
+}
+
+void causallm::Quick_Dot_AI_QNN::deallocate_all() {
+  LOGD("Quick_Dot_AI_QNN::deallocate_all: freeing %zu tracked pointers",
+       allocated_ptrs_.size());
+  for (auto *ptr : allocated_ptrs_) {
+    LOGD("Quick_Dot_AI_QNN::deallocate_all: deallocating ptr=%p", ptr);
+    deallocate(ptr);
+  }
+  allocated_ptrs_.clear();
 }
 
 causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN() {
@@ -49,13 +69,7 @@ causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN() {
   for (auto &[model_name, model] : models) {
     model.model_handle.reset();
   }
-  for (const auto &[model_name, model] : models) {
-    for (const auto &input : model.model_inputs) {
-      void *ptr = std::visit(
-          [](auto *p) -> void * { return static_cast<void *>(p); }, input);
-      deallocate(ptr);
-    }
-  }
+  deallocate_all();
 }
 
 void causallm::Quick_Dot_AI_QNN::initialize() {
@@ -106,7 +120,7 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
              withKey("input_shape", input_shape_string),
              withKey("out_dim", input_shape.back())}));
 
-        model_inputs.push_back((float *)allocate(sizeof(float) * input_size));
+        model_inputs.push_back((float *)tracked_allocate(sizeof(float) * input_size));
       } else {
         auto input_shape = tensor_object.dimensions;
         std::string input_shape_string = std::to_string(input_shape[0]);
@@ -119,7 +133,7 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
                       //  withKey("input_dtype",
                       //  qnn_to_nntrainer_datatype(tensor_object.data_type)),
                       withKey("input_shape", input_shape_string)}));
-        model_inputs.push_back(get_qnn_input_data(tensor_object));
+        model_inputs.push_back(get_qnn_input_data(tensor_object, allocated_ptrs_));
       }
 
       if (!input_names.empty()) {

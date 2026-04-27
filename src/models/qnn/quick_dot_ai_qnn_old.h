@@ -12,6 +12,8 @@
 
 #include <transformer.h>
 
+#include <set>
+
 namespace causallm {
 
 /**
@@ -142,6 +144,18 @@ protected:
   void *embedding_mmap_ptr = nullptr;
   size_t embedding_mmap_size = 0;
   size_t embedding_bytes_per_token = 0; // hidden_size * sizeof(uint16_t)
+
+  // Tracked resource management: all allocate()'d pointers are recorded
+  // here so that ~Quick_Dot_AI_QNN_OLD can free them in one pass without
+  // risking double-free or omission.
+  std::set<void *> allocated_ptrs_;
+
+  /// Allocate size bytes via allocate() and record the pointer for
+  /// automatic cleanup in the destructor.
+  void *tracked_allocate(size_t size);
+
+  /// Deallocate every tracked pointer and clear the set.
+  void deallocate_all();
 };
 
 } // namespace causallm

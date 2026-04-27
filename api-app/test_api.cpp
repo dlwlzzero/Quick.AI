@@ -215,16 +215,54 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // ── Load model ─────────────────────────────────────────────────────────
-  print_section("Loading Model", clr::blue);
-  std::cout << clr::blue << "│" << clr::reset << "  Loading " << clr::bold_white
-            << model_name << clr::reset << " (" << quant_str << ") ...\n";
+  // ── Load/Unload Stress Test ────────────────────────────────────────────
+  const int STRESS_CYCLES = 8;
+  print_section("Load/Unload Stress Test", clr::blue);
+
+  for (int i = 0; i < STRESS_CYCLES; ++i) {
+    std::cout << clr::blue << "│" << clr::reset << "  " << clr::bold_white
+              << "Cycle " << (i + 1) << "/" << STRESS_CYCLES
+              << clr::reset << ": ";
+
+    // Load
+    CausalLmHandle cycle_handle = nullptr;
+    err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
+                          nullptr, model_base_path, &cycle_handle);
+    if (err != CAUSAL_LM_ERROR_NONE) {
+      print_error("loadModelHandle failed at cycle " + std::to_string(i + 1) +
+                  " (code " + std::to_string(err) + ")");
+      return 1;
+    }
+    std::cout << clr::bold_green << "LOAD OK" << clr::reset;
+
+    // Unload
+    err = unloadModelHandle(cycle_handle);
+    if (err != CAUSAL_LM_ERROR_NONE) {
+      print_error("unloadModelHandle failed at cycle " + std::to_string(i + 1) +
+                  " (code " + std::to_string(err) + ")");
+      destroyModelHandle(cycle_handle);
+      return 1;
+    }
+    std::cout << clr::dim << " → " << clr::reset;
+    std::cout << clr::bold_yellow << "UNLOAD OK" << clr::reset;
+
+    // Destroy handle (unload keeps struct alive, must destroy to avoid leak)
+    destroyModelHandle(cycle_handle);
+    std::cout << clr::dim << " → " << clr::reset;
+    std::cout << clr::dim << "DESTROY OK" << clr::reset << "\n";
+  }
+
+  std::cout << clr::blue << "│" << clr::reset << "\n";
+  std::cout << clr::blue << "│" << clr::reset << "  " << clr::bold_white
+            << "Final load (#" << (STRESS_CYCLES + 1) << "):" << clr::reset
+            << " Loading " << clr::bold_white << model_name << clr::reset
+            << " (" << quant_str << ") ...\n";
 
   CausalLmHandle handle = nullptr;
   err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
                         nullptr, model_base_path, &handle);
   if (err != CAUSAL_LM_ERROR_NONE) {
-    print_error("Failed to load model (code " + std::to_string(err) + ")");
+    print_error("Final loadModelHandle failed (code " + std::to_string(err) + ")");
     return 1;
   }
 
