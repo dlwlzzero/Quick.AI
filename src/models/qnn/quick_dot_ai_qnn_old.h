@@ -35,6 +35,7 @@ public:
   void initialize() override;
 
   virtual void initialize_input_outputs() = 0;
+  virtual void initialize_kv_cache() = 0;
 
   void load_weight(const std::string &weight_path) override;
 

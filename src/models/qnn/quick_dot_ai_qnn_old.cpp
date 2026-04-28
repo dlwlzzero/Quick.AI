@@ -156,6 +156,7 @@ void causallm::Quick_Dot_AI_QNN_OLD::load_weight(
 
   // TODO can this line be moved to initialize() ?
   initialize_input_outputs();
+  initialize_kv_cache();
 }
 
 void causallm::Quick_Dot_AI_QNN_OLD::save_weight(

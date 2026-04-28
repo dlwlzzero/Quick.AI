@@ -237,14 +237,17 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
   }
 }
 
-void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
-                                 const WSTR system_prompt,
-                                 const WSTR tail_prompt, bool log_output) {
-  last_output_.clear();
+void causallm::Gauss3_8_QNN::initialize_kv_cache() {
   // KV Cache Initialization
   for (int i = 0; i < this->kvs.size(); i++) {
     std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
   }
+}
+
+void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
+                                 const WSTR system_prompt,
+                                 const WSTR tail_prompt, bool log_output) {
+  last_output_.clear();
 
   auto _input = tokenizer->Encode(prompt);
 
