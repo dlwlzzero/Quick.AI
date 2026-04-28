@@ -55,52 +55,56 @@ __attribute__((constructor)) static void register_custom_models() {
 
 void causallm::Gauss3_8_QNN::initialize_input_outputs() {
   attention_mask =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * max_seq_len);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * max_seq_len);
   sliding_attention_mask =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * sliding_window);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * sliding_window);
   generation_attention_mask =
-      (uint16_t *)allocate(sizeof(uint16_t) * max_seq_len);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * max_seq_len);
   generation_sliding_attention_mask =
-      (uint16_t *)allocate(sizeof(uint16_t) * (sliding_window - context_size));
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * (sliding_window - context_size));
 
   std::tuple<uint16_t *, uint16_t *> cos_sin_tuple =
       get_cos_sin(max_seq_len, pos_dim, rope_theta);
   position_ids_cos = std::get<0>(cos_sin_tuple);
   position_ids_sin = std::get<1>(cos_sin_tuple);
+  allocated_ptrs_.insert(position_ids_cos);
+  allocated_ptrs_.insert(position_ids_sin);
 
   // 확인할 부분 -> sliding window attention?
   std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple =
       get_cos_sin(max_seq_len, pos_dim, local_rope_theta);
   swa_position_ids_cos = std::get<0>(swa_cos_sin_tuple);
   swa_position_ids_sin = std::get<1>(swa_cos_sin_tuple);
+  allocated_ptrs_.insert(swa_position_ids_cos);
+  allocated_ptrs_.insert(swa_position_ids_sin);
 
   prefill_position_ids_cos =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
   prefill_position_ids_sin =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
   prefill_swa_position_ids_cos =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
   prefill_swa_position_ids_sin =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
   generation_position_ids_cos =
-      (uint16_t *)allocate(sizeof(uint16_t) * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
   generation_position_ids_sin =
-      (uint16_t *)allocate(sizeof(uint16_t) * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
   generation_swa_position_ids_cos =
-      (uint16_t *)allocate(sizeof(uint16_t) * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
   generation_swa_position_ids_sin =
-      (uint16_t *)allocate(sizeof(uint16_t) * pos_dim);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
 
   if (uses_embedding) {
-    input_sample = (float *)allocate(sizeof(float) * context_size);
-    generation_sample = (float *)allocate(sizeof(float));
+    input_sample = (float *)tracked_allocate(sizeof(float) * context_size);
+    generation_sample = (float *)tracked_allocate(sizeof(float));
     prefill_inputs = {input_sample};
     generation_inputs = {generation_sample};
   } else {
     input_sample_u16 =
-        (uint16_t *)allocate(sizeof(uint16_t) * context_size * hidden_size);
+        (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * hidden_size);
     generation_sample_u16 =
-        (uint16_t *)allocate(sizeof(uint16_t) * hidden_size);
+        (uint16_t *)tracked_allocate(sizeof(uint16_t) * hidden_size);
     prefill_inputs = {input_sample_u16};
     generation_inputs = {generation_sample_u16};
   }
@@ -110,6 +114,7 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
     // Default: fill with 32768 (zero value for quantized uint16_t)
     for (int i = 0; i < lora_sizes.size(); i++) {
       auto lora_pointer = get_zero_memory(lora_sizes[i], 32768);
+      allocated_ptrs_.insert(lora_pointer);
       prefill_inputs.push_back(lora_pointer);
       generation_inputs.push_back(lora_pointer);
     }
@@ -138,6 +143,7 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
 
     for (int i = 0; i < lora_sizes.size(); i++) {
       auto lora_pointer = get_zero_memory(sizeof(uint16_t) * lora_sizes[i], 0);
+      allocated_ptrs_.insert(lora_pointer);
       memcpy(lora_pointer, data_ptr, sizeof(uint16_t) * lora_sizes[i]);
       prefill_inputs.push_back(lora_pointer);
       generation_inputs.push_back(lora_pointer);
@@ -172,10 +178,13 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
       // If we cast int8 memory full of 128 to int16, we get 128 * 256 + 128
       // 여기가 prefill kvcache
       auto current_kv = get_zero_memory(size * coeff, 128 * 256 + 128);
+      allocated_ptrs_.insert(current_kv);
       generation_inputs.push_back(current_kv);
       prefill_inputs.push_back(current_kv);
       this->kvs.push_back(current_kv);
-      this->fresh_kvs.push_back(get_zero_memory(size * coeff, 128 * 256 + 128));
+      auto fresh_kv = get_zero_memory(size * coeff, 128 * 256 + 128);
+      allocated_ptrs_.insert(fresh_kv);
+      this->fresh_kvs.push_back(fresh_kv);
     }
 
     if (i == 0) {

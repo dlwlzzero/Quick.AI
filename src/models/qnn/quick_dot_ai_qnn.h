@@ -24,6 +24,7 @@
 #include <transformer.h>
 
 #include <atomic>
+#include <set>
 
 namespace causallm {
 /**
@@ -150,6 +151,18 @@ protected:
    * cancel button handler in UI thread).
    */
   std::atomic<bool> stop_requested_{false};
+
+  // Tracked resource management: all allocate()'d pointers are recorded
+  // here so that ~Quick_Dot_AI_QNN can free them in one pass without
+  // risking double-free or omission.
+  std::set<void *> allocated_ptrs_;
+
+  /// Allocate size bytes via allocate() and record the pointer for
+  /// automatic cleanup in the destructor.
+  void *tracked_allocate(size_t size);
+
+  /// Deallocate every tracked pointer and clear the set.
+  void deallocate_all();
 };
 
 } // namespace causallm

@@ -12,12 +12,29 @@
 using namespace ml::train;
 using namespace nntrainer;
 
+void *causallm::Quick_Dot_AI_QNN_OLD::tracked_allocate(size_t size) {
+  void *ptr = allocate(size);
+  allocated_ptrs_.insert(ptr);
+  return ptr;
+}
+
+void causallm::Quick_Dot_AI_QNN_OLD::deallocate_all() {
+  LOGD("Quick_Dot_AI_QNN_OLD::deallocate_all: freeing %zu tracked pointers",
+       allocated_ptrs_.size());
+  for (auto *ptr : allocated_ptrs_) {
+    LOGD("Quick_Dot_AI_QNN_OLD::deallocate_all: deallocating ptr=%p", ptr);
+    deallocate(ptr);
+  }
+  allocated_ptrs_.clear();
+}
+
 causallm::Quick_Dot_AI_QNN_OLD::~Quick_Dot_AI_QNN_OLD() {
   if (embedding_mmap_ptr != nullptr) {
     ::munmap(embedding_mmap_ptr, embedding_mmap_size);
     embedding_mmap_ptr = nullptr;
     embedding_mmap_size = 0;
   }
+  deallocate_all();
 }
 
 void causallm::Quick_Dot_AI_QNN_OLD::initialize() {

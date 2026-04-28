@@ -188,11 +188,15 @@ void causallm::Gauss3_6_QNN::initialize() {
       get_cos_sin(max_seq_len, pos_dim, rope_theta);
   position_ids_cos = std::get<0>(cos_sin_tuple);
   position_ids_sin = std::get<1>(cos_sin_tuple);
+  allocated_ptrs_.insert(position_ids_cos);
+  allocated_ptrs_.insert(position_ids_sin);
 
   std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple =
       get_cos_sin(max_seq_len, pos_dim, local_rope_theta);
   swa_position_ids_cos = std::get<0>(swa_cos_sin_tuple);
   swa_position_ids_sin = std::get<1>(swa_cos_sin_tuple);
+  allocated_ptrs_.insert(swa_position_ids_cos);
+  allocated_ptrs_.insert(swa_position_ids_sin);
   LOGD("----------------------- initialize() 4");
     // Initialize LoRA tensors
   if (lora_path.empty()) {
@@ -281,8 +285,9 @@ void causallm::Gauss3_6_QNN::initialize() {
       this->kv_sizes.push_back(size);
 
       // Allocate fresh_kvs for reset during run()
-      this->fresh_kvs.push_back(
-          (uint16_t *)get_zero_memory(size, 128 * 256 + 128));
+      auto fresh_kv = (uint16_t *)get_zero_memory(size, 128 * 256 + 128);
+      allocated_ptrs_.insert(fresh_kv);
+      this->fresh_kvs.push_back(fresh_kv);
     }
   }
 
