@@ -76,6 +76,8 @@ private:
   uint16_t *generation_sample_u16 = nullptr;
 
   // KV cache variables
+  int kv_len;
+
   std::vector<uint16_t *> kvs;
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;

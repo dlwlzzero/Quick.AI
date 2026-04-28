@@ -238,6 +238,8 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
 }
 
 void causallm::Gauss3_8_QNN::initialize_kv_cache() {
+  kv_len = 0;
+  
   // KV Cache Initialization
   for (int i = 0; i < this->kvs.size(); i++) {
     std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
@@ -247,49 +249,48 @@ void causallm::Gauss3_8_QNN::initialize_kv_cache() {
 void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
                                  const WSTR system_prompt,
                                  const WSTR tail_prompt, bool log_output) {
-  last_output_.clear();
+  auto input = tokenizer->Encode(prompt);
 
-  auto _input = tokenizer->Encode(prompt);
-
-  unsigned int _len = _input.size() - 1;
-  if (_len <= 0) {
+  unsigned int input_len = input.size() - 1;
+  if (input_len <= 0) {
     std::cout << "[Error] Input is empty or invalid" << std::endl;
     return;
   }
 
-  auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
-  auto token = _input.back();
+  auto n_chunks = (input_len % 256 != 0) ? ((input_len / 256) + 1) : (input_len / 256);
+  auto token = input.back();
 
-  std::cout << "len: " << _len << ", n_chunks: " << _n_chunks << std::endl;
+  std::cout << "len: " << input_len << ", n_chunks: " << n_chunks << std::endl;
 
   std::vector<int> output;
   std::vector<ml::train::TensorDim::IO_TensorType> outputs;
 
-  for (int c = 0; c < _n_chunks; c++) {
-    int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
+  for (int c = 0; c < n_chunks; c++) {
+    int chunk_len = ((c + 1) * 256 < input_len) ? context_size : (input_len - (c * 256));
+    std::cout << "kv_len: " << kv_len << ", chunk_len: " << chunk_len << std::endl;
 
     for (int i = 0; i < context_size; i++)
-      input_sample[i] = (i < _chunk_len) ? _input[c * 256 + i] : padding_token;
+      input_sample[i] = (i < chunk_len) ? input[c * 256 + i] : padding_token;
 
-    fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len,
+    fill_attention_mask_with_length(context_size, max_seq_len, chunk_len,
                                     attention_mask);
-    fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256,
+    fill_attention_mask_with_prev_length(context_size, max_seq_len, kv_len,
                                          attention_mask);
 
-    if (c >= 4) {
+    if (kv_len >= 1024) {
       std::fill_n(sliding_attention_mask, context_size * sliding_window,
                   std::numeric_limits<uint16_t>::min());
-      for (int i = 0; i < _chunk_len; i++) {
+      for (int i = 0; i < chunk_len; i++) {
         for (int j = (i + 1); j < (i + 1025); j++) {
           sliding_attention_mask[i * sliding_window + j] =
               std::numeric_limits<uint16_t>::max();
         }
       }
     } else {
-      fill_attention_mask_with_length(context_size, sliding_window, _chunk_len,
+      fill_attention_mask_with_length(context_size, sliding_window, chunk_len,
                                       sliding_attention_mask);
       fill_attention_mask_with_prev_length(context_size, sliding_window,
-                                           c * 256, sliding_attention_mask);
+                                           kv_len, sliding_attention_mask);
     }
 
     std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
@@ -297,17 +298,17 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     std::fill_n(prefill_swa_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_swa_position_ids_sin, context_size * pos_dim, 32768);
 
-    auto pos_ids_offset = c * context_size * pos_dim;
+    auto pos_ids_offset = kv_len * pos_dim;
     std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset,
-                _chunk_len * pos_dim * sizeof(uint16_t));
+                chunk_len * pos_dim * sizeof(uint16_t));
     std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset,
-                _chunk_len * pos_dim * sizeof(uint16_t));
+                chunk_len * pos_dim * sizeof(uint16_t));
     std::memcpy(prefill_swa_position_ids_cos,
                 swa_position_ids_cos + pos_ids_offset,
-                _chunk_len * pos_dim * sizeof(uint16_t));
+                chunk_len * pos_dim * sizeof(uint16_t));
     std::memcpy(prefill_swa_position_ids_sin,
                 swa_position_ids_sin + pos_ids_offset,
-                _chunk_len * pos_dim * sizeof(uint16_t));
+                chunk_len * pos_dim * sizeof(uint16_t));
 
     outputs = prefill_model->inference(1, prefill_inputs);
 
@@ -333,30 +334,32 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       // Sliding KV wrap — only for sliding layers. Full-context layers
       // have dest_row_length large enough for the whole prefill so they
       // always fall through to the linear write at c * 256.
-      int target_idx = c * 256;
-      if (is_sliding && c * 256 + _chunk_len > dest_row_length) {
-        target_idx = dest_row_length - _chunk_len;
+      int target_idx = kv_len;
+      if (is_sliding && kv_len + chunk_len > dest_row_length) {
+        target_idx = dest_row_length - chunk_len;
         if (is_key) {
           // K: column-major [num_column][dest_row_length]
           for (int col = 0; col < num_column; ++col) {
             uint8_t *col_base = dest + col * dest_row_length;
-            std::memmove(col_base, col_base + _chunk_len,
-                         dest_row_length - _chunk_len);
+            std::memmove(col_base, col_base + chunk_len,
+                         dest_row_length - chunk_len);
           }
         } else {
           // V: row-major [dest_row_length][num_column]
-          std::memmove(dest, dest + _chunk_len * num_column,
-                       (dest_row_length - _chunk_len) * num_column);
+          std::memmove(dest, dest + chunk_len * num_column,
+                       (dest_row_length - chunk_len) * num_column);
         }
       }
 
       if (is_key) {
-        process_key(output, _chunk_len, num_column, dest, target_idx,
+        process_key(output, chunk_len, num_column, dest, target_idx,
                     dest_row_length, src_row_length);
       } else {
-        process_value(output, _chunk_len, num_column, dest, target_idx);
+        process_value(output, chunk_len, num_column, dest, target_idx);
       }
     };
+
+    kv_len += chunk_len;
   }
 
   std::fill_n(generation_attention_mask, max_seq_len, 0);
@@ -368,14 +371,15 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
   generation_sliding_attention_mask[(sliding_window - context_size) - 1] =
       std::numeric_limits<uint16_t>::max();
 
-  for (int i = 0; i < _len; i++)
+  for (int i = 0; i < kv_len; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < _len && i < sliding_window - context_size; i++)
+  for (int i = 0; i < kv_len && i < sliding_window - context_size; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
 
   auto start = std::chrono::system_clock::now();
   int idx;
-  for (idx = _len; idx < (max_seq_len - context_size); idx++) {
+  int prefill_len = kv_len;
+  for (idx = prefill_len; idx < (max_seq_len - context_size); idx++) {
     generation_sample[0] = token;
 
     generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
@@ -394,7 +398,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
                 swa_position_ids_sin + idx * pos_dim,
                 pos_dim * sizeof(uint16_t));
 
-    if (idx > _len) {
+    if (idx > prefill_len) {
       // Remove output_hidden_states from outputs
 
 #pragma omp parallel for
@@ -440,7 +444,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     outputs = generation_model->inference(1, generation_inputs);
     outputs.erase(outputs.begin() + 96);
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
-                   _input.data(), _input.size(), logit_scale, logit_offset,
+                   input.data(), input.size(), logit_scale, logit_offset,
                    repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
@@ -448,8 +452,8 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       break;
     } else {
       std::string decoded = tokenizer->Decode({token});
-      last_output_ += decoded;
       LOGD("%d : %s (idx: %d)", token, decoded.c_str(), idx);
+      kv_len += 1;
       // Stream the token if a streamer is attached
       if (streamer_) {
         if (streamer_put(streamer_, decoded.c_str()) != 0) {
@@ -459,7 +463,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       } else if (log_output) {
         std::cout << decoded << std::flush;
       }
-      _input.push_back(token);
+      input.push_back(token);
     }
   }
 
@@ -475,9 +479,9 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
   std::cout << std::endl;
   std::cout << std::endl;
   std::cout << "Generation exec_time : " << raw_exec_seconds.count()
-            << ", token per second: " << (idx - _len) / raw_exec_seconds.count()
+            << ", token per second: " << (idx - input_len) / raw_exec_seconds.count()
             << ", token generation time average: "
-            << raw_exec_seconds.count() / (idx - _len) << std::endl;
+            << raw_exec_seconds.count() / (idx - input_len) << std::endl;
 }
 
 const void *causallm::Gauss3_8_QNN::lookupEmbedding(int token_id) const {
@@ -503,8 +507,6 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
                                                  bool log_output) {
 
   (void)do_sample;
-
-  last_output_.clear();
 
   if (input_sample_u16 == nullptr || generation_sample_u16 == nullptr) {
     LOGE("run_with_embeddings: u16 input/generation sample not initialized "
@@ -752,7 +754,6 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
       break;
     } else {
       std::string decoded = tokenizer->Decode({token});
-      last_output_ += decoded;
       LOGD("%d : %s (idx: %d)", token, decoded.c_str(), idx);
       // Stream the token if a streamer is attached
       if (streamer_) {

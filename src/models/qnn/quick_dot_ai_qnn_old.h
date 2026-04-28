@@ -131,7 +131,6 @@ protected:
   bool uses_embedding = true;
 
   ::BaseStreamer *streamer_ = nullptr;
-  std::string last_output_;
 
   // LoRA path (optional)
   std::string lora_path;
