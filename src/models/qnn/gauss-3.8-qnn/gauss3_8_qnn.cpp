@@ -717,13 +717,9 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
     return;
   }
 
-  // KV Cache Initialization
-  for (int i = 0; i < this->kvs.size(); i++) {
-    std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
-  }
-
   const size_t bytes_per_token = embedding_bytes_per_token;
   const unsigned int _len = static_cast<unsigned int>(n_tokens) - 1;
+  const int prefill_base_kv_len = kv_len;
 
   auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
 
@@ -734,7 +730,7 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
   for (int c = 0; c < _n_chunks; c++) {
     int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
-    int current_kv_len = c * context_size;
+    int current_kv_len = prefill_base_kv_len + c * context_size;
 
     const uint16_t *src_base = static_cast<const uint16_t *>(prefill_embeds) +
                                c * context_size * hidden_size;
@@ -842,6 +838,8 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
         process_value(output, _chunk_len, num_column, dest, target_idx);
       }
     };
+
+    kv_len = current_kv_len + _chunk_len;
   }
 
   LOGD("Generation start...");
@@ -856,17 +854,18 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
       [generation_sliding_attention_mask_elements - 1] =
       std::numeric_limits<uint16_t>::max();
 
-  for (int i = 0; i < _len && i < generation_full_kv_past_length; i++)
+  for (int i = 0; i < kv_len && i < generation_full_kv_past_length; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < _len && i < generation_sliding_kv_past_length; i++)
+  for (int i = 0; i < kv_len && i < generation_sliding_kv_past_length; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
 
   int token = 0;
 
   auto start = std::chrono::system_clock::now();
   int idx;
-  for (idx = _len; idx < generation_full_kv_past_length; idx++) {
-    if (idx == _len) {
+  const int prefill_len = kv_len;
+  for (idx = prefill_len; idx < generation_full_kv_past_length; idx++) {
+    if (idx == prefill_len) {
       // First gen iter: use the LAST prefill embedding (position _len),
       // which was deliberately excluded from the prefill batch — the
       // same role _input.back() plays in the text run() path.
@@ -898,7 +897,7 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
                 swa_position_ids_sin + idx * pos_dim,
                 pos_dim * sizeof(uint16_t));
 
-    if (idx > _len) {
+    if (idx > prefill_len) {
       // Remove output_hidden_states from outputs
 
 #pragma omp parallel for
@@ -957,6 +956,8 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
     } else {
       std::string decoded = tokenizer->Decode({token});
       LOGD("%d : %s (idx: %d)", token, decoded.c_str(), idx);
+      kv_len += 1;
+      seed_tokens.push_back(token);
       // Stream the token if a streamer is attached
       if (streamer_) {
         if (streamer_put(streamer_, decoded.c_str()) != 0) {
