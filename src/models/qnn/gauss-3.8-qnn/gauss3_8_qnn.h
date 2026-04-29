@@ -78,9 +78,20 @@ private:
   // KV cache variables
   int kv_len;
 
+  int prefill_hidden_states_output_index = -1;
+  int generation_hidden_states_output_index = -1;
+  int prefill_attention_mask_elements = 0;
+  int prefill_sliding_attention_mask_elements = 0;
+  int generation_attention_mask_elements = 0;
+  int generation_sliding_attention_mask_elements = 0;
+  int generation_full_kv_past_length = 0;
+  int generation_sliding_kv_past_length = 0;
+  int rope_cache_seq_len = 0;
+
   std::vector<uint16_t *> kvs;
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;
+  std::vector<int> kv_row_lengths;
 };
 
 } // namespace causallm

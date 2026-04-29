@@ -24,9 +24,95 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <unordered_map>
 
 using namespace causallm;
+
+namespace {
+
+std::string trim_copy(const std::string &value) {
+  auto begin = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
+    return std::isspace(ch) != 0;
+  });
+  auto end =
+      std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+      }).base();
+  if (begin >= end) {
+    return "";
+  }
+  return std::string(begin, end);
+}
+
+std::vector<std::string> split_csv_list(const std::string &csv) {
+  std::vector<std::string> parts;
+  std::stringstream stream(csv);
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    parts.push_back(trim_copy(item));
+  }
+  return parts;
+}
+
+std::vector<int> parse_dim_string(const std::string &dims) {
+  std::vector<int> parsed_dims;
+  std::stringstream stream(dims);
+  std::string item;
+  while (std::getline(stream, item, ':')) {
+    parsed_dims.push_back(std::stoi(trim_copy(item)));
+  }
+  return parsed_dims;
+}
+
+int tensor_element_count(const std::vector<int> &dims) {
+  int element_count = 1;
+  for (int dim : dims) {
+    element_count *= dim;
+  }
+  return element_count;
+}
+
+int find_name_index(const std::vector<std::string> &names,
+                    const std::string &target_name) {
+  for (size_t idx = 0; idx < names.size(); ++idx) {
+    if (names[idx] == target_name) {
+      return static_cast<int>(idx);
+    }
+  }
+  return -1;
+}
+
+int get_named_tensor_elements_or_throw(const std::vector<std::string> &names,
+                                       const std::vector<std::string> &dims,
+                                       const std::string &target_name) {
+  int index = find_name_index(names, target_name);
+  if (index < 0 || static_cast<size_t>(index) >= dims.size()) {
+    throw std::runtime_error("Missing tensor dims for " + target_name);
+  }
+  return tensor_element_count(parse_dim_string(dims[index]));
+}
+
+int get_named_kv_row_length_or_throw(const std::vector<std::string> &names,
+                                     const std::vector<std::string> &dims,
+                                     const std::string &target_name) {
+  int index = find_name_index(names, target_name);
+  if (index < 0 || static_cast<size_t>(index) >= dims.size()) {
+    throw std::runtime_error("Missing KV tensor dims for " + target_name);
+  }
+
+  auto parsed_dims = parse_dim_string(dims[index]);
+  if (parsed_dims.size() < 2) {
+    throw std::runtime_error("Unexpected KV dims for " + target_name);
+  }
+  return parsed_dims.back();
+}
+
+} // namespace
 
 /**
  * @brief Auto-registration via constructor attribute
@@ -54,17 +140,48 @@ __attribute__((constructor)) static void register_custom_models() {
 }
 
 void causallm::Gauss3_8_QNN::initialize_input_outputs() {
+  auto prefill_output_names_list = split_csv_list(prefill_output_names);
+  auto generation_output_names_list = split_csv_list(generation_output_names);
+
+  prefill_hidden_states_output_index =
+      find_name_index(prefill_output_names_list, "output_hidden_states");
+  generation_hidden_states_output_index =
+      find_name_index(generation_output_names_list, "output_hidden_states");
+
+  prefill_attention_mask_elements = get_named_tensor_elements_or_throw(
+      prefill_non_embed_input_names, prefill_non_embed_input_dims,
+      "attention_mask");
+  prefill_sliding_attention_mask_elements = get_named_tensor_elements_or_throw(
+      prefill_non_embed_input_names, prefill_non_embed_input_dims,
+      "sliding_attention_mask");
+  generation_attention_mask_elements = get_named_tensor_elements_or_throw(
+      generation_non_embed_input_names, generation_non_embed_input_dims,
+      "attention_mask");
+  generation_sliding_attention_mask_elements =
+      get_named_tensor_elements_or_throw(generation_non_embed_input_names,
+                                         generation_non_embed_input_dims,
+                                         "sliding_attention_mask");
+  generation_full_kv_past_length = generation_attention_mask_elements - 1;
+  generation_sliding_kv_past_length =
+      generation_sliding_attention_mask_elements - 1;
+  rope_cache_seq_len =
+      std::max(max_seq_len, generation_attention_mask_elements);
+
   attention_mask =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * max_seq_len);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) *
+                                   prefill_attention_mask_elements);
   sliding_attention_mask =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * sliding_window);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) *
+                                   prefill_sliding_attention_mask_elements);
   generation_attention_mask =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * max_seq_len);
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) *
+                                   generation_attention_mask_elements);
   generation_sliding_attention_mask =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * (sliding_window - context_size));
+      (uint16_t *)tracked_allocate(sizeof(uint16_t) *
+                                   generation_sliding_attention_mask_elements);
 
   std::tuple<uint16_t *, uint16_t *> cos_sin_tuple =
-      get_cos_sin(max_seq_len, pos_dim, rope_theta);
+      get_cos_sin(rope_cache_seq_len, pos_dim, rope_theta);
   position_ids_cos = std::get<0>(cos_sin_tuple);
   position_ids_sin = std::get<1>(cos_sin_tuple);
   allocated_ptrs_.insert(position_ids_cos);
@@ -72,51 +189,73 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
 
   // 확인할 부분 -> sliding window attention?
   std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple =
-      get_cos_sin(max_seq_len, pos_dim, local_rope_theta);
+      get_cos_sin(rope_cache_seq_len, pos_dim, local_rope_theta);
   swa_position_ids_cos = std::get<0>(swa_cos_sin_tuple);
   swa_position_ids_sin = std::get<1>(swa_cos_sin_tuple);
   allocated_ptrs_.insert(swa_position_ids_cos);
   allocated_ptrs_.insert(swa_position_ids_sin);
 
-  prefill_position_ids_cos =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
-  prefill_position_ids_sin =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
-  prefill_swa_position_ids_cos =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
-  prefill_swa_position_ids_sin =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * pos_dim);
-  generation_position_ids_cos =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
-  generation_position_ids_sin =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
-  generation_swa_position_ids_cos =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
-  generation_swa_position_ids_sin =
-      (uint16_t *)tracked_allocate(sizeof(uint16_t) * pos_dim);
+  const int prefill_position_id_elements = get_named_tensor_elements_or_throw(
+      prefill_non_embed_input_names, prefill_non_embed_input_dims,
+      "position_ids_cos");
+  const int generation_position_id_elements = get_named_tensor_elements_or_throw(
+      generation_non_embed_input_names, generation_non_embed_input_dims,
+      "position_ids_cos");
+  const int prefill_swa_position_id_elements =
+      get_named_tensor_elements_or_throw(prefill_non_embed_input_names,
+                                         prefill_non_embed_input_dims,
+                                         "swa_position_ids_cos");
+  const int generation_swa_position_id_elements =
+      get_named_tensor_elements_or_throw(generation_non_embed_input_names,
+                                         generation_non_embed_input_dims,
+                                         "swa_position_ids_cos");
+
+  prefill_position_ids_cos = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * prefill_position_id_elements);
+  prefill_position_ids_sin = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * prefill_position_id_elements);
+  prefill_swa_position_ids_cos = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * prefill_swa_position_id_elements);
+  prefill_swa_position_ids_sin = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * prefill_swa_position_id_elements);
+  generation_position_ids_cos = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * generation_position_id_elements);
+  generation_position_ids_sin = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * generation_position_id_elements);
+  generation_swa_position_ids_cos = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * generation_swa_position_id_elements);
+  generation_swa_position_ids_sin = (uint16_t *)tracked_allocate(
+      sizeof(uint16_t) * generation_swa_position_id_elements);
+
+  std::unordered_map<std::string, ml::train::TensorDim::IO_TensorType>
+      prefill_named_inputs;
+  std::unordered_map<std::string, ml::train::TensorDim::IO_TensorType>
+      generation_named_inputs;
 
   if (uses_embedding) {
     input_sample = (float *)tracked_allocate(sizeof(float) * context_size);
     generation_sample = (float *)tracked_allocate(sizeof(float));
-    prefill_inputs = {input_sample};
-    generation_inputs = {generation_sample};
   } else {
     input_sample_u16 =
         (uint16_t *)tracked_allocate(sizeof(uint16_t) * context_size * hidden_size);
     generation_sample_u16 =
         (uint16_t *)tracked_allocate(sizeof(uint16_t) * hidden_size);
-    prefill_inputs = {input_sample_u16};
-    generation_inputs = {generation_sample_u16};
   }
 
-  // Initialize LoRA tensors
+  size_t lora_idx = 0;
   if (lora_path.empty()) {
-    // Default: fill with 32768 (zero value for quantized uint16_t)
-    for (int i = 0; i < lora_sizes.size(); i++) {
-      auto lora_pointer = get_zero_memory(lora_sizes[i], 32768);
+    for (const auto &name : prefill_non_embed_input_names) {
+      if (name.find("_lora_") == std::string::npos) {
+        continue;
+      }
+      if (lora_idx >= lora_sizes.size()) {
+        throw std::runtime_error("LoRA size metadata is shorter than input names");
+      }
+      auto lora_pointer = get_zero_memory(lora_sizes[lora_idx], 32768);
       allocated_ptrs_.insert(lora_pointer);
-      prefill_inputs.push_back(lora_pointer);
-      generation_inputs.push_back(lora_pointer);
+      prefill_named_inputs[name] = lora_pointer;
+      generation_named_inputs[name] = lora_pointer;
+      ++lora_idx;
     }
     LOGD("----------------------- initialize() 5");
   } else {
@@ -141,13 +280,23 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
 
     uint8_t *data_ptr = static_cast<uint8_t *>(mapped);
 
-    for (int i = 0; i < lora_sizes.size(); i++) {
-      auto lora_pointer = get_zero_memory(sizeof(uint16_t) * lora_sizes[i], 0);
+    for (const auto &name : prefill_non_embed_input_names) {
+      if (name.find("_lora_") == std::string::npos) {
+        continue;
+      }
+      if (lora_idx >= lora_sizes.size()) {
+        munmap(mapped, file_size);
+        close(fd);
+        throw std::runtime_error("LoRA size metadata is shorter than input names");
+      }
+      auto lora_pointer =
+          get_zero_memory(sizeof(uint16_t) * lora_sizes[lora_idx], 0);
       allocated_ptrs_.insert(lora_pointer);
-      memcpy(lora_pointer, data_ptr, sizeof(uint16_t) * lora_sizes[i]);
-      prefill_inputs.push_back(lora_pointer);
-      generation_inputs.push_back(lora_pointer);
-      data_ptr += sizeof(uint16_t) * lora_sizes[i];
+      memcpy(lora_pointer, data_ptr, sizeof(uint16_t) * lora_sizes[lora_idx]);
+      prefill_named_inputs[name] = lora_pointer;
+      generation_named_inputs[name] = lora_pointer;
+      data_ptr += sizeof(uint16_t) * lora_sizes[lora_idx];
+      ++lora_idx;
     }
 
     LOGD("----------------------- initialize() 7");
@@ -156,21 +305,28 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
 
     std::cout << "LoRA weights loaded from: " << lora_path << std::endl;
   }
-
-  prefill_inputs.push_back(prefill_swa_position_ids_cos);
-  generation_inputs.push_back(generation_swa_position_ids_cos);
-  prefill_inputs.push_back(prefill_swa_position_ids_sin);
-  generation_inputs.push_back(generation_swa_position_ids_sin);
+  if (lora_idx != lora_sizes.size()) {
+    throw std::runtime_error("LoRA input name count does not match lora_sizes");
+  }
 
   this->fresh_kvs.clear();
   this->kvs.clear();
   this->kv_sizes.clear();
+  this->kv_row_lengths.clear();
 
   for (int i = 0; i < num_hidden_layers; i++) {
-    int attn_length = (i % 5 == 4) ? max_seq_len - context_size
-                                   : sliding_window - context_size;
-    int size = attn_length * head_dim;
-    // key, value, first head, second head
+    const int row_length = get_named_kv_row_length_or_throw(
+        generation_non_embed_input_names, generation_non_embed_input_dims,
+        "past_key_" + std::to_string(i) + "_h0_in");
+    const int size = row_length * head_dim;
+    const std::vector<std::string> kv_names = {
+        "past_key_" + std::to_string(i) + "_h0_in",
+        "past_key_" + std::to_string(i) + "_h1_in",
+        "past_value_" + std::to_string(i) + "_h0_in",
+        "past_value_" + std::to_string(i) + "_h1_in",
+    };
+    this->kv_row_lengths.push_back(row_length);
+
     for (int j = 0; j < 4; j++) {
       int coeff = sizeof(uint16_t) / sizeof(uint8_t);
       this->kv_sizes.push_back(size * coeff);
@@ -179,31 +335,31 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
       // 여기가 prefill kvcache
       auto current_kv = get_zero_memory(size * coeff, 128 * 256 + 128);
       allocated_ptrs_.insert(current_kv);
-      generation_inputs.push_back(current_kv);
-      prefill_inputs.push_back(current_kv);
+      prefill_named_inputs[kv_names[j]] = current_kv;
+      generation_named_inputs[kv_names[j]] = current_kv;
       this->kvs.push_back(current_kv);
       auto fresh_kv = get_zero_memory(size * coeff, 128 * 256 + 128);
       allocated_ptrs_.insert(fresh_kv);
       this->fresh_kvs.push_back(fresh_kv);
     }
-
-    if (i == 0) {
-      prefill_inputs.push_back(sliding_attention_mask);
-      generation_inputs.push_back(generation_sliding_attention_mask);
-    }
-
-    else if (i == 3) {
-      prefill_inputs.push_back(prefill_position_ids_cos);
-      generation_inputs.push_back(generation_position_ids_cos);
-      prefill_inputs.push_back(prefill_position_ids_sin);
-      generation_inputs.push_back(generation_position_ids_sin);
-    }
-
-    else if (i == 4) {
-      prefill_inputs.push_back(attention_mask);
-      generation_inputs.push_back(generation_attention_mask);
-    }
   }
+
+  prefill_named_inputs["attention_mask"] = attention_mask;
+  prefill_named_inputs["sliding_attention_mask"] = sliding_attention_mask;
+  prefill_named_inputs["position_ids_cos"] = prefill_position_ids_cos;
+  prefill_named_inputs["position_ids_sin"] = prefill_position_ids_sin;
+  prefill_named_inputs["swa_position_ids_cos"] = prefill_swa_position_ids_cos;
+  prefill_named_inputs["swa_position_ids_sin"] = prefill_swa_position_ids_sin;
+
+  generation_named_inputs["attention_mask"] = generation_attention_mask;
+  generation_named_inputs["sliding_attention_mask"] =
+      generation_sliding_attention_mask;
+  generation_named_inputs["position_ids_cos"] = generation_position_ids_cos;
+  generation_named_inputs["position_ids_sin"] = generation_position_ids_sin;
+  generation_named_inputs["swa_position_ids_cos"] =
+      generation_swa_position_ids_cos;
+  generation_named_inputs["swa_position_ids_sin"] =
+      generation_swa_position_ids_sin;
 
   // Save pointers to input samples. Type depends on uses_embedding:
   //   uses_embedding=true  -> token-id float* fed into in-graph embedding
@@ -243,6 +399,32 @@ void causallm::Gauss3_8_QNN::initialize_input_outputs() {
         ::close(fd);
       }
     }
+  }
+
+  prefill_inputs.clear();
+  generation_inputs.clear();
+  if (uses_embedding) {
+    prefill_inputs.push_back(input_sample);
+    generation_inputs.push_back(generation_sample);
+  } else {
+    prefill_inputs.push_back(input_sample_u16);
+    generation_inputs.push_back(generation_sample_u16);
+  }
+
+  for (const auto &name : prefill_non_embed_input_names) {
+    auto it = prefill_named_inputs.find(name);
+    if (it == prefill_named_inputs.end()) {
+      throw std::runtime_error("Missing prefill input binding for " + name);
+    }
+    prefill_inputs.push_back(it->second);
+  }
+
+  for (const auto &name : generation_non_embed_input_names) {
+    auto it = generation_named_inputs.find(name);
+    if (it == generation_named_inputs.end()) {
+      throw std::runtime_error("Missing generation input binding for " + name);
+    }
+    generation_inputs.push_back(it->second);
   }
 }
 
@@ -286,11 +468,12 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     fill_attention_mask_with_prev_length(context_size, max_seq_len, kv_len,
                                          attention_mask);
 
-    if (kv_len >= 1024) {
+    if (kv_len >= generation_sliding_kv_past_length) {
       std::fill_n(sliding_attention_mask, context_size * sliding_window,
                   std::numeric_limits<uint16_t>::min());
       for (int i = 0; i < chunk_len; i++) {
-        for (int j = (i + 1); j < (i + 1025); j++) {
+        for (int j = (i + 1);
+             j < (i + generation_sliding_attention_mask_elements); j++) {
           sliding_attention_mask[i * sliding_window + j] =
               std::numeric_limits<uint16_t>::max();
         }
@@ -321,8 +504,10 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
 
     outputs = prefill_model->inference(1, prefill_inputs);
 
-    // Remove output_hidden_states from outputs
-    outputs.erase(outputs.begin() + 96);
+    if (prefill_hidden_states_output_index >= 0 &&
+        prefill_hidden_states_output_index < (int)outputs.size()) {
+      outputs.erase(outputs.begin() + prefill_hidden_states_output_index);
+    }
 
     // KV Cache Copy
 #pragma omp parallel for
@@ -330,9 +515,8 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
       bool is_key = i % 4 > 1;
       int kv_idx = i / 4 * 4 + (i + 2) % 4;
       int layer_idx = i / 4;
-      bool is_sliding = (layer_idx % 5 != 4);
-      int dest_row_length = is_sliding ? sliding_window - context_size
-                                       : max_seq_len - context_size;
+      int dest_row_length = kv_row_lengths[layer_idx];
+      bool is_sliding = dest_row_length == generation_sliding_kv_past_length;
 
       int src_row_length = 256;
       int num_column = 128;
@@ -371,28 +555,29 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     kv_len += chunk_len;
   }
 
-  std::fill_n(generation_attention_mask, max_seq_len, 0);
-  std::fill_n(generation_sliding_attention_mask, sliding_window - context_size,
-              0);
+  std::fill_n(generation_attention_mask, generation_attention_mask_elements, 0);
+  std::fill_n(generation_sliding_attention_mask,
+              generation_sliding_attention_mask_elements, 0);
 
-  generation_attention_mask[max_seq_len - 1] =
+  generation_attention_mask[generation_attention_mask_elements - 1] =
       std::numeric_limits<uint16_t>::max();
-  generation_sliding_attention_mask[(sliding_window - context_size) - 1] =
+  generation_sliding_attention_mask
+      [generation_sliding_attention_mask_elements - 1] =
       std::numeric_limits<uint16_t>::max();
 
-  for (int i = 0; i < kv_len; i++)
+  for (int i = 0; i < kv_len && i < generation_full_kv_past_length; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < kv_len && i < sliding_window - context_size; i++)
+  for (int i = 0; i < kv_len && i < generation_sliding_kv_past_length; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
 
   auto start = std::chrono::system_clock::now();
   int idx;
   int prefill_len = kv_len;
-  for (idx = prefill_len; idx < (max_seq_len - context_size); idx++) {
+  for (idx = prefill_len; idx < generation_full_kv_past_length; idx++) {
     generation_sample[0] = token;
 
     generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
-    if (idx < sliding_window - context_size)
+    if (idx < generation_sliding_kv_past_length)
       generation_sliding_attention_mask[idx] =
           std::numeric_limits<uint16_t>::max();
 
@@ -415,10 +600,8 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
         bool is_key = i % 4 > 1;
         int kv_idx = i / 4 * 4 + (i + 2) % 4;
         int layer_idx = i / 4;
-        bool is_sliding = (layer_idx % 5 != 4);
-        int dest_row_length = layer_idx % 5 == 4
-                                  ? max_seq_len - context_size
-                                  : sliding_window - context_size;
+        int dest_row_length = kv_row_lengths[layer_idx];
+        bool is_sliding = dest_row_length == generation_sliding_kv_past_length;
         int src_row_length = 1;
 
         auto output = std::get<uint8_t *>(outputs[i]);
@@ -451,7 +634,10 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     }
 
     outputs = generation_model->inference(1, generation_inputs);
-    outputs.erase(outputs.begin() + 96);
+    if (generation_hidden_states_output_index >= 0 &&
+        generation_hidden_states_output_index < (int)outputs.size()) {
+      outputs.erase(outputs.begin() + generation_hidden_states_output_index);
+    }
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
                    input.data(), input.size(), logit_scale, logit_offset,
                    repetition_penalty, temperature, top_p, top_k);
@@ -548,6 +734,7 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
   for (int c = 0; c < _n_chunks; c++) {
     int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
+    int current_kv_len = c * context_size;
 
     const uint16_t *src_base = static_cast<const uint16_t *>(prefill_embeds) +
                                c * context_size * hidden_size;
@@ -567,14 +754,16 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
     fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len,
                                     attention_mask);
-    fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256,
+    fill_attention_mask_with_prev_length(context_size, max_seq_len,
+                                         current_kv_len,
                                          attention_mask);
 
-    if (c >= 4) {
+    if (current_kv_len >= generation_sliding_kv_past_length) {
       std::fill_n(sliding_attention_mask, context_size * sliding_window,
                   std::numeric_limits<uint16_t>::min());
       for (int i = 0; i < _chunk_len; i++) {
-        for (int j = (i + 1); j < (i + 1025); j++) {
+        for (int j = (i + 1);
+             j < (i + generation_sliding_attention_mask_elements); j++) {
           sliding_attention_mask[i * sliding_window + j] =
               std::numeric_limits<uint16_t>::max();
         }
@@ -583,7 +772,8 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
       fill_attention_mask_with_length(context_size, sliding_window, _chunk_len,
                                       sliding_attention_mask);
       fill_attention_mask_with_prev_length(context_size, sliding_window,
-                                           c * 256, sliding_attention_mask);
+                                           current_kv_len,
+                                           sliding_attention_mask);
     }
 
     std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
@@ -591,7 +781,7 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
     std::fill_n(prefill_swa_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_swa_position_ids_sin, context_size * pos_dim, 32768);
 
-    auto pos_ids_offset = c * context_size * pos_dim;
+    auto pos_ids_offset = current_kv_len * pos_dim;
     std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset,
                 _chunk_len * pos_dim * sizeof(uint16_t));
     std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset,
@@ -605,8 +795,10 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
     outputs = prefill_model->inference(1, prefill_inputs);
 
-    // Remove output_hidden_states from outputs
-    outputs.erase(outputs.begin() + 96);
+    if (prefill_hidden_states_output_index >= 0 &&
+        prefill_hidden_states_output_index < (int)outputs.size()) {
+      outputs.erase(outputs.begin() + prefill_hidden_states_output_index);
+    }
 
     // KV Cache Copy
 #pragma omp parallel for
@@ -614,9 +806,8 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
       bool is_key = i % 4 > 1;
       int kv_idx = i / 4 * 4 + (i + 2) % 4;
       int layer_idx = i / 4;
-      bool is_sliding = (layer_idx % 5 != 4);
-      int dest_row_length = is_sliding ? sliding_window - context_size
-                                       : max_seq_len - context_size;
+      int dest_row_length = kv_row_lengths[layer_idx];
+      bool is_sliding = dest_row_length == generation_sliding_kv_past_length;
 
       int src_row_length = 256;
       int num_column = 128;
@@ -627,8 +818,8 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
       // Sliding KV wrap — only for sliding layers. Full-context layers
       // have dest_row_length large enough for the whole prefill so they
       // always fall through to the linear write at c * 256.
-      int target_idx = c * 256;
-      if (is_sliding && c * 256 + _chunk_len > dest_row_length) {
+      int target_idx = current_kv_len;
+      if (is_sliding && current_kv_len + _chunk_len > dest_row_length) {
         target_idx = dest_row_length - _chunk_len;
         if (is_key) {
           // K: column-major [num_column][dest_row_length]
@@ -655,25 +846,26 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
   LOGD("Generation start...");
 
-  std::fill_n(generation_attention_mask, max_seq_len, 0);
-  std::fill_n(generation_sliding_attention_mask, sliding_window - context_size,
-              0);
+  std::fill_n(generation_attention_mask, generation_attention_mask_elements, 0);
+  std::fill_n(generation_sliding_attention_mask,
+              generation_sliding_attention_mask_elements, 0);
 
-  generation_attention_mask[max_seq_len - 1] =
+  generation_attention_mask[generation_attention_mask_elements - 1] =
       std::numeric_limits<uint16_t>::max();
-  generation_sliding_attention_mask[(sliding_window - context_size) - 1] =
+  generation_sliding_attention_mask
+      [generation_sliding_attention_mask_elements - 1] =
       std::numeric_limits<uint16_t>::max();
 
-  for (int i = 0; i < _len; i++)
+  for (int i = 0; i < _len && i < generation_full_kv_past_length; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < _len && i < sliding_window - context_size; i++)
+  for (int i = 0; i < _len && i < generation_sliding_kv_past_length; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
 
   int token = 0;
 
   auto start = std::chrono::system_clock::now();
   int idx;
-  for (idx = _len; idx < (max_seq_len - context_size); idx++) {
+  for (idx = _len; idx < generation_full_kv_past_length; idx++) {
     if (idx == _len) {
       // First gen iter: use the LAST prefill embedding (position _len),
       // which was deliberately excluded from the prefill batch — the
@@ -691,7 +883,7 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
     }
 
     generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
-    if (idx < sliding_window - context_size)
+    if (idx < generation_sliding_kv_past_length)
       generation_sliding_attention_mask[idx] =
           std::numeric_limits<uint16_t>::max();
 
@@ -714,10 +906,8 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
         bool is_key = i % 4 > 1;
         int kv_idx = i / 4 * 4 + (i + 2) % 4;
         int layer_idx = i / 4;
-        bool is_sliding = (layer_idx % 5 != 4);
-        int dest_row_length = layer_idx % 5 == 4
-                                  ? max_seq_len - context_size
-                                  : sliding_window - context_size;
+        int dest_row_length = kv_row_lengths[layer_idx];
+        bool is_sliding = dest_row_length == generation_sliding_kv_past_length;
         int src_row_length = 1;
 
         auto output = std::get<uint8_t *>(outputs[i]);
@@ -750,7 +940,10 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
     }
 
     outputs = generation_model->inference(1, generation_inputs);
-    outputs.erase(outputs.begin() + 96);
+    if (generation_hidden_states_output_index >= 0 &&
+        generation_hidden_states_output_index < (int)outputs.size()) {
+      outputs.erase(outputs.begin() + generation_hidden_states_output_index);
+    }
     LOGD("After generation_model->inference");
     int next_token =
         sample(std::get<uint16_t *>(outputs.back()), vocab_size,
