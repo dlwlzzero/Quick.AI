@@ -1522,7 +1522,7 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
     if (g_use_chat_template)
     {
       LOGD("[DEBUG] runModelHandleStreaming: Applying chat template...");
-      input = apply_chat_template("", input);
+      input = apply_chat_template(architecture, input);
       LOGD("[DEBUG]   templated input length: %zu", input.length());
       LOGD("[DEBUG]   templated input: %s", input.c_str());
       // LOGD("[DEBUG]   templated input preview: %.100s%s", input.c_str(),
