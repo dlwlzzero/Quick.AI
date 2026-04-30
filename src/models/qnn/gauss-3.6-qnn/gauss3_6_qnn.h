@@ -67,6 +67,15 @@ private:
   std::vector<uint16_t *> kvs;
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;
+  std::vector<int> kv_row_lengths;
+
+  int prefill_attention_mask_elements = 0;
+  int prefill_sliding_attention_mask_elements = 0;
+  int generation_attention_mask_elements = 0;
+  int generation_sliding_attention_mask_elements = 0;
+  int generation_full_kv_past_length = 0;
+  int generation_sliding_kv_past_length = 0;
+  int rope_cache_seq_len = 0;
 
   // Language model specific variables
   // Config
