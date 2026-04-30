@@ -26,160 +26,9 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <cmath>
 #include <iostream>
 
 using namespace causallm;
-
-namespace {
-
-constexpr int kEosDebugSteps = 8;
-
-struct CandidateLogit {
-  int token_id;
-  float logit;
-  float probability;
-};
-
-float dequantize_logit(uint16_t raw_logit, float logit_scale, int logit_offset,
-                       float temperature) {
-  float logit = (static_cast<float>(raw_logit) + logit_offset) * logit_scale;
-  if (temperature > 1e-5f) {
-    logit /= temperature;
-  }
-  return logit;
-}
-
-bool token_seen_in_history(int token_id, const int *tokens,
-                           int number_of_tokens) {
-  for (int i = 0; i < number_of_tokens; ++i) {
-    if (tokens[i] == token_id) {
-      return true;
-    }
-  }
-  return false;
-}
-
-int sample_gauss3_6_corrected(uint16_t *pointer, int length, int *tokens,
-                              int number_of_tokens, float logit_scale,
-                              int logit_offset, float repetition_penalty,
-                              float temperature, float top_p, int top_k) {
-  if (length <= 0) {
-    return 0;
-  }
-
-  if (top_k <= 0 || top_k > length) {
-    top_k = length;
-  }
-
-  std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>,
-                      std::greater<std::pair<int, int>>>
-      top_k_elements;
-  for (int i = 0; i < top_k; ++i) {
-    top_k_elements.push(std::make_pair(pointer[i], i));
-  }
-  for (int i = top_k; i < length; ++i) {
-    if (top_k_elements.top().first < pointer[i]) {
-      top_k_elements.pop();
-      top_k_elements.push(std::make_pair(pointer[i], i));
-    }
-  }
-
-  std::vector<CandidateLogit> candidates(top_k_elements.size());
-  for (int i = static_cast<int>(candidates.size()) - 1; i >= 0; --i) {
-    auto element = top_k_elements.top();
-    top_k_elements.pop();
-    candidates[i].token_id = element.second;
-    candidates[i].logit = dequantize_logit(element.first, logit_scale,
-                                           logit_offset, temperature);
-    candidates[i].probability = 0.0f;
-  }
-
-  if (repetition_penalty > 1e-5f && repetition_penalty != 1.0f) {
-    for (auto &candidate : candidates) {
-      if (token_seen_in_history(candidate.token_id, tokens, number_of_tokens)) {
-        candidate.logit /= repetition_penalty;
-      }
-    }
-  }
-
-  float max_logit = candidates.front().logit;
-  for (const auto &candidate : candidates) {
-    max_logit = std::max(max_logit, candidate.logit);
-  }
-
-  float sum_exp_logits = 0.0f;
-  for (auto &candidate : candidates) {
-    candidate.probability = std::exp(candidate.logit - max_logit);
-    sum_exp_logits += candidate.probability;
-  }
-
-  if (sum_exp_logits <= 0.0f) {
-    return candidates.front().token_id;
-  }
-
-  for (auto &candidate : candidates) {
-    candidate.probability /= sum_exp_logits;
-  }
-
-  std::sort(candidates.begin(), candidates.end(),
-            [](const CandidateLogit &a, const CandidateLogit &b) {
-              return a.probability > b.probability;
-            });
-
-  float cumulative_probability = 0.0f;
-  size_t nucleus_size = 0;
-  while (nucleus_size < candidates.size() &&
-         (cumulative_probability < top_p || nucleus_size == 0)) {
-    cumulative_probability += candidates[nucleus_size].probability;
-    nucleus_size++;
-  }
-
-  std::vector<double> sampling_weights;
-  sampling_weights.reserve(nucleus_size);
-  for (size_t i = 0; i < nucleus_size; ++i) {
-    sampling_weights.push_back(candidates[i].probability);
-  }
-
-  std::discrete_distribution<int> dist(sampling_weights.begin(),
-                                       sampling_weights.end());
-  return candidates[dist(rng)].token_id;
-}
-
-int select_greedy_token(uint16_t *pointer, int length) {
-  return static_cast<int>(
-      std::max_element(pointer, pointer + length) - pointer);
-}
-
-void log_eos_debug(uint16_t *pointer, int length, int eos_token,
-                   float logit_scale, int logit_offset, float temperature,
-                   int generation_step) {
-  if (generation_step >= kEosDebugSteps || eos_token < 0 || eos_token >= length) {
-    return;
-  }
-
-  int top_token = select_greedy_token(pointer, length);
-  int eos_rank = 1;
-  for (int i = 0; i < length; ++i) {
-    if (pointer[i] > pointer[eos_token]) {
-      eos_rank++;
-    }
-  }
-
-  const float top_logit =
-      dequantize_logit(pointer[top_token], logit_scale, logit_offset,
-                       temperature);
-  const float eos_logit =
-      dequantize_logit(pointer[eos_token], logit_scale, logit_offset,
-                       temperature);
-
-  std::cout << "[EOS_DEBUG] step=" << generation_step << " top_token="
-            << top_token << " eos_token=" << eos_token
-            << " eos_rank=" << eos_rank << " top_logit=" << top_logit
-            << " eos_logit=" << eos_logit << std::endl;
-}
-
-} // namespace
 
 /**
  * @brief Auto-registration via constructor attribute
@@ -659,18 +508,9 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     }
 
     outputs = generation_model->inference(1, generation_inputs);
-    auto *generation_logits = std::get<uint16_t *>(outputs.back());
-    log_eos_debug(generation_logits, vocab_size, eos_token, logit_scale,
-                  logit_offset, temperature, idx - prefill_len);
-
-    if (do_sample) {
-      token = sample_gauss3_6_corrected(
-          generation_logits, vocab_size, _input.data(), _input.size(),
-          logit_scale, logit_offset, repetition_penalty, temperature, top_p,
-          top_k);
-    } else {
-      token = select_greedy_token(generation_logits, vocab_size);
-    }
+    token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
+                   _input.data(), _input.size(), logit_scale, logit_offset,
+                   repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
     if (token == eos_token) {
