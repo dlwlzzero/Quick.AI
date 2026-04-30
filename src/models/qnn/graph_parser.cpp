@@ -10,6 +10,32 @@ GraphParser::GraphParser() {}
 
 GraphParser::~GraphParser() {}
 
+int GraphParser::find_tensor_index(const TensorInfoList &tensor_infos,
+                                   const std::string &tensor_name) {
+  int index = 0;
+  for (const auto &[name, info] : tensor_infos) {
+    if (name == tensor_name) {
+      return index;
+    }
+    index++;
+  }
+  std::cerr << "Error: Failed to find tensor index for: " << tensor_name
+            << std::endl;
+  throw std::invalid_argument("Failed to find tensor index for: " +
+                              tensor_name);
+}
+
+const TensorInfo &
+GraphParser::get_tensor_info_or_throw(const TensorInfoList &tensor_infos,
+                                      const std::string &tensor_name) {
+  return tensor_infos[find_tensor_index(tensor_infos, tensor_name)].second;
+}
+
+int GraphParser::get_named_tensor_elements_or_throw(
+    const TensorInfoList &tensor_infos, const std::string &tensor_name) {
+  return get_tensor_count(get_tensor_info_or_throw(tensor_infos, tensor_name));
+}
+
 std::map<std::string, GraphInfo>
 GraphParser::parseJsonFile(const std::string &file_path) {
   std::map<std::string, GraphInfo> graphs_info;

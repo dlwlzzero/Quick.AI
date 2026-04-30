@@ -22,12 +22,21 @@ struct GraphInfo {
   std::vector<std::pair<std::string, TensorInfo>> raw_outputs;
 };
 
+using TensorInfoList = std::vector<std::pair<std::string, TensorInfo>>;
+
 class GraphParser {
 public:
   GraphParser();
   ~GraphParser();
 
   std::map<std::string, GraphInfo> parseJsonFile(const std::string &file_path);
+  static int find_tensor_index(const TensorInfoList &tensor_infos,
+                               const std::string &tensor_name);
+  static const TensorInfo &
+  get_tensor_info_or_throw(const TensorInfoList &tensor_infos,
+                           const std::string &tensor_name);
+  static int get_named_tensor_elements_or_throw(
+      const TensorInfoList &tensor_infos, const std::string &tensor_name);
   static int get_tensor_count(const TensorInfo &tensor_info);
   static int get_tensor_bit_width(const TensorInfo &tensor_info);
   static int get_tensor_size(const TensorInfo &tensor_info);

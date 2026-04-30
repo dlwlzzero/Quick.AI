@@ -45,27 +45,6 @@ __attribute__((constructor)) static void register_custom_models() {
       });
 }
 
-/**
- * @brief Helper function to find the index of a tensor in model_inputs
- * by looking up its name in raw_inputs
- *
- * @param raw_inputs The vector of tensor names to TensorInfo
- * @param tensor_name The name of the tensor to find
- * @return int The index of the tensor, or -1 if not found
- */
-static int find_tensor_index(
-    const std::vector<std::pair<std::string, TensorInfo>> &raw_inputs,
-    const std::string &tensor_name) {
-  int index = 0;
-  for (const auto &[name, info] : raw_inputs) {
-    if (name == tensor_name) {
-      return index;
-    }
-    index++;
-  }
-  return -1;
-}
-
 void causallm::Gauss3_8_VIT_QNN::initialize() {
   // Call base class initialize first - this populates models map with
   // model_inputs
@@ -83,100 +62,71 @@ void causallm::Gauss3_8_VIT_QNN::initialize() {
 
   // Find input indices by name
   int prefill_input_idx =
-      find_tensor_index(prefill_graph_info.raw_inputs, "inputs_embeds");
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "inputs_embeds");
   int generation_input_idx =
-      find_tensor_index(generation_graph_info.raw_inputs, "inputs_embeds");
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "inputs_embeds");
 
   // Save pointers to input samples
-  if (prefill_input_idx >= 0) {
-    input_sample = std::get<float *>(prefill_inputs[prefill_input_idx]);
-  }
-  if (generation_input_idx >= 0) {
-    generation_sample =
-        std::get<float *>(generation_inputs[generation_input_idx]);
-  }
+  input_sample = std::get<float *>(prefill_inputs[prefill_input_idx]);
+  generation_sample = std::get<float *>(generation_inputs[generation_input_idx]);
 
   // Find and save pointers to other input tensors by name
   // Attention masks
   int prefill_attn_mask_idx =
-      find_tensor_index(prefill_graph_info.raw_inputs, "attention_mask");
-  int prefill_sliding_attn_mask_idx = find_tensor_index(
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "attention_mask");
+  int prefill_sliding_attn_mask_idx = GraphParser::find_tensor_index(
       prefill_graph_info.raw_inputs, "sliding_attention_mask");
   int generation_attn_mask_idx =
-      find_tensor_index(generation_graph_info.raw_inputs, "attention_mask");
-  int generation_sliding_attn_mask_idx = find_tensor_index(
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "attention_mask");
+  int generation_sliding_attn_mask_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "sliding_attention_mask");
 
-  if (prefill_attn_mask_idx >= 0) {
-    attention_mask =
-        std::get<uint16_t *>(prefill_inputs[prefill_attn_mask_idx]);
-  }
-  if (prefill_sliding_attn_mask_idx >= 0) {
-    sliding_attention_mask =
-        std::get<uint16_t *>(prefill_inputs[prefill_sliding_attn_mask_idx]);
-  }
-  if (generation_attn_mask_idx >= 0) {
-    generation_attention_mask =
-        std::get<uint16_t *>(generation_inputs[generation_attn_mask_idx]);
-  }
-  if (generation_sliding_attn_mask_idx >= 0) {
-    generation_sliding_attention_mask = std::get<uint16_t *>(
-        generation_inputs[generation_sliding_attn_mask_idx]);
-  }
+  attention_mask =
+      std::get<uint16_t *>(prefill_inputs[prefill_attn_mask_idx]);
+  sliding_attention_mask =
+      std::get<uint16_t *>(prefill_inputs[prefill_sliding_attn_mask_idx]);
+  generation_attention_mask =
+      std::get<uint16_t *>(generation_inputs[generation_attn_mask_idx]);
+  generation_sliding_attention_mask = std::get<uint16_t *>(
+      generation_inputs[generation_sliding_attn_mask_idx]);
 
   // Position IDs
   int prefill_pos_cos_idx =
-      find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_cos");
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_cos");
   int prefill_pos_sin_idx =
-      find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_sin");
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_sin");
   int generation_pos_cos_idx =
-      find_tensor_index(generation_graph_info.raw_inputs, "position_ids_cos");
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_cos");
   int generation_pos_sin_idx =
-      find_tensor_index(generation_graph_info.raw_inputs, "position_ids_sin");
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_sin");
 
-  if (prefill_pos_cos_idx >= 0) {
-    prefill_position_ids_cos =
-        std::get<uint16_t *>(prefill_inputs[prefill_pos_cos_idx]);
-  }
-  if (prefill_pos_sin_idx >= 0) {
-    prefill_position_ids_sin =
-        std::get<uint16_t *>(prefill_inputs[prefill_pos_sin_idx]);
-  }
-  if (generation_pos_cos_idx >= 0) {
-    generation_position_ids_cos =
-        std::get<uint16_t *>(generation_inputs[generation_pos_cos_idx]);
-  }
-  if (generation_pos_sin_idx >= 0) {
-    generation_position_ids_sin =
-        std::get<uint16_t *>(generation_inputs[generation_pos_sin_idx]);
-  }
+  prefill_position_ids_cos =
+      std::get<uint16_t *>(prefill_inputs[prefill_pos_cos_idx]);
+  prefill_position_ids_sin =
+      std::get<uint16_t *>(prefill_inputs[prefill_pos_sin_idx]);
+  generation_position_ids_cos =
+      std::get<uint16_t *>(generation_inputs[generation_pos_cos_idx]);
+  generation_position_ids_sin =
+      std::get<uint16_t *>(generation_inputs[generation_pos_sin_idx]);
 
   // SWA Position IDs
   int prefill_swa_pos_cos_idx =
-      find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_cos");
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_cos");
   int prefill_swa_pos_sin_idx =
-      find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_sin");
-  int generation_swa_pos_cos_idx = find_tensor_index(
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_sin");
+  int generation_swa_pos_cos_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "swa_position_ids_cos");
-  int generation_swa_pos_sin_idx = find_tensor_index(
+  int generation_swa_pos_sin_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "swa_position_ids_sin");
 
-  if (prefill_swa_pos_cos_idx >= 0) {
-    prefill_swa_position_ids_cos =
-        std::get<uint16_t *>(prefill_inputs[prefill_swa_pos_cos_idx]);
-  }
-  if (prefill_swa_pos_sin_idx >= 0) {
-    prefill_swa_position_ids_sin =
-        std::get<uint16_t *>(prefill_inputs[prefill_swa_pos_sin_idx]);
-  }
-  if (generation_swa_pos_cos_idx >= 0) {
-    generation_swa_position_ids_cos =
-        std::get<uint16_t *>(generation_inputs[generation_swa_pos_cos_idx]);
-  }
-  if (generation_swa_pos_sin_idx >= 0) {
-    generation_swa_position_ids_sin =
-        std::get<uint16_t *>(generation_inputs[generation_swa_pos_sin_idx]);
-  }
+  prefill_swa_position_ids_cos =
+      std::get<uint16_t *>(prefill_inputs[prefill_swa_pos_cos_idx]);
+  prefill_swa_position_ids_sin =
+      std::get<uint16_t *>(prefill_inputs[prefill_swa_pos_sin_idx]);
+  generation_swa_position_ids_cos =
+      std::get<uint16_t *>(generation_inputs[generation_swa_pos_cos_idx]);
+  generation_swa_position_ids_sin =
+      std::get<uint16_t *>(generation_inputs[generation_swa_pos_sin_idx]);
 
   // Allocate position_ids_cos/sin using get_cos_sin (these are source data)
   std::tuple<uint16_t *, uint16_t *> cos_sin_tuple =
