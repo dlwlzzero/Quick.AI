@@ -14,3 +14,4 @@ quick_dot_ai_inc += qnn_inc
 subdir('gauss-3.6-qnn')
 subdir('gauss-3.8-qnn')
 subdir('gauss-3.8-vit-qnn')
+subdir('gemma4-e2b-qnn')

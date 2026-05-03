@@ -17,6 +17,7 @@ quick_dot_ai_inc_args += [
   '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn' / 'gauss-3.6-qnn',
   '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn' / 'gauss-3.8-qnn',
   '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn' / 'gauss-3.8-vit-qnn',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'qnn' / 'gemma4-e2b-qnn',
 ]
 endif
 

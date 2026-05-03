@@ -22,7 +22,7 @@
 
 #include "graph_parser.h"
 #include <transformer.h>
-
+#include <iostream>
 #include <atomic>
 #include <set>
 

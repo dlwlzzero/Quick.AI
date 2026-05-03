@@ -42,6 +42,7 @@
 #include "gauss3_6_qnn.h"
 #include "gauss3_8_qnn.h"
 #include "gauss3_8_vision_encoder_qnn.h"
+#include "gemma4_e2b_qnn.h"
 
 #endif
 #include <fstream>
@@ -106,17 +107,18 @@ static CausalLmModel &get_default_handle()
 }
 
 static std::map<std::string, std::string> g_model_path_map = {
-    {"QWEN3-0.6B", "qwen3-0.6b"},
-    {"GAUSS2.5-1B", "gauss2.5-1b"},
-    {"QWEN3-1.7B-Q40", "qwen3-1.7b-q40-arm"},
-    {"GAUSS3.6", "gauss-3.6"},
-    {"TINY_BERT", "tiny_bert"},
+  { "QWEN3-0.6B", "qwen3-0.6b" },
+  { "GAUSS2.5-1B", "gauss2.5-1b" },
+  { "QWEN3-1.7B-Q40", "qwen3-1.7b-q40-arm" },
+  { "GAUSS3.6", "gauss-3.6" },
+  { "TINY_BERT", "tiny_bert" },
 
 #ifdef ENABLE_QNN
-    {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
-    {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
-    {"GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn"},
-    {"GAUSS3.8-VIT-QNN", "gauss-3.8-vit-qnn"},
+  { "GAUSS3.6-QNN", "gauss-3.6-qnn" },
+  { "GAUSS3.8-QNN", "gauss-3.8-qnn" },
+  { "GAUSS3.8-VE-QNN", "gauss-3.8-vencoder-qnn" },
+  { "GAUSS3.8-VIT-QNN", "gauss-3.8-vit-qnn" },
+  { "GEMMA4-E2B-QNN", "gemma-4-e2b-qnn" },
 #endif
 };
 
@@ -248,6 +250,11 @@ static void register_models()
           return std::make_unique<causallm::Gauss3_8_Vision_Encoder_QNN>(
               cfg, generation_cfg, nntr_cfg);
         });
+
+    causallm::Factory::Instance ().registerModel (
+        "Gemma4_E2B_QNN", [] (json cfg, json generation_cfg, json nntr_cfg) {
+          return std::make_unique<causallm::Gemma4_E2B_QNN> (cfg, generation_cfg, nntr_cfg);
+        });
 #endif
     // Register built-in configurations
     quick_dot_ai::register_builtin_configs(); });
@@ -276,6 +283,8 @@ static const char *get_model_name_from_type(ModelType type)
     return "GAUSS3.8-VE-QNN";
   case CAUSAL_LM_MODEL_GAUSS3_8_VIT_QNN:
     return "GAUSS3.8-VIT-QNN";
+  case CAUSAL_LM_MODEL_GEMMA4_E2B_QNN:
+    return "GEMMA4-E2B-QNN";
 #endif
   default:
     return nullptr;
@@ -628,7 +637,9 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     std::string base_dir =
         (model_base_path != nullptr && strlen(model_base_path) > 0)
             ? model_base_path
-            : "/sdcard/Android/data/com.example.sampletestapp/files/models";
+      : "/data/local/tmp/Quick.AI";
+            // : "/sdcard/Android/data/com.example.sampletestapp/files/models";
+      
 
     // Snapshot registry entries under the registry mutex so concurrent
     // loads on different handles don't race with each other (or with
@@ -979,8 +990,10 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 
     const std::string weight_file = abs_model_dir + "/" + weight_file_name;
     LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
-
+    std::cout <<"-------------------"<< abs_model_dir << "/" <<std::endl;
+    
     nntr_cfg["model_file_name"] = weight_file;
+
     if (nntr_cfg.contains("binary_config_path"))
     {
       std::string str = nntr_cfg["binary_config_path"].get<std::string>();

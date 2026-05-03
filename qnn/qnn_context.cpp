@@ -162,7 +162,8 @@ int QNNContext::init() {
 
   LOGD("init: Creating backend extensions");
   BackendExtensionsConfigs backend_extensions_config;
-  backend_extensions_config.configFilePath = "/sdcard/Android/data/com.example.sampletestapp/files/htp_backend_ext_config.json";
+  // backend_extensions_config.configFilePath = "/sdcard/Android/data/com.example.sampletestapp/files/htp_backend_ext_config.json";
+  backend_extensions_config.configFilePath = "/data/local/tmp/Quick.AI/htp_backend_ext_config.json";  
   backend_extensions_config.sharedLibraryPath = "libQnnHtpNetRunExtensions.so";
 
   BackendExtensions *backend_extensions = new BackendExtensions(
