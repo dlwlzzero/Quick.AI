@@ -67,6 +67,18 @@ private:
   std::vector<uint16_t *> kvs;
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;
+  std::vector<int> kv_row_lengths;
+  std::vector<int> kv_columns;
+
+  int prefill_attention_mask_elements = 0;
+  int prefill_attention_mask_columns = 0;
+  int prefill_sliding_attention_mask_elements = 0;
+  int prefill_sliding_attention_mask_columns = 0;
+  int generation_attention_mask_elements = 0;
+  int generation_sliding_attention_mask_elements = 0;
+  int generation_full_kv_past_length = 0;
+  int generation_sliding_kv_past_length = 0;
+  int rope_cache_seq_len = 0;
 
   // Language model specific variables
   // Config
@@ -81,6 +93,7 @@ private:
   float rope_theta;
   int context_size;
   int pos_dim;
+  int swa_pos_dim;
   int g_head_dim;
   int l_head_dim;
   int head_dim;

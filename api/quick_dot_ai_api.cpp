@@ -394,6 +394,19 @@ static std::string resolve_model_path(const std::string &model_key,
  * Absolute values (leading '/') are left untouched so the caller can
  * override a specific file with a system-wide path if they want.
  */
+static bool is_absolute_path(const std::string &path)
+{
+  return !path.empty() && path[0] == '/';
+}
+
+static std::string rebase_path(const std::string &path,
+                               const std::string &base_dir)
+{
+  if (path.empty() || is_absolute_path(path))
+    return path;
+  return base_dir + "/" + path;
+}
+
 static void fix_paths(json &nntr_cfg, const std::string &sub_dir)
 {
   static const char *kKeys[] = {
@@ -402,15 +415,14 @@ static void fix_paths(json &nntr_cfg, const std::string &sub_dir)
       "binary_config_path",
       "image_newline_path",
       "embedding_file_name",
+      "ple_file_name",
   };
   for (const char *k : kKeys)
   {
     if (!nntr_cfg.contains(k) || !nntr_cfg[k].is_string())
       continue;
     std::string v = nntr_cfg[k].get<std::string>();
-    if (v.empty() || v[0] == '/')
-      continue;
-    nntr_cfg[k] = sub_dir + "/" + v;
+    nntr_cfg[k] = rebase_path(v, sub_dir);
   }
 }
 
@@ -988,7 +1000,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       weight_file_name = "pytorch_model.bin";
     }
 
-    const std::string weight_file = abs_model_dir + "/" + weight_file_name;
+    const std::string weight_file = rebase_path(weight_file_name, abs_model_dir);
     LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
     std::cout <<"-------------------"<< abs_model_dir << "/" <<std::endl;
     
@@ -997,21 +1009,26 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     if (nntr_cfg.contains("binary_config_path"))
     {
       std::string str = nntr_cfg["binary_config_path"].get<std::string>();
-      nntr_cfg["binary_config_path"] = abs_model_dir + "/" + str;
+      nntr_cfg["binary_config_path"] = rebase_path(str, abs_model_dir);
       LOGD("[DEBUG] bianry config data: file = %s",
            nntr_cfg["binary_config_path"].get<std::string>().c_str());
     }
     if (nntr_cfg.contains("image_newline_path"))
     {
       std::string str = nntr_cfg["image_newline_path"].get<std::string>();
-      nntr_cfg["image_newline_path"] = abs_model_dir + "/" + str;
+      nntr_cfg["image_newline_path"] = rebase_path(str, abs_model_dir);
       LOGD("[DEBUG] new line config data: file = %s",
            nntr_cfg["image_newline_path"].get<std::string>().c_str());
     }
     if (nntr_cfg.contains("embedding_file_name"))
     {
       std::string str = nntr_cfg["embedding_file_name"].get<std::string>();
-      nntr_cfg["embedding_file_name"] = abs_model_dir + "/" + str;
+      nntr_cfg["embedding_file_name"] = rebase_path(str, abs_model_dir);
+    }
+    if (nntr_cfg.contains("ple_file_name"))
+    {
+      std::string str = nntr_cfg["ple_file_name"].get<std::string>();
+      nntr_cfg["ple_file_name"] = rebase_path(str, abs_model_dir);
     }
 
     LOGD("[DEBUG] -------------------------- asdfasdfasdfasdfasdfasdf ");

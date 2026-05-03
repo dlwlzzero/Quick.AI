@@ -92,10 +92,16 @@ TensorInfo GraphParser::extractTensorInfo(const json &tensor_object) {
   tensor_info.dimensions =
       tensor_info_json["dimensions"].get<std::vector<int>>();
   tensor_info.data_type = tensor_info_json["dataType"];
-  tensor_info.scale =
-      tensor_info_json["quantizeParams"]["scaleOffset"]["scale"];
-  tensor_info.offset =
-      tensor_info_json["quantizeParams"]["scaleOffset"]["offset"];
+  if (tensor_info_json.contains("quantizeParams") &&
+      tensor_info_json["quantizeParams"].contains("scaleOffset") &&
+      tensor_info_json["quantizeParams"]["scaleOffset"].is_object()) {
+    auto scale_offset = tensor_info_json["quantizeParams"]["scaleOffset"];
+    tensor_info.scale = scale_offset.value("scale", 0.0);
+    tensor_info.offset = scale_offset.value("offset", 0);
+  } else {
+    tensor_info.scale = 0.0;
+    tensor_info.offset = 0;
+  }
 
   return tensor_info;
 }
@@ -112,7 +118,8 @@ int GraphParser::get_tensor_count(const TensorInfo &tensor_info) {
 
 int GraphParser::get_tensor_bit_width(const TensorInfo &tensor_info) {
   int bit_width;
-  if (tensor_info.data_type == "QNN_DATATYPE_UFIXED_POINT_16") {
+  if (tensor_info.data_type == "QNN_DATATYPE_UFIXED_POINT_16" ||
+      tensor_info.data_type == "QNN_DATATYPE_FLOAT_16") {
     bit_width = 2;
   } else if (tensor_info.data_type == "QNN_DATATYPE_UFIXED_POINT_8") {
     bit_width = 1;

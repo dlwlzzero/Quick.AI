@@ -15,11 +15,42 @@ using namespace ml::train;
 using namespace nntrainer;
 using namespace causallm;
 
+namespace {
+
+bool is_absolute_path(const std::string &path) {
+  return !path.empty() && path[0] == '/';
+}
+
+std::string dirname(const std::string &path) {
+  auto pos = path.find_last_of('/');
+  if (pos == std::string::npos) {
+    return "";
+  }
+  return path.substr(0, pos);
+}
+
+std::string rebase_relative_to_model_file(const std::string &path,
+                                          const std::string &model_file) {
+  if (path.empty() || is_absolute_path(path)) {
+    return path;
+  }
+
+  auto base_dir = dirname(model_file);
+  if (base_dir.empty()) {
+    return path;
+  }
+  return base_dir + "/" + path;
+}
+
+} // namespace
+
 std::string qnn_to_nntrainer_datatype(std::string qnn_dtype) {
   if (qnn_dtype == "QNN_DATATYPE_UFIXED_POINT_16") {
     return "UINT16";
   } else if (qnn_dtype == "QNN_DATATYPE_UFIXED_POINT_8") {
     return "UINT8";
+  } else if (qnn_dtype == "QNN_DATATYPE_FLOAT_16") {
+    return "FP16";
   } else {
     throw std::invalid_argument("qnn_dtype is " + qnn_dtype);
   }
@@ -30,7 +61,8 @@ get_qnn_input_data(TensorInfo tensor_object, std::set<void *> &allocated_ptrs) {
   int size = GraphParser::get_tensor_size(tensor_object);
   std::string qnn_dtype = tensor_object.data_type;
 
-  if (qnn_dtype == "QNN_DATATYPE_UFIXED_POINT_16") {
+  if (qnn_dtype == "QNN_DATATYPE_UFIXED_POINT_16" ||
+      qnn_dtype == "QNN_DATATYPE_FLOAT_16") {
     auto *ptr = (uint16_t *)allocate(size);
     allocated_ptrs.insert(ptr);
     return ptr;
@@ -105,7 +137,8 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
 
     for (const auto &[tensor_name, tensor_object] :
          current_graphs_info.raw_inputs) {
-      if (uses_embedding && tensor_name == "inputs_embeds") {
+      if (uses_embedding &&
+          (tensor_name == "inputs_embeds" || tensor_name == "input_embeds")) {
         auto input_shape = tensor_object.dimensions;
         int input_size = input_shape[0];
         std::string input_shape_string = std::to_string(input_shape[0]);
@@ -243,6 +276,8 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   model_file_name = nntr_cfg["model_file_name"].get<std::string>();
   LOGD("----------------binary_config_path : %s", model_file_name.c_str());
   binary_config_path = nntr_cfg["binary_config_path"].get<std::string>();
+  binary_config_path =
+      rebase_relative_to_model_file(binary_config_path, model_file_name);
   LOGD("----------------binary_config_path : %s", binary_config_path.c_str());
   graphs_to_use = nntr_cfg["graphs_to_use"].get<std::vector<std::string>>();
   for (auto s : graphs_to_use) {
@@ -252,7 +287,7 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   LOGD("----------------vocab size : %d", vocab_size);
 
   // Multimodal opt-in: when uses_embedding=false, the LLM graph's
-  // inputs_embeds tensor is fed with pre-computed uint16 embeddings
+  // input(s)_embeds tensor is fed with pre-computed uint16 embeddings
   // rather than token IDs via an embedding layer. Derived classes
   // also mmap embedding_file_name for per-token lookup during
   // generation (see e.g. Gauss3_8_QNN::lookupEmbedding).
@@ -263,6 +298,8 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
 
   if (nntr_cfg.contains("embedding_file_name")) {
     embedding_file_name = nntr_cfg["embedding_file_name"].get<std::string>();
+    embedding_file_name =
+        rebase_relative_to_model_file(embedding_file_name, model_file_name);
     LOGD("---------------- embedding_file_name : %s",
          embedding_file_name.c_str());
   }
