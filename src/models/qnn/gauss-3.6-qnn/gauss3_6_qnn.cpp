@@ -40,6 +40,16 @@ bool starts_with(const std::string &value, const std::string &prefix) {
   return value.compare(0, prefix.size(), prefix) == 0;
 }
 
+int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
+                                   const std::string &tensor_name) {
+  for (size_t idx = 0; idx < tensor_infos.size(); idx++) {
+    if (tensor_infos[idx].first == tensor_name) {
+      return static_cast<int>(idx);
+    }
+  }
+  return -1;
+}
+
 std::string kv_output_to_input_name(const std::string &output_name) {
   if (output_name.size() >= 4 &&
       output_name.compare(output_name.size() - 4, 4, "_out") == 0) {
@@ -254,8 +264,7 @@ void causallm::Gauss3_6_QNN::initialize() {
   }
 
   // Initialize KV cache with one shared backing buffer per generation KV input.
-  // Both prefill and generation graphs are rebound to these buffers so history
-  // is accumulated in place across prefill chunks and generation steps.
+  // Prefill inputs are rebound only when that graph actually exposes the KV.
   this->fresh_kvs.clear();
   this->kvs.clear();
   this->kv_sizes.clear();
@@ -286,14 +295,17 @@ void causallm::Gauss3_6_QNN::initialize() {
           GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
                                          name);
       int prefill_input_index =
-          GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, name);
+          find_tensor_index_or_minus_one(prefill_graph_info.raw_inputs, name);
       const auto &generation_info =
           generation_graph_info.raw_inputs[generation_input_index].second;
-      const auto &prefill_info =
-          prefill_graph_info.raw_inputs[prefill_input_index].second;
 
-      const int size = std::max(GraphParser::get_tensor_size(generation_info),
-                                GraphParser::get_tensor_size(prefill_info));
+      int size = GraphParser::get_tensor_size(generation_info);
+      if (prefill_input_index >= 0) {
+        const auto &prefill_info =
+            prefill_graph_info.raw_inputs[prefill_input_index].second;
+        size = std::max(size, GraphParser::get_tensor_size(prefill_info));
+      }
+
       auto *current_kv = static_cast<uint8_t *>(tracked_allocate(size));
       auto *fresh_kv = static_cast<uint8_t *>(tracked_allocate(size));
       std::fill_n(current_kv, size, static_cast<uint8_t>(128));
@@ -305,7 +317,9 @@ void causallm::Gauss3_6_QNN::initialize() {
       this->kv_sizes.push_back(size);
       generation_kv_index_by_name[name] = kv_input_index;
 
-      prefill_inputs[prefill_input_index] = current_kv;
+      if (prefill_input_index >= 0) {
+        prefill_inputs[prefill_input_index] = current_kv;
+      }
       generation_inputs[generation_input_index] = current_kv;
     }
   }
