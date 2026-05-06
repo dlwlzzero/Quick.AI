@@ -44,7 +44,6 @@ public:
 
 private:
   void reset_prefill_kv_cache_inputs();
-  void sync_generation_kv_cache_to_prefill();
 
   // Input/output tensors
   uint16_t *attention_mask;
@@ -77,9 +76,15 @@ private:
   std::vector<int> kv_row_lengths;
   std::vector<uint16_t *> prefill_kvs;
   std::vector<int> prefill_kv_sizes;
-  std::vector<int> prefill_kv_row_lengths;
-  std::vector<int> prefill_to_generation_kv_indices;
-  std::vector<int> prefill_kv_is_key;
+
+  struct KvOutputBinding {
+    int output_index;
+    int kv_index;
+    int layer_index;
+    bool is_key;
+  };
+  std::vector<KvOutputBinding> prefill_output_kv_bindings;
+  std::vector<KvOutputBinding> generation_output_kv_bindings;
 
   int prefill_attention_mask_elements = 0;
   int prefill_sliding_attention_mask_elements = 0;
