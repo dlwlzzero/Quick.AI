@@ -45,6 +45,7 @@ public:
            bool log_output = true) override;
 
 private:
+  std::string normalize_conversation_prompt(const std::string &prompt) const;
   void reset_prefill_kv_cache_inputs();
   void sync_generation_kv_cache_to_prefill();
 
@@ -72,6 +73,7 @@ private:
 
   // KV cache variables
   int kv_len;
+  bool conversation_started_ = false;
   
   std::vector<uint8_t *> kvs;
   std::vector<int> kv_sizes;
