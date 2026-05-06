@@ -139,7 +139,6 @@ protected:
 
   // Streaming support
   ::BaseStreamer *streamer_ = nullptr;
-  std::string last_output_;
 
   /**
    * @brief Cooperative cancellation flag set by the attached streamer's

@@ -273,7 +273,18 @@ void causallm::Gauss3_6_QNN::initialize() {
       std::fill_n(kv_ptr, size, 128);
     }
   }
+
+  initialize_kv_cache();
   LOGD("----------------------- initialize() done");
+}
+
+void causallm::Gauss3_6_QNN::initialize_kv_cache() {
+  kv_len = 0;
+  
+  // KV Cache Initialization
+  for (int i = 0; i < this->kvs.size(); i++) {
+    std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
+  }
 }
 
 void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
@@ -312,13 +323,21 @@ void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
 void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
                                  const WSTR system_prompt,
                                  const WSTR tail_prompt, bool log_output) {
-  last_output_.clear();
+  auto input = tokenizer->Encode(prompt);
 
-  // Always start with a clean cancellation state — the streamer (if
-  // any) may have flipped this flag on a previous run that was
-  // cancelled, and we don't want stale state to break an unrelated
-  // subsequent run().
-  stop_requested_.store(false, std::memory_order_release);
+  unsigned int input_len = input.size() - 1;
+  if(input_len <= 0){
+    std::cout << "[Error] Input is empty or invalid" << std::endl;
+    return;
+  }
+
+  auto n_chunks = (input_len % 256 != 0) ? ((input_len / 256) + 1) : (input_len / 256);
+  auto token  = input.back();
+
+  std::cout << "len: " << input_len << ", n_chunks: " << n_chunks << std::endl;
+
+  std::vector<int> output;
+  std::vector<ml::train::TensorDim::IO_TensorType> outputs;
 
   // Get prefill and generation graph names
   std::string prefill_graph = graphs_to_use[0];
@@ -331,49 +350,26 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
   auto &prefill_model = models[prefill_graph].model_handle;
   auto &generation_model = models[generation_graph].model_handle;
 
-  // KV Cache Initialization
-  for (int i = 0; i < this->kvs.size(); i++) {
-    std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
-  }
-
-  auto _input = tokenizer->Encode(prompt);
-  auto token  = _input.back();
-
-  unsigned int _len = _input.size() - 1;
-  if(_len <= 0){
-    std::cout << "[Error] Input is empty or invalid" << std::endl;
-    return;
-  }
-
-  auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
-
-  std::cout << "n_chunk: " << _n_chunks << ", len: " << _len << std::endl;
-
-  std::vector<int> output;
-  std::vector<ml::train::TensorDim::IO_TensorType> outputs;
-
-  for(int c = 0; c < _n_chunks; c++) {
-    int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
-    int kv_len = c * context_size;
-
-    std::cout << "chunk_num: " << c << ", chunk_len: " << _chunk_len << std::endl;
+  for(int c = 0; c < n_chunks; c++) {
+    int chunk_len = ((c + 1) * 256 < input_len) ? context_size : (input_len - (c * 256));
+    LOGD("kv_len : %d, chunk_len : %d", kv_len, chunk_len);
 
     for(int i = 0; i < context_size; i++)
-      input_sample[i] = (i < _chunk_len) ? _input[c * 256 + i] : padding_token;
+      input_sample[i] = (i < chunk_len) ? input[c * 256 + i] : padding_token;
 
-    fill_attention_mask_with_length(context_size, max_seq_len, _chunk_len, attention_mask);
-    fill_attention_mask_with_prev_length(context_size, max_seq_len, c * 256, attention_mask);
+    fill_attention_mask_with_length(context_size, max_seq_len, chunk_len, attention_mask);
+    fill_attention_mask_with_prev_length(context_size, max_seq_len, kv_len, attention_mask);
 
     if (kv_len >= generation_sliding_kv_past_length) {
       std::fill_n(sliding_attention_mask, context_size * sliding_window, std::numeric_limits<uint16_t>::min());
-      for(int i = 0; i < _chunk_len; i++) {
+      for(int i = 0; i < chunk_len; i++) {
         for(int j = (i + 1);
             j < (i + generation_sliding_attention_mask_elements); j++) {
           sliding_attention_mask[i * sliding_window + j] = std::numeric_limits<uint16_t>::max();
         }
       }
     } else {
-      fill_attention_mask_with_length(context_size, sliding_window, _chunk_len, sliding_attention_mask);
+      fill_attention_mask_with_length(context_size, sliding_window, chunk_len, sliding_attention_mask);
       fill_attention_mask_with_prev_length(context_size, sliding_window, kv_len, sliding_attention_mask);
     }
 
@@ -382,11 +378,11 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     std::fill_n(prefill_swa_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_swa_position_ids_sin, context_size * pos_dim, 32768);
 
-    auto pos_ids_offset = c * context_size * pos_dim;
-    std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
-    std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
-    std::memcpy(prefill_swa_position_ids_cos, swa_position_ids_cos + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
-    std::memcpy(prefill_swa_position_ids_sin, swa_position_ids_sin + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
+    auto pos_ids_offset = kv_len * pos_dim;
+    std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_cos, swa_position_ids_cos + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_sin, swa_position_ids_sin + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
 
     auto outputs = prefill_model->inference(1, prefill_inputs);
 
@@ -406,26 +402,26 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
       int num_column = 128;
 
       int target_idx = kv_len;
-      if (is_sliding && kv_len + _chunk_len > dest_row_length) {
-        target_idx = dest_row_length - _chunk_len;
+      if (is_sliding && kv_len + chunk_len > dest_row_length) {
+        target_idx = dest_row_length - chunk_len;
         if(is_key) {
           for(int col = 0; col < num_column; ++col) {
             uint8_t *col_base = dest + col * dest_row_length;
-            std::memmove(col_base, col_base + _chunk_len, dest_row_length - _chunk_len);
+            std::memmove(col_base, col_base + chunk_len, dest_row_length - chunk_len);
           }
         } else {
-          std::memmove(dest, dest + _chunk_len * num_column, (dest_row_length - _chunk_len) * num_column);
+          std::memmove(dest, dest + chunk_len * num_column, (dest_row_length - chunk_len) * num_column);
         }
       }
 
       if (is_key) {
-        process_key (output, _chunk_len, num_column, dest, target_idx, dest_row_length, src_row_length);
+        process_key (output, chunk_len, num_column, dest, target_idx, dest_row_length, src_row_length);
       } else {
-        process_value (output, _chunk_len, num_column, dest, target_idx);
+        process_value (output, chunk_len, num_column, dest, target_idx);
       }
     };
 
-    std::cout << "Prefill KV Cache copy finished!" << std::endl;
+    kv_len += chunk_len;
   }
 
   std::fill_n(generation_attention_mask, generation_attention_mask_elements, 0);
@@ -438,19 +434,14 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
       [generation_sliding_attention_mask_elements - 1] =
           std::numeric_limits<uint16_t>::max();
 
-  for (int i = 0; i < _len && i < generation_full_kv_past_length; i++)
+  for (int i = 0; i < kv_len && i < generation_full_kv_past_length; i++)
     generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-
-  int len = (_len <= generation_sliding_kv_past_length)
-                ? _len
-                : generation_sliding_kv_past_length;
-  for (int i = 0; i < len; i++) {
+  for (int i = 0; i < kv_len && i < generation_sliding_kv_past_length; i++)
     generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  }
 
   auto start = std::chrono::system_clock::now();
   int idx;
-  int prefill_len = _len;
+  int prefill_len = kv_len;
   for (idx = prefill_len; idx < generation_full_kv_past_length; idx++) {
     generation_sample[0] = token;
 
@@ -509,16 +500,15 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
 
     outputs = generation_model->inference(1, generation_inputs);
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
-                   _input.data(), _input.size(), logit_scale, logit_offset,
+                   input.data(), input.size(), logit_scale, logit_offset,
                    repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
+    kv_len += 1;
     if (token == eos_token) {
-      std::cout << "Finished generating, break..." << std::endl;
       break;
     } else {
       std::string decoded= tokenizer->Decode({token});
-      last_output_ += decoded;
       LOGD("%d : %s",token, decoded.c_str());
       // Stream the token if a streamer is attached
       if (streamer_) {
@@ -530,15 +520,7 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
       } else if (log_output) {
         std::cout << decoded << std::flush;
       }
-      _input.push_back(token);
-    }
-
-    // Cooperative cancellation: a streamer may have asked us to stop
-    // via its put() return value, or requestStop() was called from
-    // another thread. We check once per generated token so worst-case
-    // latency is a single decode step.
-    if (stop_requested_.load(std::memory_order_acquire)) {
-      break;
+      input.push_back(token);
     }
   }
 
@@ -555,8 +537,8 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
   std::cout << std::endl;
   std::cout << std::endl;
   std::cout << "Generation exec_time : " << raw_exec_seconds.count()
-            << ", token per second: " << (idx - _len) / raw_exec_seconds.count()
+            << ", token per second: " << (idx - input_len) / raw_exec_seconds.count()
             << ", token generation time average: "
-            << raw_exec_seconds.count() / (idx - _len) << std::endl;
+            << raw_exec_seconds.count() / (idx - input_len) << std::endl;
   }
 }
