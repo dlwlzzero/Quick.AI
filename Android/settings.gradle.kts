@@ -56,6 +56,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "QuickAI"
 include(":QuickDotAI")
-include(":LauncherApp")
-include(":clientapp")
 include(":SampleTestAPP")
