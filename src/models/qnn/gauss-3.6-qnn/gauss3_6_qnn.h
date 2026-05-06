@@ -34,6 +34,8 @@ public:
 
   void initialize() override;
 
+  void initialize_kv_cache();
+
   void setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) override;
 
   void run(const WSTR prompt, bool do_sample = false,
@@ -64,6 +66,8 @@ private:
   float *generation_sample;
 
   // KV cache variables
+  int kv_len;
+  
   std::vector<uint16_t *> kvs;
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;
