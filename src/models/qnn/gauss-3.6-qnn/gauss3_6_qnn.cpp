@@ -34,6 +34,8 @@ using namespace causallm;
 
 namespace {
 
+constexpr int kKvNumColumns = 128;
+
 bool starts_with(const std::string &value, const std::string &prefix) {
   return value.compare(0, prefix.size(), prefix) == 0;
 }
@@ -251,49 +253,60 @@ void causallm::Gauss3_6_QNN::initialize() {
     std::cout << "LoRA weights loaded from: " << lora_path << std::endl;
   }
 
-  // Initialize KV cache - find tensors starting with "past_" from model_inputs
+  // Initialize KV cache with one shared backing buffer per generation KV input.
+  // Both prefill and generation graphs are rebound to these buffers so history
+  // is accumulated in place across prefill chunks and generation steps.
   this->fresh_kvs.clear();
   this->kvs.clear();
   this->kv_sizes.clear();
   this->kv_row_lengths.clear();
-  this->prefill_kvs.clear();
-  this->prefill_kv_sizes.clear();
   this->prefill_output_kv_bindings.clear();
   this->generation_output_kv_bindings.clear();
   LOGD("----------------------- initialize() 8");
+
   std::unordered_map<std::string, int> generation_kv_index_by_name;
-  // Find all KV cache tensors (names starting with "past_") in generation
-  // inputs
-  for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-    const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-    if (starts_with(name, "past_")) {
-      // Found a KV cache tensor
-      auto *kv_ptr = std::get<uint8_t *>(generation_inputs[idx]);
-      size_t kv_input_index = this->kvs.size();
-      this->kvs.push_back((uint16_t *)kv_ptr);
-      generation_kv_index_by_name[name] = static_cast<int>(kv_input_index);
 
-      // Calculate size using GraphParser::get_tensor_size
-      int size = GraphParser::get_tensor_size(info);
-      this->kv_sizes.push_back(size);
+  for (int layer = 0; layer < num_hidden_layers; layer++) {
+    const std::string key_h0_name =
+        "past_key_" + std::to_string(layer) + "_h0_in";
+    const auto &generation_key_h0_info =
+        GraphParser::get_tensor_info_or_throw(generation_graph_info.raw_inputs,
+                                              key_h0_name);
+    this->kv_row_lengths.push_back(generation_key_h0_info.dimensions.back());
 
-      if (kv_input_index % 4 == 0) {
-        this->kv_row_lengths.push_back(info.dimensions.back());
-      }
+    const std::vector<std::string> kv_names = {
+        key_h0_name,
+        "past_key_" + std::to_string(layer) + "_h1_in",
+        "past_value_" + std::to_string(layer) + "_h0_in",
+        "past_value_" + std::to_string(layer) + "_h1_in",
+    };
 
-      // Allocate fresh_kvs for reset during run()
-      auto fresh_kv = (uint16_t *)get_zero_memory(size, 128 * 256 + 128);
-      allocated_ptrs_.insert(fresh_kv);
+    for (const auto &name : kv_names) {
+      int generation_input_index =
+          GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
+                                         name);
+      int prefill_input_index =
+          GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, name);
+      const auto &generation_info =
+          generation_graph_info.raw_inputs[generation_input_index].second;
+      const auto &prefill_info =
+          prefill_graph_info.raw_inputs[prefill_input_index].second;
+
+      const int size = std::max(GraphParser::get_tensor_size(generation_info),
+                                GraphParser::get_tensor_size(prefill_info));
+      auto *current_kv = static_cast<uint8_t *>(tracked_allocate(size));
+      auto *fresh_kv = static_cast<uint8_t *>(tracked_allocate(size));
+      std::fill_n(current_kv, size, static_cast<uint8_t>(128));
+      std::fill_n(fresh_kv, size, static_cast<uint8_t>(128));
+
+      int kv_input_index = static_cast<int>(this->kvs.size());
+      this->kvs.push_back(current_kv);
       this->fresh_kvs.push_back(fresh_kv);
-    }
-  }
+      this->kv_sizes.push_back(size);
+      generation_kv_index_by_name[name] = kv_input_index;
 
-  for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-    const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-    if (starts_with(name, "past_")) {
-      auto *kv_ptr = std::get<uint8_t *>(prefill_inputs[idx]);
-      this->prefill_kvs.push_back((uint16_t *)kv_ptr);
-      this->prefill_kv_sizes.push_back(GraphParser::get_tensor_size(info));
+      prefill_inputs[prefill_input_index] = current_kv;
+      generation_inputs[generation_input_index] = current_kv;
     }
   }
 
@@ -327,10 +340,9 @@ void causallm::Gauss3_6_QNN::initialize() {
   this->generation_output_kv_bindings = build_output_kv_bindings(
       generation_graph_info.raw_outputs, generation_graph);
 
-  LOGD("KV cache mapping: generation_inputs=%zu prefill_inputs=%zu "
-       "prefill_outputs=%zu generation_outputs=%zu",
-       this->kvs.size(), this->prefill_kvs.size(),
-       this->prefill_output_kv_bindings.size(),
+  LOGD("KV cache mapping: shared_inputs=%zu prefill_outputs=%zu "
+       "generation_outputs=%zu",
+       this->kvs.size(), this->prefill_output_kv_bindings.size(),
        this->generation_output_kv_bindings.size());
 
   initialize_kv_cache();
@@ -343,14 +355,6 @@ void causallm::Gauss3_6_QNN::initialize_kv_cache() {
   // KV Cache Initialization
   for (int i = 0; i < this->kvs.size(); i++) {
     std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
-  }
-  reset_prefill_kv_cache_inputs();
-}
-
-void causallm::Gauss3_6_QNN::reset_prefill_kv_cache_inputs() {
-  for (int i = 0; i < this->prefill_kvs.size(); i++) {
-    std::fill_n((uint8_t *)this->prefill_kvs[i],
-                this->prefill_kv_sizes[i], 128);
   }
 }
 
@@ -436,18 +440,12 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
         [generation_sliding_attention_mask_elements - 1] =
             std::numeric_limits<uint16_t>::max();
 
+    // The KV cache contains only previous tokens; the current token uses the
+    // fixed final column in the generation mask.
     for (int i = 0; i < position && i < generation_full_kv_past_length; i++)
       generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
     for (int i = 0; i < position && i < generation_sliding_kv_past_length; i++)
       generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-    if (position < generation_full_kv_past_length) {
-      generation_attention_mask[position] =
-          std::numeric_limits<uint16_t>::max();
-    }
-    if (position < generation_sliding_kv_past_length) {
-      generation_sliding_attention_mask[position] =
-          std::numeric_limits<uint16_t>::max();
-    }
 
     std::memcpy(generation_position_ids_cos,
                 position_ids_cos + position * pos_dim,
@@ -484,8 +482,8 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
           const auto &binding = bindings[binding_idx];
           int dest_row_length = kv_row_lengths[binding.layer_index];
           auto output = std::get<uint8_t *>(step_outputs[binding.output_index]);
-          auto dest = (uint8_t *)this->kvs[binding.kv_index];
-          int num_column = 128;
+          auto dest = this->kvs[binding.kv_index];
+          int num_column = kKvNumColumns;
 
           int target_idx = target_position;
           int valid_before = std::min(target_position, dest_row_length);
@@ -513,74 +511,65 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
         }
       };
 
-  auto ingest_prompt_with_generation = [&](unsigned int ingest_len) {
-    for (unsigned int i = 0; i < ingest_len; i++) {
-      if (kv_len >= generation_full_kv_past_length) {
-        throw std::runtime_error("Generation KV cache is full while ingesting "
-                                 "multi-turn prompt");
-      }
+  for (int c = 0; c < n_chunks; c++) {
+    int chunk_len = ((c + 1) * 256 < input_len)
+                        ? context_size
+                        : (input_len - (c * 256));
+    LOGD("kv_len : %d, chunk_len : %d", kv_len, chunk_len);
 
-      fill_generation_inputs(input[i], kv_len);
-      auto step_outputs = generation_model->inference(1, generation_inputs);
-      append_outputs_to_kv_cache(step_outputs,
-                                 this->generation_output_kv_bindings, kv_len,
-                                 1, 1, generation_graph);
-      kv_len += 1;
-    }
-  };
+    for (int i = 0; i < context_size; i++)
+      input_sample[i] = (i < chunk_len) ? input[c * 256 + i] : padding_token;
 
-  if (kv_len > 0) {
-    ingest_prompt_with_generation(input_len);
-  } else {
-    for(int c = 0; c < n_chunks; c++) {
-      int chunk_len = ((c + 1) * 256 < input_len) ? context_size : (input_len - (c * 256));
-      LOGD("kv_len : %d, chunk_len : %d", kv_len, chunk_len);
+    fill_attention_mask_with_length(context_size, max_seq_len, chunk_len,
+                                    attention_mask);
+    fill_attention_mask_with_prev_length(
+        context_size, max_seq_len, std::min(kv_len, max_seq_len - context_size),
+        attention_mask);
 
-      for(int i = 0; i < context_size; i++)
-        input_sample[i] = (i < chunk_len) ? input[c * 256 + i] : padding_token;
-
-      fill_attention_mask_with_length(context_size, max_seq_len, chunk_len, attention_mask);
-      fill_attention_mask_with_prev_length(
-          context_size, max_seq_len,
-          std::min(kv_len, max_seq_len - context_size), attention_mask);
-
-      if (kv_len >= generation_sliding_kv_past_length) {
-        std::fill_n(sliding_attention_mask, context_size * sliding_window, std::numeric_limits<uint16_t>::min());
-        for(int i = 0; i < chunk_len; i++) {
-          for(int j = (i + 1);
-              j < (i + generation_sliding_attention_mask_elements); j++) {
-            sliding_attention_mask[i * sliding_window + j] = std::numeric_limits<uint16_t>::max();
-          }
+    if (kv_len >= generation_sliding_kv_past_length) {
+      std::fill_n(sliding_attention_mask, context_size * sliding_window,
+                  std::numeric_limits<uint16_t>::min());
+      for (int i = 0; i < chunk_len; i++) {
+        for (int j = (i + 1);
+             j < (i + generation_sliding_attention_mask_elements); j++) {
+          sliding_attention_mask[i * sliding_window + j] =
+              std::numeric_limits<uint16_t>::max();
         }
-      } else {
-        fill_attention_mask_with_length(context_size, sliding_window, chunk_len, sliding_attention_mask);
-        fill_attention_mask_with_prev_length(context_size, sliding_window, kv_len, sliding_attention_mask);
       }
-
-      std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
-      std::fill_n(prefill_position_ids_sin, context_size * pos_dim, 32768);
-      std::fill_n(prefill_swa_position_ids_cos, context_size * pos_dim, 65535);
-      std::fill_n(prefill_swa_position_ids_sin, context_size * pos_dim, 32768);
-
-      if (kv_len + chunk_len > rope_cache_seq_len) {
-        throw std::runtime_error("Prefill position is out of rope cache");
-      }
-
-      auto pos_ids_offset = kv_len * pos_dim;
-      std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
-      std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
-      std::memcpy(prefill_swa_position_ids_cos, swa_position_ids_cos + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
-      std::memcpy(prefill_swa_position_ids_sin, swa_position_ids_sin + pos_ids_offset, chunk_len * pos_dim * sizeof(uint16_t));
-
-      auto outputs = prefill_model->inference(1, prefill_inputs);
-      // Append prefill output KV into the generation cache. The prefill input
-      // cache remains separate because its row lengths differ from generation.
-      append_outputs_to_kv_cache(outputs, this->prefill_output_kv_bindings,
-                                 kv_len, chunk_len, context_size,
-                                 prefill_graph);
-
-      kv_len += chunk_len;
+    } else {
+      fill_attention_mask_with_length(context_size, sliding_window, chunk_len,
+                                      sliding_attention_mask);
+      fill_attention_mask_with_prev_length(context_size, sliding_window, kv_len,
+                                           sliding_attention_mask);
     }
+
+    std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
+    std::fill_n(prefill_position_ids_sin, context_size * pos_dim, 32768);
+    std::fill_n(prefill_swa_position_ids_cos, context_size * pos_dim, 65535);
+    std::fill_n(prefill_swa_position_ids_sin, context_size * pos_dim, 32768);
+
+    if (kv_len + chunk_len > rope_cache_seq_len) {
+      throw std::runtime_error("Prefill position is out of rope cache");
+    }
+
+    auto pos_ids_offset = kv_len * pos_dim;
+    std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset,
+                chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset,
+                chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_cos,
+                swa_position_ids_cos + pos_ids_offset,
+                chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_sin,
+                swa_position_ids_sin + pos_ids_offset,
+                chunk_len * pos_dim * sizeof(uint16_t));
+
+    auto outputs = prefill_model->inference(1, prefill_inputs);
+    // Append prefill output KV into the shared prefill/generation cache.
+    append_outputs_to_kv_cache(outputs, this->prefill_output_kv_bindings,
+                               kv_len, chunk_len, context_size, prefill_graph);
+
+    kv_len += chunk_len;
   }
 
   auto start = std::chrono::system_clock::now();

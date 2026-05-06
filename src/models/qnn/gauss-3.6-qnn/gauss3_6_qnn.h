@@ -12,6 +12,8 @@
 
 #include "quick_dot_ai_qnn.h"
 
+#include <cstdint>
+
 namespace causallm {
 
 /**
@@ -43,8 +45,6 @@ public:
            bool log_output = true) override;
 
 private:
-  void reset_prefill_kv_cache_inputs();
-
   // Input/output tensors
   uint16_t *attention_mask;
   uint16_t *sliding_attention_mask;
@@ -70,12 +70,10 @@ private:
   // KV cache variables
   int kv_len;
   
-  std::vector<uint16_t *> kvs;
+  std::vector<uint8_t *> kvs;
   std::vector<int> kv_sizes;
-  std::vector<uint16_t *> fresh_kvs;
+  std::vector<uint8_t *> fresh_kvs;
   std::vector<int> kv_row_lengths;
-  std::vector<uint16_t *> prefill_kvs;
-  std::vector<int> prefill_kv_sizes;
 
   struct KvOutputBinding {
     int output_index;
