@@ -30,7 +30,7 @@ public:
       setupParameters(cfg, generation_cfg, nntr_cfg);
     }
 
-  virtual ~Gemma4_E2B_QNN() = default;
+  virtual ~Gemma4_E2B_QNN() override;
 
   void initialize();
 
@@ -42,6 +42,29 @@ public:
 
 private:
   // Input/output tensors
+  int ple_fd_ = -1;
+  const uint8_t *ple_mmap_ = nullptr;
+  size_t ple_file_size_ = 0;
+  float ple_scale_=1.0f;
+  int ple_offset_ = 0;
+  size_t ple_row_elems_ = 0;
+  size_t ple_row_bytes_ = 0;
+  size_t ple_layers_= 0;
+  size_t ple_per_layer_ = 0;
+
+  std::vector<uint16_t*> prefill_per_layer_dst_;
+  std::vector<uint16_t*> generation_per_layer_dst_;
+
+  std::vector<float> prefill_per_layer_scale_;
+  std::vector<int> prefill_per_layer_offset_;
+  std::vector<float> generation_per_layer_scale_;
+  std::vector<int> generation_per_layer_offset_;
+
+  void open_ple_file_();
+  void close_ple_file_();
+  void fill_prefill_ple_chunk_(const std::vector<int> &tokens, int chunk_idx, int chunk_len);
+  void fill_generation_ple_(int token_id);
+
   uint16_t *attention_mask;
   uint16_t *sliding_attention_mask;
   uint16_t *generation_attention_mask;
@@ -65,6 +88,8 @@ private:
 
   // KV cache variables
   std::vector<uint16_t *> kvs;
+  std::vector<uint16_t *> per_layer_embedding;
+  std::vector<int> per_layer_embedding_size;    
   std::vector<int> kv_sizes;
   std::vector<uint16_t *> fresh_kvs;
   std::vector<int> kv_row_lengths;
