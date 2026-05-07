@@ -123,6 +123,7 @@ protected:
   std::string embedding_path;
   std::string binary_config_path;
   std::vector<std::string> graphs_to_use;
+  std::string last_output_;
 
   // config
   int vocab_size;

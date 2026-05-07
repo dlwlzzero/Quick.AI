@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * @file   gemma4_e2b_qnn.cpp
- * @brief  QNN model implementation with self-registration
- * @note   This model auto-registers with the CausalLM Factory via
- * __attribute__((constructor)) when linked or loaded.
- *
- *         No modification to nntrainer's main.cpp is needed.
+ * @brief  QNN model implementation for Gemma 4 E2B with PLE.
+ *         Follows Gauss 3.6 KV-cache pattern; PLE handling layered on top.
  */
 
 #include "gemma4_e2b_qnn.h"
@@ -26,24 +23,87 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
-#include <utility>
-#include "json.hpp"
-#include <fstream>
 #include <map>
-#include <algorithm>
+#include <unordered_map>
+#include <utility>
+
+#include "json.hpp"
 
 using namespace causallm;
 
-namespace
-{
+// =====================================================================
+// Anonymous namespace helpers
+// =====================================================================
+namespace {
 
-// LUT (lut_scale, lut_offset)
-// QNN consumer (out_scale, out_offset) convert UINT16
-//   f      = (q4bit + lut_offset) * lut_scale
-//   q16bit = round(f / out_scale - out_offset)
+bool starts_with(const std::string &v, const std::string &p) {
+  return v.compare(0, p.size(), p) == 0;
+}
+
+bool is_absolute_path(const std::string &path) {
+  return !path.empty() && path[0] == '/';
+}
+
+std::string dirname(const std::string &path) {
+  auto pos = path.find_last_of('/');
+  return (pos == std::string::npos) ? std::string() : path.substr(0, pos);
+}
+
+std::string rebase_relative_to_model_file(const std::string &path,
+                                          const std::string &model_file) {
+  if (path.empty() || is_absolute_path(path)) return path;
+  auto base = dirname(model_file);
+  if (base.empty()) return path;
+  return base + "/" + path;
+}
+
+int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
+                                   const std::string &name) {
+  for (size_t i = 0; i < tensor_infos.size(); ++i) {
+    if (tensor_infos[i].first == name) return (int)i;
+  }
+  return -1;
+}
+
+std::string kv_output_to_input_name(const std::string &out_name) {
+  if (out_name.size() >= 4 &&
+      out_name.compare(out_name.size() - 4, 4, "_out") == 0) {
+    return out_name.substr(0, out_name.size() - 4) + "_in";
+  }
+  return out_name;
+}
+
+// Window copy used by sync_generation_kv_cache_to_prefill().
+void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
+                          const uint8_t *src, int src_row_length,
+                          int history_length, bool is_key, int num_columns) {
+  if (!dest || !src || history_length <= 0 ||
+      dest_row_length <= 0 || src_row_length <= 0) return;
+  const int available  = std::min(history_length, src_row_length);
+  const int copy_len   = std::min(available, dest_row_length);
+  const int src_start  = available - copy_len;
+  const bool tail      = (history_length >= src_row_length) &&
+                         (dest_row_length > copy_len);
+  const int dest_start = tail ? dest_row_length - copy_len : 0;
+
+  if (is_key) {
+    for (int col = 0; col < num_columns; ++col) {
+      std::memcpy(dest + col * dest_row_length + dest_start,
+                  src + col * src_row_length + src_start, copy_len);
+    }
+  } else {
+    std::memcpy(dest + dest_start * num_columns,
+                src + src_start * num_columns,
+                copy_len * num_columns);
+  }
+}
+
+// PLE 4-bit packed → uint16 (QNN consumer space) two-step requant.
 inline void dequant_nibbles_requant_u16(const uint8_t *packed, size_t elems,
                                         float lut_scale, int lut_offset,
                                         float out_scale, int out_offset,
@@ -63,286 +123,189 @@ inline void dequant_nibbles_requant_u16(const uint8_t *packed, size_t elems,
   if (elems & 1) dst[2 * whole] = requant(packed[whole] & 0x0F);
 }
 
-
-bool
-is_absolute_path (const std::string &path)
-{
-  return !path.empty () && path[0] == '/';
-}
-
-std::string dirname(const std::string &path) {
-  auto pos = path.find_last_of('/');
-  if (pos == std::string::npos) {
-    return "";
-  }
-  return path.substr(0, pos);
-}
-
-std::string rebase_relative_to_model_file(const std::string &path,
-                                          const std::string &model_file) {
-  if (path.empty() || is_absolute_path(path)) {
-    return path;
-  }
-
-  auto base_dir = dirname(model_file);
-  if (base_dir.empty()) {
-    return path;
-  }
-  return base_dir + "/" + path;
-}
-
 } // namespace
 
-/**
- * @brief Auto-registration via constructor attribute
- *
- * This function runs automatically when the shared library is loaded
- * (before main()). It registers all custom models with the CausalLM Factory.
- *
- */
+// =====================================================================
+// Auto-registration
+// =====================================================================
 __attribute__((constructor)) static void register_custom_models() {
   causallm::Factory::Instance().registerModel(
-      "Gemma4_E2B_QNN", [](causallm::json cfg, causallm::json generation_cfg,
-                          causallm::json nntr_cfg) {
-        return std::make_unique<causallm::Gemma4_E2B_QNN>(cfg, generation_cfg,
-                                                        nntr_cfg);
+      "Gemma4_E2B_QNN",
+      [](causallm::json cfg, causallm::json generation_cfg,
+         causallm::json nntr_cfg) {
+        return std::make_unique<causallm::Gemma4_E2B_QNN>(
+            cfg, generation_cfg, nntr_cfg);
       });
 }
 
-static void copy_ple_inputs_from_file(
-    const std::string &ple_file_name,
-    const std::vector<std::pair<const GraphInfo *,
-                                std::vector<ml::train::TensorDim::IO_TensorType> *>>
-        &targets) {
-  if (ple_file_name.empty()) {
-    return;
-  }
+// =====================================================================
+// PLE methods
+// =====================================================================
+void Gemma4_E2B_QNN::open_ple_file_() {
+  if (ple_file_name.empty()) return;
 
-  int fd = open(ple_file_name.c_str(), O_RDONLY);
-  if (fd < 0) {
-    throw std::runtime_error("Failed to open ple_file_name: " + ple_file_name);
-  }
-
-  struct stat st;
-  if (fstat(fd, &st) < 0) {
-    close(fd);
-    throw std::runtime_error("Failed to stat ple_file_name: " + ple_file_name);
-  }
-
-  size_t file_size = st.st_size;
-  void *mapped = mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  if (mapped == MAP_FAILED) {
-    close(fd);
-    throw std::runtime_error("Failed to mmap ple_file_name: " + ple_file_name);
-  }
-
-  auto *data_ptr = static_cast<uint8_t *>(mapped);
-  size_t remaining = file_size;
-
-  for (const auto &[graph_info, inputs] : targets) {
-    std::cout << "ple : "<< ple_file_name<< " " <<graph_info->raw_inputs.size() << std::endl;
-    for (size_t idx = 0; idx < graph_info->raw_inputs.size(); idx++) {
-      const auto &[name, info] = graph_info->raw_inputs[idx];
-      if (name.find("per_layer_inputs_") != 0) {
-        continue;
-      }
-
-      int size = GraphParser::get_tensor_size(info);
-      if (remaining < static_cast<size_t>(size)) {
-        munmap(mapped, file_size);
-        close(fd);
-        throw std::runtime_error("PLE file is smaller than per_layer_inputs");
-      }
-
-      std::memcpy(std::get<uint16_t *>((*inputs)[idx]), data_ptr, size);
-      data_ptr += size;
-      remaining -= size;
-    }
-  }
-
-  munmap(mapped, file_size);
-  close(fd);
-}
-
-void Gemma4_E2B_QNN::open_ple_file_(){
-  if(ple_file_name.empty())return;
   std::ifstream mf(ple_file_name);
-  if(!mf.is_open())
-    throw std::runtime_error("Failed to open PLE mainfest: " + ple_file_name);
-  json j; mf >>j;
+  if (!mf.is_open())
+    throw std::runtime_error("Failed to open PLE manifest: " + ple_file_name);
+  json j; mf >> j;
 
-  const std::string lut_rel = j.at("lut-path").get<std::string>();
-  const int row_elems = j.at("size").get<int>();
-  const std::string datatype= j.value("datatype", std::string("ufixed8"));
-  const auto &qp = j.at("quant-param");
+  const std::string lut_rel  = j.at("lut-path").get<std::string>();
+  const int row_elems        = j.at("size").get<int>();
+  const std::string datatype = j.value("datatype", std::string("ufixed8"));
+  const auto &qp             = j.at("quant-param");
 
-  if(datatype!= "ufixed8")
-    throw std::runtime_error("PLE: only ufixed8 suppored, got " + datatype);
+  if (datatype != "ufixed8")
+    throw std::runtime_error("PLE: only ufixed8 supported, got " + datatype);
 
-  ple_scale_ = qp.at("scale").get<float>();
-  ple_offset_= qp.at("offset").get<int>();
+  ple_scale_     = qp.at("scale").get<float>();
+  ple_offset_    = qp.at("offset").get<int>();
   ple_row_elems_ = static_cast<size_t>(row_elems);
-  ple_row_bytes_ = (ple_row_elems_ + 1)/2;
+  ple_row_bytes_ = (ple_row_elems_ + 1) / 2;
   ple_per_layer_ = 256;
-  ple_layers_ = ple_row_elems_ / ple_per_layer_;
+  ple_layers_    = ple_row_elems_ / ple_per_layer_;
 
-  if(ple_layers_ * ple_per_layer_ != ple_row_elems_)
+  if (ple_layers_ * ple_per_layer_ != ple_row_elems_)
     throw std::runtime_error("PLE 'size' not divisible by 256");
-
-  if(generation_per_layer_dst_.size() > ple_layers_)
+  if (generation_per_layer_dst_.size() > ple_layers_)
     throw std::runtime_error("PLE layer count too small");
 
   std::string lut_abs = rebase_relative_to_model_file(lut_rel, ple_file_name);
 
   ple_fd_ = open(lut_abs.c_str(), O_RDONLY);
-  if(ple_fd_<0) throw std::runtime_error("open PLE bin: "+lut_abs);
+  if (ple_fd_ < 0)
+    throw std::runtime_error("open PLE bin: " + lut_abs);
   struct stat st;
-  if(fstat(ple_fd_, &st)<0){
-    ::close(ple_fd_);
-    ple_fd_ = -1;
-    throw std::runtime_error("stat PLE bin: "+lut_abs);
+  if (fstat(ple_fd_, &st) < 0) {
+    ::close(ple_fd_); ple_fd_ = -1;
+    throw std::runtime_error("stat PLE bin: " + lut_abs);
   }
   ple_file_size_ = static_cast<size_t>(st.st_size);
-  if(ple_file_size_ % ple_row_bytes_ !=0){
-    ::close(ple_fd_); ple_fd_=-1;
+  if (ple_file_size_ % ple_row_bytes_ != 0) {
+    ::close(ple_fd_); ple_fd_ = -1;
     throw std::runtime_error("PLE bin size not multiple of row bytes");
   }
 
   void *m = mmap(nullptr, ple_file_size_, PROT_READ, MAP_PRIVATE, ple_fd_, 0);
-  if(m==MAP_FAILED){
-    ::close(ple_fd_);ple_fd_=-1;
-    throw std::runtime_error("mmap PLE bin: "+ lut_abs);
+  if (m == MAP_FAILED) {
+    ::close(ple_fd_); ple_fd_ = -1;
+    throw std::runtime_error("mmap PLE bin: " + lut_abs);
   }
-  ple_mmap_ = static_cast<const uint8_t*>(m);
+  ple_mmap_ = static_cast<const uint8_t *>(m);
 #ifdef POSIX_MADV_RANDOM
-  posix_madvise((void*)ple_mmap_, ple_file_size_, POSIX_MADV_RANDOM);
+  posix_madvise((void *)ple_mmap_, ple_file_size_, POSIX_MADV_RANDOM);
 #endif
-  std::cout << "[PLE] mmaped "<<lut_abs
-	    <<" rows="<<(ple_file_size_ / ple_row_bytes_)
-	    <<" scale = "<<ple_scale_ << " offset= "<<ple_offset_<<std::endl;
 }
 
-void
-Gemma4_E2B_QNN::close_ple_file_()
-{
-  if (ple_mmap_) {
-    munmap ((void *)ple_mmap_, ple_file_size_);
-    ple_mmap_ = nullptr;
-  }
-  if (ple_fd_ >= 0) {
-    ::close (ple_fd_);
-    ple_fd_ = -1;
-  }
+void Gemma4_E2B_QNN::close_ple_file_() {
+  if (ple_mmap_) { munmap((void *)ple_mmap_, ple_file_size_); ple_mmap_ = nullptr; }
+  if (ple_fd_ >= 0) { ::close(ple_fd_); ple_fd_ = -1; }
 }
 
-void
-Gemma4_E2B_QNN::fill_prefill_ple_chunk_ (
-    const std::vector<int> &tokens, int chunk_idx, int chunk_len)
-{
-  if (!ple_mmap_)
-    return;
-  const size_t L_pre = prefill_per_layer_dst_.size (); // 14
-  const size_t per_layer_elems = ple_per_layer_; // 256
-  const size_t per_layer_bytes = per_layer_elems / 2; // 128
-  const int chunk_size_tokens = context_size; // 256
+void Gemma4_E2B_QNN::fill_prefill_ple_chunk_(const std::vector<int> &tokens,
+                                             int chunk_idx, int chunk_len) {
+  if (!ple_mmap_) return;
+  const size_t L_pre = prefill_per_layer_dst_.size();
+  const size_t per_layer_elems = ple_per_layer_;
+  const size_t per_layer_bytes = per_layer_elems / 2;
+  const int    chunk_size_tokens = context_size;
 
   for (int t = 0; t < chunk_size_tokens; ++t) {
-    const int abs_idx = chunk_idx * chunk_size_tokens + t;
+    const int abs_idx  = chunk_idx * chunk_size_tokens + t;
     const int token_id = (t < chunk_len) ? tokens[abs_idx] : padding_token;
     const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
     for (size_t l = 0; l < L_pre; ++l) {
       uint16_t *dst = prefill_per_layer_dst_[l] + (size_t)t * per_layer_elems;
-      dequant_nibbles_requant_u16 (row + l * per_layer_bytes, per_layer_elems, ple_scale_,
-          ple_offset_, prefill_per_layer_scale_[l], prefill_per_layer_offset_[l], dst);
+      dequant_nibbles_requant_u16(row + l * per_layer_bytes, per_layer_elems,
+                                  ple_scale_, ple_offset_,
+                                  prefill_per_layer_scale_[l],
+                                  prefill_per_layer_offset_[l], dst);
     }
   }
-    static bool ple_dbg_done = false;
-    if (!ple_dbg_done && chunk_idx == 0) {
-      ple_dbg_done = true;
-
-      const int abs_idx = 0;
-      const int token_id = tokens[abs_idx]; // 실제 사용된 첫 토큰 id
-      const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
-
-      std::cout << "[PLE-DBG] token_id=" << token_id
-                << " row offset=" << (size_t)token_id * ple_row_bytes_
-                << " ple_row_bytes_=" << ple_row_bytes_ << "\n";
-
-      std::cout << "[PLE-DBG] L0 raw bytes [0..15]: ";
-      for (int i = 0; i < 16; ++i)
-        std::cout << std::hex << (int)row[i] << " ";
-      std::cout << std::dec << "\n";
-
-      std::cout << "[PLE-DBG] L0 nibbles  [0..31]: ";
-      for (int i = 0; i < 16; ++i) {
-        std::cout << (int)(row[i] & 0x0F) << " " << (int)((row[i] >> 4) & 0x0F) << " ";
-      }
-      std::cout << "\n";
-
-      std::cout << "[PLE-DBG] L0 dst[0..31]: ";
-      for (int i = 0; i < 32; ++i)
-        std::cout << prefill_per_layer_dst_[0][i] << " ";
-      std::cout << "\n";
-
-      // 다른 layer 도 확인 (L13 = prefill 의 마지막 layer)
-      std::cout << "[PLE-DBG] L13 dst[0..7]: ";
-      for (int i = 0; i < 8; ++i)
-        std::cout << prefill_per_layer_dst_[13][i] << " ";
-      std::cout << "\n";
-    }
 }
 
-void
-Gemma4_E2B_QNN::fill_generation_ple_(int token_id)
-{
-  if (!ple_mmap_)
-    return;
-  const size_t L_gen = generation_per_layer_dst_.size (); // 35
-  const size_t per_layer_elems = ple_per_layer_; // 256
-  const size_t per_layer_bytes = per_layer_elems / 2; // 128
+void Gemma4_E2B_QNN::fill_generation_ple_(int token_id) {
+  if (!ple_mmap_) return;
+  const size_t L_gen = generation_per_layer_dst_.size();
+  const size_t per_layer_elems = ple_per_layer_;
+  const size_t per_layer_bytes = per_layer_elems / 2;
   const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
+
   for (size_t l = 0; l < L_gen; ++l) {
-    dequant_nibbles_requant_u16 (row + l * per_layer_bytes, per_layer_elems,
-        ple_scale_, ple_offset_, generation_per_layer_scale_[l],
-        generation_per_layer_offset_[l], generation_per_layer_dst_[l]);
+    dequant_nibbles_requant_u16(row + l * per_layer_bytes, per_layer_elems,
+                                ple_scale_, ple_offset_,
+                                generation_per_layer_scale_[l],
+                                generation_per_layer_offset_[l],
+                                generation_per_layer_dst_[l]);
   }
 }
 
-
-Gemma4_E2B_QNN::~Gemma4_E2B_QNN(){
+// =====================================================================
+// Destructor
+// =====================================================================
+Gemma4_E2B_QNN::~Gemma4_E2B_QNN() {
   close_ple_file_();
+  this->prefill_kv_zero_byte_.clear();
 }
 
-void causallm::Gemma4_E2B_QNN::initialize() {
+// =====================================================================
+// KV cache helpers
+// =====================================================================
+void Gemma4_E2B_QNN::initialize_kv_cache() {
+  kv_len = 0;
+  conversation_started_ = false;
+  for (int i = 0; i < (int)kvs.size(); ++i) {
+    std::memcpy(kvs[i], fresh_kvs[i], kv_sizes[i]);
+  }
+  reset_prefill_kv_cache_inputs();
+}
+
+void Gemma4_E2B_QNN::reset_prefill_kv_cache_inputs() {
+  for (int i = 0; i < (int)prefill_kvs.size(); ++i) {
+    std::fill_n(prefill_kvs[i], prefill_kv_sizes[i],
+		prefill_kv_zero_byte_[i]);
+  }
+}
+
+void Gemma4_E2B_QNN::sync_generation_kv_cache_to_prefill() {
+  reset_prefill_kv_cache_inputs();
+  if (kv_len <= 0) return;
+
+#pragma omp parallel for
+  for (int i = 0; i < (int)prefill_kvs.size(); ++i) {
+    int gen_idx = prefill_to_generation_kv_indices[i];
+    int gen_layer = gen_idx / 2; // Gemma 4: 2 KV per layer
+    if (gen_idx < 0 || gen_idx >= (int)kvs.size() ||
+        gen_layer < 0 || gen_layer >= (int)kv_row_lengths.size())
+      continue;
+
+    copy_kv_cache_window(prefill_kvs[i], prefill_kv_row_lengths[i],
+                         (uint8_t *)kvs[gen_idx],
+                         kv_row_lengths[gen_layer], kv_len,
+                         prefill_kv_is_key[i] != 0, kv_columns[gen_layer]);
+  }
+}
+
+// =====================================================================
+// initialize()
+// =====================================================================
+void Gemma4_E2B_QNN::initialize() {
   Quick_Dot_AI_QNN::initialize();
   LOGD("Quick_Dot_AI_QNN::initialize() done");
 
-  std::string prefill_graph = graphs_to_use[0];
+  std::string prefill_graph    = graphs_to_use[0];
   std::string generation_graph = graphs_to_use[1];
 
-  LOGD("----------------------- initialize() %s, %s", prefill_graph.c_str(),
-       generation_graph.c_str());
-  auto &prefill_graph_info = models[prefill_graph].graph_info;
+  auto &prefill_graph_info    = models[prefill_graph].graph_info;
   auto &generation_graph_info = models[generation_graph].graph_info;
-  auto &prefill_inputs = models[prefill_graph].model_inputs;
-  auto &generation_inputs = models[generation_graph].model_inputs;
+  auto &prefill_inputs        = models[prefill_graph].model_inputs;
+  auto &generation_inputs     = models[generation_graph].model_inputs;
 
-  std::cout << "prefill_inputs.size : "<<prefill_inputs.size()<<std::endl;
-  std::cout << "generation_inputs.size : "<<generation_inputs.size()<<std::endl;
+  if (prefill_inputs.size() != prefill_graph_info.raw_inputs.size())
+    throw std::runtime_error("prefill input count mismatch");
+  if (generation_inputs.size() != generation_graph_info.raw_inputs.size())
+    throw std::runtime_error("generation input count mismatch");
 
-  if (prefill_inputs.size() != prefill_graph_info.raw_inputs.size()) {
-    throw std::runtime_error("Gemma4 prefill input count mismatch: graph=" +
-                             std::to_string(prefill_graph_info.raw_inputs.size()) +
-                             ", model=" +
-                             std::to_string(prefill_inputs.size()));
-  }
-  if (generation_inputs.size() != generation_graph_info.raw_inputs.size()) {
-    throw std::runtime_error(
-        "Gemma4 generation input count mismatch: graph=" +
-        std::to_string(generation_graph_info.raw_inputs.size()) + ", model=" +
-        std::to_string(generation_inputs.size()));
-  }
-
+  // ── Mask / RoPE element counts ──
   prefill_attention_mask_elements =
       GraphParser::get_named_tensor_elements_or_throw(
           prefill_graph_info.raw_inputs, "attention_mask");
@@ -364,89 +327,63 @@ void causallm::Gemma4_E2B_QNN::initialize() {
       GraphParser::get_named_tensor_elements_or_throw(
           generation_graph_info.raw_inputs, "sliding_attention_mask");
 
-  std::cout <<prefill_attention_mask_elements << " "<< prefill_attention_mask_columns << " " <<  prefill_sliding_attention_mask_elements << " "<<prefill_sliding_attention_mask_columns << " " << generation_attention_mask_elements << " " << generation_sliding_attention_mask_elements << std::endl;
-  
-  generation_full_kv_past_length = generation_attention_mask_elements - 1;
-  generation_sliding_kv_past_length =
-      generation_sliding_attention_mask_elements - 1;
+  generation_full_kv_past_length    = generation_attention_mask_elements - 1;
+  generation_sliding_kv_past_length = generation_sliding_attention_mask_elements - 1;
 
-  pos_dim = GraphParser::get_tensor_info_or_throw(prefill_graph_info.raw_inputs,
-                                                 "position_ids_cos")
-                .dimensions.back();
-  swa_pos_dim =
-      GraphParser::get_tensor_info_or_throw(prefill_graph_info.raw_inputs,
-                                            "swa_position_ids_cos")
-          .dimensions.back();
-  
+  pos_dim = GraphParser::get_tensor_info_or_throw(
+      prefill_graph_info.raw_inputs, "position_ids_cos").dimensions.back();
+  swa_pos_dim = GraphParser::get_tensor_info_or_throw(
+      prefill_graph_info.raw_inputs, "swa_position_ids_cos").dimensions.back();
+
   rope_cache_seq_len = std::max(max_seq_len, generation_attention_mask_elements);
-  std::cout <<"max_seq_len : "<< max_seq_len<< " " << generation_attention_mask_elements<<std::endl;
 
-  int prefill_input_idx
-      = GraphParser::find_tensor_index (prefill_graph_info.raw_inputs, "input_embeds");
-
-  int generation_input_idx = GraphParser::find_tensor_index (
+  // ── Bind input tensor pointers ──
+  int prefill_input_idx    = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "input_embeds");
+  int generation_input_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "input_embeds");
-  
-  LOGD("----------------------- prefill_inputs_idx : %d generation_input_idx :%d ", prefill_input_idx, generation_input_idx);
-  
-  input_sample = std::get<float *>(prefill_inputs[prefill_input_idx]);
+  input_sample      = std::get<float *>(prefill_inputs[prefill_input_idx]);
   generation_sample = std::get<float *>(generation_inputs[generation_input_idx]);
 
-  LOGD("----------------------- %d %f ",input_sample[0], generation_sample[0]);
+  attention_mask = std::get<uint16_t *>(prefill_inputs[
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs,
+                                     "attention_mask")]);
+  sliding_attention_mask = std::get<uint16_t *>(prefill_inputs[
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs,
+                                     "sliding_attention_mask")]);
+  generation_attention_mask = std::get<uint16_t *>(generation_inputs[
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
+                                     "attention_mask")]);
+  generation_sliding_attention_mask = std::get<uint16_t *>(generation_inputs[
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
+                                     "sliding_attention_mask")]);
 
-  int prefill_attn_mask_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "attention_mask");
-  int prefill_sliding_attn_mask_idx = GraphParser::find_tensor_index(
-      prefill_graph_info.raw_inputs, "sliding_attention_mask");
-  int generation_attn_mask_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "attention_mask");
-  int generation_sliding_attn_mask_idx = GraphParser::find_tensor_index(
-      generation_graph_info.raw_inputs, "sliding_attention_mask");
+  prefill_position_ids_cos = std::get<uint16_t *>(prefill_inputs[
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs,
+                                     "position_ids_cos")]);
+  prefill_position_ids_sin = std::get<uint16_t *>(prefill_inputs[
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs,
+                                     "position_ids_sin")]);
+  generation_position_ids_cos = std::get<uint16_t *>(generation_inputs[
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
+                                     "position_ids_cos")]);
+  generation_position_ids_sin = std::get<uint16_t *>(generation_inputs[
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
+                                     "position_ids_sin")]);
+  prefill_swa_position_ids_cos = std::get<uint16_t *>(prefill_inputs[
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs,
+                                     "swa_position_ids_cos")]);
+  prefill_swa_position_ids_sin = std::get<uint16_t *>(prefill_inputs[
+      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs,
+                                     "swa_position_ids_sin")]);
+  generation_swa_position_ids_cos = std::get<uint16_t *>(generation_inputs[
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
+                                     "swa_position_ids_cos")]);
+  generation_swa_position_ids_sin = std::get<uint16_t *>(generation_inputs[
+      GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
+                                     "swa_position_ids_sin")]);
 
-  attention_mask = std::get<uint16_t *>(prefill_inputs[prefill_attn_mask_idx]);
-  sliding_attention_mask =
-      std::get<uint16_t *>(prefill_inputs[prefill_sliding_attn_mask_idx]);
-  generation_attention_mask =
-      std::get<uint16_t *>(generation_inputs[generation_attn_mask_idx]);
-  generation_sliding_attention_mask =
-      std::get<uint16_t *>(generation_inputs[generation_sliding_attn_mask_idx]);
-
-  int prefill_pos_cos_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_cos");
-  int prefill_pos_sin_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_sin");
-  int generation_pos_cos_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_cos");
-  int generation_pos_sin_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_sin");
-
-  prefill_position_ids_cos =
-      std::get<uint16_t *>(prefill_inputs[prefill_pos_cos_idx]);
-  prefill_position_ids_sin =
-      std::get<uint16_t *>(prefill_inputs[prefill_pos_sin_idx]);
-  generation_position_ids_cos =
-      std::get<uint16_t *>(generation_inputs[generation_pos_cos_idx]);
-  generation_position_ids_sin =
-      std::get<uint16_t *>(generation_inputs[generation_pos_sin_idx]);
-
-  int prefill_swa_pos_cos_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_cos");
-  int prefill_swa_pos_sin_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_sin");
-  int generation_swa_pos_cos_idx = GraphParser::find_tensor_index(
-      generation_graph_info.raw_inputs, "swa_position_ids_cos");
-  int generation_swa_pos_sin_idx = GraphParser::find_tensor_index(
-      generation_graph_info.raw_inputs, "swa_position_ids_sin");
-
-  prefill_swa_position_ids_cos =
-      std::get<uint16_t *>(prefill_inputs[prefill_swa_pos_cos_idx]);
-  prefill_swa_position_ids_sin =
-      std::get<uint16_t *>(prefill_inputs[prefill_swa_pos_sin_idx]);
-  generation_swa_position_ids_cos =
-      std::get<uint16_t *>(generation_inputs[generation_swa_pos_cos_idx]);
-  generation_swa_position_ids_sin =
-      std::get<uint16_t *>(generation_inputs[generation_swa_pos_sin_idx]);
-
+  // ── RoPE cache ──
   std::tuple<uint16_t *, uint16_t *> cos_sin_tuple =
       get_cos_sin(rope_cache_seq_len, pos_dim, rope_theta);
   position_ids_cos = std::get<0>(cos_sin_tuple);
@@ -458,493 +395,435 @@ void causallm::Gemma4_E2B_QNN::initialize() {
       get_cos_sin(rope_cache_seq_len, swa_pos_dim, local_rope_theta);
   swa_position_ids_cos = std::get<0>(swa_cos_sin_tuple);
   swa_position_ids_sin = std::get<1>(swa_cos_sin_tuple);
-  allocated_ptrs_.insert (swa_position_ids_cos);
-  allocated_ptrs_.insert (swa_position_ids_sin);
+  allocated_ptrs_.insert(swa_position_ids_cos);
+  allocated_ptrs_.insert(swa_position_ids_sin);
 
-  auto collect_per_layer
-      = [] (const GraphInfo &gi, std::vector<ml::train::TensorDim::IO_TensorType> &inputs,
-            std::vector<uint16_t *> &dsts, std::vector<float> &scales,
-            std::vector<int> &offsets) {
-          std::map<int, std::tuple<uint16_t *, float, int>> by_index;
-          for (size_t idx = 0; idx < gi.raw_inputs.size (); ++idx) {
-            const auto &[name, info] = gi.raw_inputs[idx];
-            const std::string prefix = "per_layer_inputs_";
-            if (name.rfind (prefix, 0) != 0)
-              continue;
-            int n = std::stoi (name.substr (prefix.size ()));
-            by_index[n] = std::make_tuple (
-                std::get<uint16_t *> (inputs[idx]), info.scale, info.offset);
-          }
-          dsts.clear ();
-          scales.clear ();
-          offsets.clear ();
-          for (auto &kv : by_index) {
-            dsts.push_back (std::get<0> (kv.second));
-            scales.push_back (std::get<1> (kv.second));
-            offsets.push_back (std::get<2> (kv.second));
-          }
-        };
+  // ── PLE per-layer dst + scale/offset collection ──
+  auto collect_per_layer = [](
+      const GraphInfo &gi,
+      std::vector<ml::train::TensorDim::IO_TensorType> &inputs,
+      std::vector<uint16_t *> &dsts,
+      std::vector<float> &scales,
+      std::vector<int> &offsets) {
+    std::map<int, std::tuple<uint16_t *, float, int>> by_index;
+    for (size_t idx = 0; idx < gi.raw_inputs.size(); ++idx) {
+      const auto &[name, info] = gi.raw_inputs[idx];
+      const std::string prefix = "per_layer_inputs_";
+      if (name.rfind(prefix, 0) != 0) continue;
+      int n = std::stoi(name.substr(prefix.size()));
+      by_index[n] = std::make_tuple(
+          std::get<uint16_t *>(inputs[idx]), info.scale, info.offset);
+    }
+    dsts.clear(); scales.clear(); offsets.clear();
+    for (auto &kv : by_index) {
+      dsts.push_back(std::get<0>(kv.second));
+      scales.push_back(std::get<1>(kv.second));
+      offsets.push_back(std::get<2>(kv.second));
+    }
+  };
+  collect_per_layer(prefill_graph_info, prefill_inputs,
+                    prefill_per_layer_dst_, prefill_per_layer_scale_,
+                    prefill_per_layer_offset_);
+  collect_per_layer(generation_graph_info, generation_inputs,
+                    generation_per_layer_dst_, generation_per_layer_scale_,
+                    generation_per_layer_offset_);
 
-  collect_per_layer (prefill_graph_info, prefill_inputs, prefill_per_layer_dst_,
-      prefill_per_layer_scale_, prefill_per_layer_offset_);
-  collect_per_layer (generation_graph_info, generation_inputs, generation_per_layer_dst_,
-      generation_per_layer_scale_, generation_per_layer_offset_);
+  std::cout << "[PLE] prefill slots=" << prefill_per_layer_dst_.size()
+            << " generation slots=" << generation_per_layer_dst_.size()
+            << std::endl;
 
+  open_ple_file_();
 
-  std::cout << "[PLE] prefill slots=" << prefill_per_layer_dst_.size ()
-            << " generation slots=" << generation_per_layer_dst_.size () << std::endl;
+  // ── KV cache mapping (Gauss 3.6 pattern, 2 KV per layer) ──
+  this->kvs.clear();
+  this->fresh_kvs.clear();
+  this->kv_sizes.clear();
+  this->kv_row_lengths.clear();
+  this->kv_columns.clear();
+  this->prefill_kvs.clear();
+  this->prefill_kv_sizes.clear();
+  this->prefill_kv_row_lengths.clear();
+  this->prefill_to_generation_kv_indices.clear();
+  this->prefill_kv_is_key.clear();
+  this->prefill_output_kv_bindings.clear();
+  this->generation_output_kv_bindings.clear();
 
-  open_ple_file_ ();
+  std::unordered_map<std::string, int> generation_kv_index_by_name;
 
+  int kv_layer_count = 0;
+  while(true){
+    const std::string name ="past_key_"+std::to_string(kv_layer_count)+"_h0_in";
+    if(find_tensor_index_or_minus_one(generation_graph_info.raw_inputs, name)<0)
+      break;
+    kv_layer_count++;
+  }
 
-  // if (lora_path.empty ()) {
-  //   for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size (); idx++) {
-  //     const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-  //     if (name.find ("_lora_") != std::string::npos) {
-  //       int size = GraphParser::get_tensor_size (info);
-  //       auto *lora_ptr = std::get<uint16_t *> (generation_inputs[idx]);
-  //       std::fill_n (lora_ptr, size / sizeof (uint16_t), 32768);
-  //     }
-  //   }
-  // } else {
-  //   int fd = open (lora_path.c_str (), O_RDONLY);
-  //   if (fd < 0) {
-  //     throw std::runtime_error ("Failed to open lora_path: " + lora_path);
-  //   }
+  LOGD("KV layer count = %d (num_hidden_layers config = %d)", kv_layer_count, num_hidden_layers);
+  for(int layer=0; layer<kv_layer_count;++layer){
+    const std::vector<std::string> kv_names = {
+      "past_key_"+std::to_string(layer)+"_h0_in",
+      "past_value_"+std::to_string(layer)+"_h0_in",
+    };
 
-  //   struct stat st;
-  //   if (fstat (fd, &st) < 0) {
-  //     close (fd);
-  //     throw std::runtime_error ("Failed to stat lora_path: " + lora_path);
-  //   }
-  //   size_t file_size = st.st_size;
+    {
+      const auto &gen_key_info = GraphParser::get_tensor_info_or_throw(
+          generation_graph_info.raw_inputs, kv_names[0]);
+      this->kv_row_lengths.push_back(gen_key_info.dimensions.back());
+      this->kv_columns.push_back(gen_key_info.dimensions[2]);
+    }
 
-  //   void *mapped = mmap (nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  //   if (mapped == MAP_FAILED) {
-  //     close (fd);
-  //     throw std::runtime_error ("Failed to mmap lora_path: " + lora_path);
-  //   }
+    for (const auto &name : kv_names) {
+      int gen_idx = GraphParser::find_tensor_index (generation_graph_info.raw_inputs, name);
+      int pre_idx = find_tensor_index_or_minus_one (prefill_graph_info.raw_inputs, name);
+      const auto &gen_info = generation_graph_info.raw_inputs[gen_idx].second;
+      int size = GraphParser::get_tensor_size (gen_info);
 
-  //   uint8_t *data_ptr = static_cast<uint8_t *> (mapped);
+      // Layer-specific zero-point byte.
+      int zq = std::max (0, std::min (255, -gen_info.offset));
 
-  //   for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size (); idx++) {
-  //     const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-  //     if (name.find ("_lora_") != std::string::npos) {
-  //       int size = GraphParser::get_tensor_size (info);
-  //       memcpy (std::get<uint16_t *> (prefill_inputs[idx]), data_ptr, size);
-  //       data_ptr += size;
-  //     }
-  //   }
-  //   for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size (); idx++) {
-  //     const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-  //     if (name.find ("_lora_") != std::string::npos) {
-  //       int size = GraphParser::get_tensor_size (info);
-  //       memcpy (std::get<uint16_t *> (generation_inputs[idx]), data_ptr, size);
-  //       data_ptr += size;
-  //     }
-  //   }
-  //   munmap (mapped, file_size);
-  //   close (fd);
+      // ★ REUSE existing generation_inputs buffer (don't re-allocate).
+      auto *current_kv = std::get<uint8_t *> (generation_inputs[gen_idx]);
+      std::memset (current_kv, zq, size);
 
-  //   std::cout << "LoRA weights loaded from: " << lora_path << std::endl;
-  // }
-
-  this->fresh_kvs.clear ();
-  this->kvs.clear ();
-  this->kv_sizes.clear ();
-  this->kv_row_lengths.clear ();
-  this->kv_columns.clear ();
-
-  for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size (); idx++) {
-    const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-    if (name.find ("past_") == 0) {
-      auto *kv_ptr = std::get<uint8_t *> (generation_inputs[idx]);
-      int size = GraphParser::get_tensor_size (info);
-      size_t kv_input_index = this->kvs.size ();
-      this->kvs.push_back ((uint16_t *)kv_ptr);
-      this->kv_sizes.push_back (size);
-
-      if (kv_input_index % 2 == 0) {
-        this->kv_columns.push_back (info.dimensions[2]);
-        this->kv_row_lengths.push_back (info.dimensions.back ());
-      }
-
-      auto fresh_kv = (uint16_t *)get_zero_memory (size, 128 * 256 + 128);
+      // Separate fresh_kv to use as run-start reset state.
+      auto *fresh_kv = static_cast<uint8_t *> (tracked_allocate (size));
+      std::memset (fresh_kv, zq, size);
       allocated_ptrs_.insert (fresh_kv);
-      this->fresh_kvs.push_back (fresh_kv);
-    }
 
-    if (name.find ("per_layer") == 0) {
-      auto *per_layer_embedding_ptr = std::get<uint16_t *> (generation_inputs[idx]);
-      int size = GraphParser::get_tensor_size (info);
-      this->per_layer_embedding.push_back ((uint16_t *)per_layer_embedding_ptr);
-      this->per_layer_embedding_size.push_back (size);
-    }
-  }
+      int kv_input_index = (int)this->kvs.size ();
+      this->kvs.push_back ((uint16_t *)current_kv);
+      this->fresh_kvs.push_back ((uint16_t *)fresh_kv);
+      this->kv_sizes.push_back (size);
+      generation_kv_index_by_name[name] = kv_input_index;
 
+      if (pre_idx >= 0) {
+        const auto &pre_info = prefill_graph_info.raw_inputs[pre_idx].second;
+        const bool is_key = starts_with (name, "past_key_");
+        const int pre_row_length
+            = is_key ? pre_info.dimensions.back () :
+                       pre_info.dimensions[pre_info.dimensions.size () - 2];
 
-  int prefill_kv_outputs = 0;
-  for (const auto &[name, info] : prefill_graph_info.raw_outputs) {
-    if (name.find("past_") == 0) {
-      prefill_kv_outputs++;
-    }
-  }
-  int generation_kv_outputs = 0;
-  for (const auto &[name, info] : generation_graph_info.raw_outputs) {
-    if (name.find("past_") == 0) {
-      generation_kv_outputs++;
-    }
-  }
-  if ((int)this->kvs.size() != prefill_kv_outputs ||
-      (int)this->kvs.size() != generation_kv_outputs) {
-    throw std::runtime_error("Gemma4 KV tensor count mismatch: inputs=" +
-                             std::to_string(this->kvs.size()) +
-                             ", prefill_outputs=" +
-                             std::to_string(prefill_kv_outputs) +
-                             ", generation_outputs=" +
-                             std::to_string(generation_kv_outputs));
-  }
+        this->prefill_kvs.push_back (std::get<uint8_t *> (prefill_inputs[pre_idx]));
+        this->prefill_kv_sizes.push_back (GraphParser::get_tensor_size (pre_info));
+        this->prefill_kv_row_lengths.push_back (pre_row_length);
+        this->prefill_to_generation_kv_indices.push_back (kv_input_index);
+        this->prefill_kv_is_key.push_back (is_key ? 1 : 0);
 
-  for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-    const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-    if (name.find("past_") != 0) {
-      continue;
-    }
+        // Layer-specific zero point for prefill reset (replaces the 128 fill).
+        int pzq = std::max (0, std::min (255, -pre_info.offset));
+        this->prefill_kv_zero_byte_.push_back ((uint8_t)pzq);
 
-    int size = GraphParser::get_tensor_size(info);
-    if (info.data_type == "QNN_DATATYPE_UFIXED_POINT_8") {
-      std::fill_n(std::get<uint8_t *>(prefill_inputs[idx]), size, 128);
-    } else {
-      std::memset(std::get<uint16_t *>(prefill_inputs[idx]), 0, size);
+        // Initialize prefill buffer to its layer-specific zero point.
+        std::memset (std::get<uint8_t *> (prefill_inputs[pre_idx]), pzq,
+            GraphParser::get_tensor_size (pre_info));
+      }
     }
   }
 
-  const auto &logits_info = GraphParser::get_tensor_info_or_throw (
+  auto build_bindings = [&](const TensorInfoList &outs,
+                            const std::string &graph_name) {
+    std::vector<KvOutputBinding> bindings;
+    for (size_t idx = 0; idx < outs.size(); ++idx) {
+      const auto &name = outs[idx].first;
+      if (!starts_with(name, "past_")) continue;
+      auto in_name = kv_output_to_input_name(name);
+      auto it = generation_kv_index_by_name.find(in_name);
+      if (it == generation_kv_index_by_name.end())
+        throw std::runtime_error(graph_name +
+            " KV output has no matching generation input: " + name);
+      int kv_index = it->second;
+      bindings.push_back({(int)idx, kv_index, kv_index / 2,
+                          starts_with(name, "past_key_")});
+    }
+    return bindings;
+  };
+  prefill_output_kv_bindings    = build_bindings(prefill_graph_info.raw_outputs,
+                                                  prefill_graph);
+  generation_output_kv_bindings = build_bindings(generation_graph_info.raw_outputs,
+                                                  generation_graph);
+
+  LOGD("KV mapping: gen_inputs=%zu pre_inputs=%zu pre_outs=%zu gen_outs=%zu",
+       this->kvs.size(), this->prefill_kvs.size(),
+       this->prefill_output_kv_bindings.size(),
+       this->generation_output_kv_bindings.size());
+
+  // ── Logit dequant params (overrides setupParameters defaults) ──
+  const auto &logits_info = GraphParser::get_tensor_info_or_throw(
       generation_graph_info.raw_outputs, "logits");
-  logit_scale = logits_info.scale;
+  logit_scale  = logits_info.scale;
   logit_offset = logits_info.offset;
 
-  for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size (); idx++) {
-    const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-    if (name.find ("past_") != 0)
-      continue;
-
-    int size = GraphParser::get_tensor_size (info);
-    // QNN 컨벤션: f = scale * (q + offset). f=0 ⇒ q = -offset.
-    if (info.data_type == "QNN_DATATYPE_UFIXED_POINT_8") {
-      int zq = -info.offset;
-      zq = std::max (0, std::min (255, zq));
-      std::fill_n (std::get<uint8_t *> (prefill_inputs[idx]), size,
-          static_cast<uint8_t> (zq));
-    } else if (info.data_type == "QNN_DATATYPE_UFIXED_POINT_16") {
-      int zq = -info.offset;
-      zq = std::max (0, std::min (65535, zq));
-      std::fill_n (std::get<uint16_t *> (prefill_inputs[idx]), size / 2,
-          static_cast<uint16_t> (zq));
-    }
-  }
+  initialize_kv_cache();
 
   LOGD("----------------------- initialize() done");
 }
 
-void causallm::Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
-                                             json &nntr_cfg) {
-  // Call base class setupParameters first
+// =====================================================================
+// setupParameters
+// =====================================================================
+void Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
+                                     json &nntr_cfg) {
   Quick_Dot_AI_QNN::setupParameters(cfg, generation_cfg, nntr_cfg);
 
-  // Read config parameters - model dimensions
   num_hidden_layers = cfg["num_hidden_layers"].get<int>();
-  // max_window_layers = cfg["max_window_layers"].get<int>();
-  hidden_size = cfg["hidden_size"].get<int>();
-  // sequence_length = cfg["sequence_length"].get<int>();
-  vocab_size = cfg["vocab_size"].get<int>();
-  max_seq_len = cfg["max_seq_len"].get<int>();
-  sliding_window = cfg["sliding_window"].get<int>();
-  local_rope_theta = cfg["local_rope_theta"].get<float>();
-  rope_theta = cfg["rope_theta"].get<float>();
-  context_size = cfg["context_size"].get<int>();
-  g_head_dim = cfg["global_head_dim"].get<int>();
-  l_head_dim = cfg["head_dim"].get<int>();
-  head_dim = g_head_dim;
+  hidden_size       = cfg["hidden_size"].get<int>();
+  vocab_size        = cfg["vocab_size"].get<int>();
+  max_seq_len       = cfg["max_seq_len"].get<int>();
+  sliding_window    = cfg["sliding_window"].get<int>();
+  local_rope_theta  = cfg["local_rope_theta"].get<float>();
+  rope_theta        = cfg["rope_theta"].get<float>();
+  context_size      = cfg["context_size"].get<int>();
+  g_head_dim        = cfg["global_head_dim"].get<int>();
+  l_head_dim        = cfg["head_dim"].get<int>();
+  head_dim          = g_head_dim;
 
-  // Read generation_config parameters
-  padding_token = generation_cfg["pad_token_id"].get<int>();
-  eos_tokens = generation_cfg["eos_token_id"].get<std::vector<int>>();
-  temperature = generation_cfg["temperature"].get<float>();
-  top_k = generation_cfg["top_k"].get<int>();
-  top_p = generation_cfg["top_p"].get<float>();
+  padding_token      = generation_cfg["pad_token_id"].get<int>();
+  eos_tokens         = generation_cfg["eos_token_id"].get<std::vector<int>>();
+  temperature        = generation_cfg["temperature"].get<float>();
+  top_k              = generation_cfg["top_k"].get<int>();
+  top_p              = generation_cfg["top_p"].get<float>();
   repetition_penalty = generation_cfg.value("repetition_penalty", 1.0f);
-  logit_scale = generation_cfg.value("logit_scale", 1.0f);
-  logit_offset = generation_cfg.value("logit_offset", 0);
+  logit_scale        = generation_cfg.value("logit_scale", 1.0f);
+  logit_offset       = generation_cfg.value("logit_offset", 0);
 
-  // Read optional lora_path
-  lora_path = nntr_cfg.value("lora_path", "");
-  lora_path = rebase_relative_to_model_file(lora_path, model_file_name);
+  lora_path     = nntr_cfg.value("lora_path", "");
+  lora_path     = rebase_relative_to_model_file(lora_path, model_file_name);
   ple_file_name = nntr_cfg.value("ple_file_name", "");
   ple_file_name = rebase_relative_to_model_file(ple_file_name, model_file_name);
 }
 
-void causallm::Gemma4_E2B_QNN::run(const WSTR prompt, bool do_sample,
-                                 const WSTR system_prompt,
-                                 const WSTR tail_prompt, bool log_output) {
+// =====================================================================
+// run()
+// =====================================================================
+void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
+                        const WSTR /*system_prompt*/, const WSTR /*tail_prompt*/,
+                        bool log_output) {
   last_output_.clear();
   stop_requested_.store(false, std::memory_order_release);
-  std::vector<float *> label;  
 
-  std::string prefill_graph = graphs_to_use[0];
+  std::string prefill_graph    = graphs_to_use[0];
   std::string generation_graph = graphs_to_use[1];
-
-  auto &prefill_inputs = models[prefill_graph].model_inputs;
+  auto &prefill_inputs    = models[prefill_graph].model_inputs;
   auto &generation_inputs = models[generation_graph].model_inputs;
-
-  auto &prefill_model = models[prefill_graph].model_handle;
-  auto &generation_model = models[generation_graph].model_handle;
-
-  std::cout << "this->kv.size() : "<<this->kvs.size()<<std::endl;
-  for (int i = 0; i < this->kvs.size(); i++) {
-    std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
-  }
+  auto &prefill_model     = models[prefill_graph].model_handle;
+  auto &generation_model  = models[generation_graph].model_handle;
 
   auto _input = tokenizer->Encode(prompt);
-  auto token  = _input.back();
-  std::cout << prompt << std::endl;
-  // --- DEBUG ---
-  std::cout << "[TOK-DBG] prompt len=" << _input.size () << " first 16 tokens: ";
-  for (int i = 0; i < std::min<int> (_input.size (), 16); ++i)
-    std::cout << _input[i] << " ";
-  std::cout << "\n";
-  std::cout << "[TOK-DBG] last 8 tokens: ";
-  for (int i = std::max (0, (int)_input.size () - 8); i < (int)_input.size (); ++i)
-    std::cout << _input[i] << " ";
-  std::cout << "\n";
-
-  // 디코드해서 확인
-  std::cout << "[TOK-DBG] decoded first 16: '"
-            << tokenizer->Decode (std::vector<int> (_input.begin (),
-                   _input.begin () + std::min<size_t> (_input.size (), 16)))
-            << "'\n";
-  // -------------
-
-  unsigned int _len = _input.size() - 1;
-  if(_len <= 0){
-    std::cout << "[Error] Input is empty or invalid" << std::endl;
+  if (_input.size() <= 1) {
+    std::cout << "[Error] Empty input\n";
     return;
   }
+  unsigned int input_len = _input.size() - 1;
+  int          token     = _input.back();
+  auto n_chunks = (input_len % 256 != 0)
+                  ? ((input_len / 256) + 1) : (input_len / 256);
 
-  auto _n_chunks = (_len % 256 != 0) ? ((_len / 256) + 1) : (_len / 256);
-  std::cout << "n_chunk: " << _n_chunks << ", len: " << _len << std::endl;
+  if (kv_len + (int)input_len >= generation_full_kv_past_length)
+    throw std::runtime_error("Input prompt leaves no room for generation");
 
   std::vector<int> output;
   std::vector<ml::train::TensorDim::IO_TensorType> outputs;
 
-  for(int c = 0; c < _n_chunks; c++) {
-    int _chunk_len = ((c + 1) * 256 < _len) ? context_size : (_len - (c * 256));
-    int kv_len = c * context_size;
+  // ── Lambdas (Gauss 3.6 style) ──
+  auto fill_generation_inputs = [&](int current_token, int position) {
+    if (position < 0 || position >= rope_cache_seq_len)
+      throw std::runtime_error("Generation position out of rope cache");
 
-    for(int i = 0; i < context_size; i++)
-      input_sample[i] = (i < _chunk_len) ? _input[c * 256 + i] : padding_token;
+    generation_sample[0] = current_token;
+
+    std::fill_n(generation_attention_mask,
+                generation_attention_mask_elements, 0);
+    std::fill_n(generation_sliding_attention_mask,
+                generation_sliding_attention_mask_elements, 0);
+    generation_attention_mask[generation_attention_mask_elements - 1] =
+        std::numeric_limits<uint16_t>::max();
+    generation_sliding_attention_mask[generation_sliding_attention_mask_elements - 1] =
+        std::numeric_limits<uint16_t>::max();
+
+    for (int i = 0; i < position && i < generation_full_kv_past_length; ++i)
+      generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
+    for (int i = 0; i < position && i < generation_sliding_kv_past_length; ++i)
+      generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
+
+    std::memcpy(generation_position_ids_cos,
+                position_ids_cos + position * pos_dim,
+                pos_dim * sizeof(uint16_t));
+    std::memcpy(generation_position_ids_sin,
+                position_ids_sin + position * pos_dim,
+                pos_dim * sizeof(uint16_t));
+    std::memcpy(generation_swa_position_ids_cos,
+                swa_position_ids_cos + position * swa_pos_dim,
+                swa_pos_dim * sizeof(uint16_t));
+    std::memcpy(generation_swa_position_ids_sin,
+                swa_position_ids_sin + position * swa_pos_dim,
+                swa_pos_dim * sizeof(uint16_t));
+  };
+
+  auto append_outputs_to_kv_cache = [&](
+      const std::vector<ml::train::TensorDim::IO_TensorType> &step_outputs,
+      const std::vector<KvOutputBinding> &bindings,
+      int target_position, int rows, int src_row_length,
+      const std::string &graph_name) {
+
+    for (const auto &b : bindings) {
+      if (b.output_index < 0 || b.output_index >= (int)step_outputs.size() ||
+          b.kv_index < 0 || b.kv_index >= (int)kvs.size() ||
+          b.layer_index < 0 || b.layer_index >= (int)kv_row_lengths.size())
+        throw std::runtime_error(graph_name + " KV binding out of range");
+    }
+
+#pragma omp parallel for
+    for (int bi = 0; bi < (int)bindings.size(); ++bi) {
+      const auto &b   = bindings[bi];
+      int dest_row_length = kv_row_lengths[b.layer_index];
+      int num_column      = kv_columns[b.layer_index];
+      auto out  = std::get<uint8_t *>(step_outputs[b.output_index]);
+      auto dest = (uint8_t *)kvs[b.kv_index];
+
+      int target_idx = target_position;
+      int valid_before = std::min(target_position, dest_row_length);
+      int shift = valid_before + rows - dest_row_length;
+      if (shift > 0) {
+        target_idx = valid_before - shift;
+        if (b.is_key) {
+          for (int col = 0; col < num_column; ++col) {
+            uint8_t *col_base = dest + col * dest_row_length;
+            std::memmove(col_base, col_base + shift, dest_row_length - shift);
+          }
+        } else {
+          std::memmove(dest, dest + shift * num_column,
+                       (dest_row_length - shift) * num_column);
+        }
+      }
+
+      if (b.is_key) {
+        process_key(out, rows, num_column, dest, target_idx,
+                    dest_row_length, src_row_length);
+      } else {
+        process_value(out, rows, num_column, dest, target_idx);
+      }
+    }
+  };
+
+  auto append_generation_token_to_kv_cache = [&](int t) {
+    if (kv_len >= generation_full_kv_past_length) return;
+    fill_generation_inputs(t, kv_len);
+    fill_generation_ple_(t);
+    auto term = generation_model->inference(1, generation_inputs);
+    append_outputs_to_kv_cache(term, generation_output_kv_bindings,
+                               kv_len, 1, 1, generation_graph);
+    kv_len += 1;
+  };
+
+  // ── Prefill ──
+  for (int c = 0; c < (int)n_chunks; ++c) {
+    int chunk_len = ((c + 1) * 256 < (int)input_len)
+                    ? context_size : ((int)input_len - c * 256);
+
+    sync_generation_kv_cache_to_prefill();
+
+    for (int i = 0; i < context_size; ++i)
+      input_sample[i] = (i < chunk_len) ? _input[c * 256 + i] : padding_token;
 
     fill_attention_mask_with_length(context_size, prefill_attention_mask_columns,
-                                    _chunk_len, attention_mask);
+                                    chunk_len, attention_mask);
     fill_attention_mask_with_prev_length(context_size,
                                          prefill_attention_mask_columns,
                                          std::min(kv_len,
                                                   generation_full_kv_past_length),
                                          attention_mask);
-
     fill_attention_mask_with_length(context_size,
                                     prefill_sliding_attention_mask_columns,
-                                    _chunk_len, sliding_attention_mask);
-    fill_attention_mask_with_prev_length(
-        context_size, prefill_sliding_attention_mask_columns,
-        std::min(kv_len, generation_sliding_kv_past_length),
-        sliding_attention_mask);
+                                    chunk_len, sliding_attention_mask);
+    fill_attention_mask_with_prev_length(context_size,
+                                         prefill_sliding_attention_mask_columns,
+                                         std::min(kv_len,
+                                                  generation_sliding_kv_past_length),
+                                         sliding_attention_mask);
 
     std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_position_ids_sin, context_size * pos_dim, 32768);
     std::fill_n(prefill_swa_position_ids_cos, context_size * swa_pos_dim, 65535);
     std::fill_n(prefill_swa_position_ids_sin, context_size * swa_pos_dim, 32768);
 
-    auto pos_ids_offset = c * context_size * pos_dim;
-    auto swa_pos_ids_offset = c * context_size * swa_pos_dim;
-    std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
-    std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset, _chunk_len * pos_dim * sizeof(uint16_t));
-    std::memcpy(prefill_swa_position_ids_cos,
-                swa_position_ids_cos + swa_pos_ids_offset,
-                _chunk_len * swa_pos_dim * sizeof(uint16_t));
-    std::memcpy(prefill_swa_position_ids_sin,
-                swa_position_ids_sin + swa_pos_ids_offset,
-                _chunk_len * swa_pos_dim * sizeof(uint16_t));
+    if (kv_len + chunk_len > rope_cache_seq_len)
+      throw std::runtime_error("Prefill position out of rope cache");
 
+    auto pos_off     = kv_len * pos_dim;
+    auto swa_pos_off = kv_len * swa_pos_dim;
+    std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_off,
+                chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_off,
+                chunk_len * pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_cos, swa_position_ids_cos + swa_pos_off,
+                chunk_len * swa_pos_dim * sizeof(uint16_t));
+    std::memcpy(prefill_swa_position_ids_sin, swa_position_ids_sin + swa_pos_off,
+                chunk_len * swa_pos_dim * sizeof(uint16_t));
 
-    fill_prefill_ple_chunk_ (_input, c, _chunk_len);
-    outputs = prefill_model->inference (1, prefill_inputs);
+    fill_prefill_ple_chunk_(_input, c, chunk_len);
 
-#pragma omp parallel for
-    for (int i = 0; i < (int)this->kv_row_lengths.size () * 2; i++) {
-      bool is_value = i % 2 == 0;
-      bool is_key = !is_value;
-      int layer_idx = i / 2;
-      int kv_idx = layer_idx * 2 + (is_key ? 0 : 1);
-      int dest_row_length = kv_row_lengths[layer_idx];
-      bool is_sliding = dest_row_length == generation_sliding_kv_past_length;
-      int src_row_length = context_size;
-
-      auto output = std::get<uint8_t *>(outputs[i]);
-      auto dest = (uint8_t *)this->kvs[kv_idx];
-      int num_column = kv_columns[layer_idx];
-
-      int target_idx = kv_len;
-      if (is_sliding && kv_len + _chunk_len > dest_row_length) {
-        target_idx = dest_row_length - _chunk_len;
-        if (is_key) {
-          for (int col = 0; col < num_column; ++col) {
-            uint8_t *col_base = dest + col * dest_row_length;
-            std::memmove(col_base, col_base + _chunk_len,
-                         dest_row_length - _chunk_len);
-          }
-        } else {
-          std::memmove(dest, dest + _chunk_len * num_column,
-                       (dest_row_length - _chunk_len) * num_column);
-        }
-      }
-
-      if (is_key) {
-        process_key(output, _chunk_len, num_column, dest, target_idx,
-                    dest_row_length, src_row_length);
-      } else {
-        process_value(output, _chunk_len, num_column, dest, target_idx);
-      }
-    };
+    outputs = prefill_model->inference(1, prefill_inputs);
+    append_outputs_to_kv_cache(outputs, prefill_output_kv_bindings,
+                               kv_len, chunk_len, context_size, prefill_graph);
+    kv_len += chunk_len;
   }
 
-  std::fill_n(generation_attention_mask, generation_attention_mask_elements, 0);
-  std::fill_n(generation_sliding_attention_mask,
-              generation_sliding_attention_mask_elements, 0);
-
-  generation_attention_mask[generation_attention_mask_elements - 1] =
-      std::numeric_limits<uint16_t>::max();
-  generation_sliding_attention_mask[generation_sliding_attention_mask_elements -
-                                    1] = std::numeric_limits<uint16_t>::max();
-
-  for (int i = 0; i < _len && i < generation_full_kv_past_length; i++)
-    generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-  for (int i = 0; i < _len && i < generation_sliding_kv_past_length; i++)
-    generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-
+  // ── Generation ──
   auto start = std::chrono::system_clock::now();
   int idx;
-  int prefill_len = _len;
-  for (idx = prefill_len; idx < generation_full_kv_past_length; idx++) {
-    generation_sample[0] = token;
-
-    generation_attention_mask[idx] = std::numeric_limits<uint16_t>::max();
-    if (idx < generation_sliding_kv_past_length) {
-      generation_sliding_attention_mask[idx] =
-          std::numeric_limits<uint16_t>::max();
-    }
-    std::memcpy(generation_position_ids_cos, position_ids_cos + idx * pos_dim,
-                pos_dim * sizeof(uint16_t));
-    std::memcpy(generation_position_ids_sin, position_ids_sin + idx * pos_dim,
-                pos_dim * sizeof(uint16_t));
-    std::memcpy(generation_swa_position_ids_cos,
-                swa_position_ids_cos + idx * swa_pos_dim,
-                swa_pos_dim * sizeof(uint16_t));
-    std::memcpy(generation_swa_position_ids_sin,
-                swa_position_ids_sin + idx * swa_pos_dim,
-                swa_pos_dim * sizeof(uint16_t));
-
-    if(idx > prefill_len) {
-#pragma omp parallel for
-      for (int i = 0; i < (int)this->kv_row_lengths.size() * 2; i++) {
-        bool is_value = i % 2 == 0;
-        bool is_key = !is_value;
-        int layer_idx = i / 2;
-        int kv_idx = layer_idx * 2 + (is_key ? 0 : 1);
-        int dest_row_length = kv_row_lengths[layer_idx];
-        bool is_sliding = dest_row_length == generation_sliding_kv_past_length;
-
-        auto output = std::get<uint8_t *>(outputs[i]);
-        auto dest = (uint8_t *)this->kvs[kv_idx];
-        int num_column = kv_columns[layer_idx];
-        int target_idx = idx;
-
-        if (is_sliding && (idx + 1) > dest_row_length) {
-          target_idx = dest_row_length - 1;
-          if (is_key) {
-            for (int col = 0; col < num_column; ++col) {
-              uint8_t *col_base = dest + col * dest_row_length;
-              std::memmove(col_base, col_base + 1, dest_row_length - 1);
-            }
-          } else {
-            std::memmove(dest, dest + num_column,
-                         (dest_row_length - 1) * num_column);
-          }
-        }
-
-        if (is_key) {
-          process_key(output, 1, num_column, dest, target_idx, dest_row_length,
-                      1);
-        } else {
-          process_value(output, 1, num_column, dest, target_idx);
-        }
-      };
-    }
-
+  int prefill_len = kv_len;
+  for (idx = prefill_len; idx < generation_full_kv_past_length; ++idx) {
+    fill_generation_inputs(token, idx);
     fill_generation_ple_(token);
-    
-    outputs = generation_model->inference (1, generation_inputs);
-    
-    token = sample (std::get<uint16_t *> (outputs.back ()), vocab_size,
-        _input.data (), _input.size (), logit_scale, logit_offset,
-        repetition_penalty, temperature, top_p, top_k);
-
+    outputs = generation_model->inference(1, generation_inputs);
+    append_outputs_to_kv_cache(outputs, generation_output_kv_bindings,
+                               idx, 1, 1, generation_graph);
+    kv_len += 1;
+    token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
+                   _input.data(), _input.size(), logit_scale, logit_offset,
+                   repetition_penalty, temperature, top_p, top_k);
     output.push_back(token);
 
     bool reached_eos = false;
-    for(auto eos : eos_tokens){
+    for (auto eos : eos_tokens) {
       if (token == eos) {
-        reached_eos = true;
-        break;
+	reached_eos = true;
+	break;
       }
     }
     if (reached_eos) {
-      std::cout << "Finished generating, break..." << std::endl;
+      append_generation_token_to_kv_cache(token);
       break;
     }
 
-    std::string decoded = tokenizer->Decode ({ token });
+    std::string decoded = tokenizer->Decode({ token });
     last_output_ += decoded;
-    LOGD ("%d : %s", token, decoded.c_str ());
+    LOGD("%d : %s", token, decoded.c_str());
     if (streamer_) {
-      if (streamer_put (streamer_, decoded.c_str ()) != 0) {
+      if (streamer_put(streamer_, decoded.c_str()) != 0) {
         stop_requested_.store(true, std::memory_order_release);
         break;
       }
     } else if (log_output) {
       std::cout << decoded << std::flush;
     }
-    _input.push_back (token);
+    _input.push_back(token);
 
-    if (stop_requested_.load(std::memory_order_acquire)) {
-      break;
-    }
+    if (stop_requested_.load(std::memory_order_acquire)) break;
   }
 
-  if (streamer_) {
-    streamer_end(streamer_);
-  }
-
+  if (streamer_) streamer_end(streamer_);
   has_run_ = true;
-  
+  conversation_started_ = true;
+
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
-  if (log_output) {  
-  std::cout << std::endl;
-  std::cout << std::endl;
-  std::cout << "Generation exec_time : " << raw_exec_seconds.count()
-            << ", token per second: " << (idx - _len) / raw_exec_seconds.count()
-            << ", token generation time average: "
-            << raw_exec_seconds.count() / (idx - _len) << std::endl;
+  if (log_output) {
+    std::cout << "\n\nGeneration exec_time : " << raw_exec_seconds.count()
+              << ", token per second: "
+              << (idx - prefill_len) / raw_exec_seconds.count()
+              << ", token generation time average: "
+              << raw_exec_seconds.count() / std::max(1, idx - prefill_len)
+              << std::endl;
   }
 }

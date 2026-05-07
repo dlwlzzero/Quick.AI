@@ -129,53 +129,119 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
     top_k_elements.pop();
   }
 
-  // Apply repetition penalty
-  for (unsigned int i = 0; i < number_of_tokens; ++i) {
-    if (tokens[i] < length) {
-      logits[tokens[i]] /= repetition_penalty;
+  for(unsigned int i=0;i<number_of_tokens;++i){
+    const int t=tokens[i];
+    for(int j=0;j<length;++j){
+      if (indices[j] == tokens[i]){
+	if(logits[j] >0.0f) logits[j] /=repetition_penalty;
+	else logits[j] *= repetition_penalty;
+	break;
+      }
     }
   }
 
+  // Apply repetition penalty
+  // for (unsigned int i = 0; i < number_of_tokens; ++i) {
+  //   if (tokens[i] < length) {
+  //     logits[tokens[i]] /= repetition_penalty;
+  //   }
+  // }
+
   // Apply temperature & Sort logits
-  std::vector<std::pair<int, float>> top_indices_and_logits(length);
+  // std::vector<std::pair<int, float>> top_indices_and_logits(length);
+  // for (int i = 0; i < length; ++i) {
+  //   if (temperature > 1e-5)
+  //     logits[i] = logits[i] / temperature;
+  //   top_indices_and_logits[i] = {i, logits[i]};
+  // }
+  // sort(top_indices_and_logits.begin(), top_indices_and_logits.end(),
+  //      [](auto &a, auto &b) { return a.second > b.second; });
+
+  // // Accumulate logits
+  // float cum_prob = 0;
+  // unsigned int top_index = 0;
+  // while (cum_prob <= top_p) {
+  //   cum_prob += top_indices_and_logits[top_index].second;
+  //   ++top_index;
+  // }
+
+  // // Apply Top-P
+  // // std::fill_n(logits, sizeof(len), -INFINITY);
+  // for (int i = 0; i < length; ++i) {
+  //   logits[i] = -INFINITY;
+  // }
+  // for (unsigned int i = 0; i < top_index; ++i) {
+  //   logits[top_indices_and_logits[i].first] = top_indices_and_logits[i].second;
+  // }
+
+  // float max_logits = top_indices_and_logits[0].second;
+  // float sum_exp_logits = 0;
+  // for (unsigned int i = 0; i < length; i++) {
+  //   float exp_x = exp(logits[i] - max_logits);
+  //   sum_exp_logits += exp_x;
+  //   logits[i] = exp_x;
+  // }
+
+  // for (unsigned int i = 0; i < length; ++i) {
+  //   logits[i] /= sum_exp_logits;
+  // }
+
+  // // sample from final logits
+  // std::discrete_distribution<int> dist(logits.data(), logits.data() +
+  // length); return indices[dist(rng)]; Sort logits descending
+  std::vector<std::pair<int, float>> top_indices_and_logits (length);
   for (int i = 0; i < length; ++i) {
     if (temperature > 1e-5)
       logits[i] = logits[i] / temperature;
-    top_indices_and_logits[i] = {i, logits[i]};
+    top_indices_and_logits[i] = { i, logits[i] };
   }
-  sort(top_indices_and_logits.begin(), top_indices_and_logits.end(),
-       [](auto &a, auto &b) { return a.second > b.second; });
+  sort (top_indices_and_logits.begin (), top_indices_and_logits.end (),
+      [] (auto &a, auto &b) { return a.second > b.second; });
 
-  // Accumulate logits
-  float cum_prob = 0;
+  // ─── 새 top-p: logit → softmax 확률 변환 후 누적 ───
+  const float max_logit = top_indices_and_logits[0].second;
+  std::vector<float> probs (length);
+  float sum_exp = 0.0f;
+  for (int i = 0; i < length; ++i) {
+    probs[i] = std::exp (top_indices_and_logits[i].second - max_logit);
+    sum_exp += probs[i];
+  }
+  if (sum_exp <= 0.0f)
+    sum_exp = 1.0f; // 안전 가드
+  for (int i = 0; i < length; ++i) {
+    probs[i] /= sum_exp;
+  }
+
+  float cum_prob = 0.0f;
   unsigned int top_index = 0;
-  while (cum_prob <= top_p) {
-    cum_prob += top_indices_and_logits[top_index].second;
+  while (top_index < (unsigned)length && cum_prob < top_p) { // ← bound 추가
+    cum_prob += probs[top_index];
     ++top_index;
   }
+  if (top_index == 0)
+    top_index = 1; // 최소 1개
 
-  // Apply Top-P
-  // std::fill_n(logits, sizeof(len), -INFINITY);
-  for (int i = 0; i < length; ++i) {
+  // Apply Top-P: nuke beyond top_index
+  for (int i = 0; i < length; ++i)
     logits[i] = -INFINITY;
-  }
   for (unsigned int i = 0; i < top_index; ++i) {
     logits[top_indices_and_logits[i].first] = top_indices_and_logits[i].second;
   }
 
-  float max_logits = top_indices_and_logits[0].second;
-  float sum_exp_logits = 0;
-  for (unsigned int i = 0; i < length; i++) {
-    float exp_x = exp(logits[i] - max_logits);
-    sum_exp_logits += exp_x;
-    logits[i] = exp_x;
+  // Final softmax for sampling
+  const float final_max = top_indices_and_logits[0].second;
+  float final_sum_exp = 0.0f;
+  for (int i = 0; i < length; ++i) {
+    float ex = std::exp (logits[i] - final_max);
+    final_sum_exp += ex;
+    logits[i] = ex;
   }
+  if (final_sum_exp <= 0.0f)
+    final_sum_exp = 1.0f;
+  for (int i = 0; i < length; ++i)
+    logits[i] /= final_sum_exp;
 
-  for (unsigned int i = 0; i < length; ++i) {
-    logits[i] /= sum_exp_logits;
-  }
-
-  // sample from final logits
-  std::discrete_distribution<int> dist(logits.data(), logits.data() + length);
-  return indices[dist(rng)];
+  // Sample
+  std::discrete_distribution<int> dist (logits.data (), logits.data () + length);
+  return indices[dist (rng)];
 }
