@@ -45,6 +45,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NNTRAINER_ROOT="$SCRIPT_DIR/nntrainer"
+XGRAMMAR_ROOT="$SCRIPT_DIR/xgrammar"
 CAUSALLM_ROOT="$NNTRAINER_ROOT/Applications/CausalLM"
 
 # Build directory
@@ -65,6 +66,11 @@ echo ""
 if [ ! -f "$NNTRAINER_ROOT/meson.build" ]; then
     echo "[0] Initializing nntrainer submodule..."
     git -C "$SCRIPT_DIR" submodule update --init --recursive --depth 1
+fi
+
+if [ ! -f "$NNTRAINER_ROOT/meson.build" ]; then
+    echo "[0] Initializing xgrammar submodule..."
+    git -C "$XGRAMMAR_ROOT" submodule update --init --recursive --depth 1
 fi
 
 # Check iniparser submodule
