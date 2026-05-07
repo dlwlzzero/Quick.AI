@@ -11,6 +11,7 @@
 #include <streamer.h>
 #include <llm_util.hpp>
 #include <model.h>
+#include <xgrammar/xgrammar_wrapper.h>
 
 #include <app_context.h>
 #include <engine.h>

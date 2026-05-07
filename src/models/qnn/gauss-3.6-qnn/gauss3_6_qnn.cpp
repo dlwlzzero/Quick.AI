@@ -11,6 +11,7 @@
 #include "gauss3_6_qnn.h"
 #include "android_memory_allocator.h"
 #include "generate_qnn_utils.h"
+#include <xgrammar/xgrammar_wrapper.h>
 
 #include <llm_util.hpp>
 #include <streamer.h>
@@ -544,7 +545,16 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
                    input.data(), input.size(), logit_scale, logit_offset,
                    repetition_penalty, temperature, top_p, top_k);
-
+    if (token == eos_token || token == padding_token) {
+      break;
+    }
+    // Accept token in grammar matcher if xgrammar_ is provided (from base class)
+    // Only accept non-eos tokens
+    if (xgrammar_ != nullptr && xgrammar_->isGrammarEnabled()) {
+      xgrammar_->getGrammarMatcher()->AcceptToken(token);
+      // Update bitmask for next token
+      xgrammar_->getGrammarMatcher()->FillNextTokenBitmask(&xgrammar_->getBitmaskTensor());
+    }
     output.push_back(token);
     if (token == eos_token) {
       append_generation_token_to_kv_cache(token);
