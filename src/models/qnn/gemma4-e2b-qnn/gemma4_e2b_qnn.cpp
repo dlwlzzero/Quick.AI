@@ -309,25 +309,26 @@ void Gemma4_E2B_QNN::initialize() {
   prefill_attention_mask_elements =
       GraphParser::get_named_tensor_elements_or_throw(
           prefill_graph_info.raw_inputs, "attention_mask");
+
   prefill_attention_mask_columns =
       GraphParser::get_tensor_info_or_throw(prefill_graph_info.raw_inputs,
                                             "attention_mask")
-          .dimensions.back();
-  prefill_sliding_attention_mask_elements =
-      GraphParser::get_named_tensor_elements_or_throw(
-          prefill_graph_info.raw_inputs, "sliding_attention_mask");
-  prefill_sliding_attention_mask_columns =
-      GraphParser::get_tensor_info_or_throw(prefill_graph_info.raw_inputs,
-                                            "sliding_attention_mask")
-          .dimensions.back();
-  generation_attention_mask_elements =
-      GraphParser::get_named_tensor_elements_or_throw(
-          generation_graph_info.raw_inputs, "attention_mask");
-  generation_sliding_attention_mask_elements =
-      GraphParser::get_named_tensor_elements_or_throw(
-          generation_graph_info.raw_inputs, "sliding_attention_mask");
+    .dimensions.back(); // 8192
 
-  generation_full_kv_past_length    = generation_attention_mask_elements - 1;
+  prefill_sliding_attention_mask_elements = GraphParser::get_named_tensor_elements_or_throw (
+      prefill_graph_info.raw_inputs, "sliding_attention_mask");
+
+  prefill_sliding_attention_mask_columns
+      = GraphParser::get_tensor_info_or_throw (prefill_graph_info.raw_inputs,
+          "sliding_attention_mask")
+            .dimensions.back (); // 768
+
+  generation_attention_mask_elements = GraphParser::get_named_tensor_elements_or_throw (
+      generation_graph_info.raw_inputs, "attention_mask");
+  generation_sliding_attention_mask_elements = GraphParser::get_named_tensor_elements_or_throw (
+      generation_graph_info.raw_inputs, "sliding_attention_mask");
+
+  generation_full_kv_past_length = generation_attention_mask_elements - 1;
   generation_sliding_kv_past_length = generation_sliding_attention_mask_elements - 1;
 
   pos_dim = GraphParser::get_tensor_info_or_throw(
@@ -384,37 +385,59 @@ void Gemma4_E2B_QNN::initialize() {
                                      "swa_position_ids_sin")]);
 
   // ── RoPE cache ──
-  std::tuple<uint16_t *, uint16_t *> cos_sin_tuple =
-      get_cos_sin(rope_cache_seq_len, pos_dim, rope_theta);
-  position_ids_cos = std::get<0>(cos_sin_tuple);
-  position_ids_sin = std::get<1>(cos_sin_tuple);
-  allocated_ptrs_.insert(position_ids_cos);
-  allocated_ptrs_.insert(position_ids_sin);
+  
+  // std::tuple<uint16_t *, uint16_t *> cos_sin_tuple =
+  //     get_cos_sin(rope_cache_seq_len, pos_dim, rope_theta);
+  // position_ids_cos = std::get<0>(cos_sin_tuple);
+  // position_ids_sin = std::get<1>(cos_sin_tuple);
+  // allocated_ptrs_.insert(position_ids_cos);
+  // allocated_ptrs_.insert(position_ids_sin);
 
-  std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple =
-      get_cos_sin(rope_cache_seq_len, swa_pos_dim, local_rope_theta);
-  swa_position_ids_cos = std::get<0>(swa_cos_sin_tuple);
-  swa_position_ids_sin = std::get<1>(swa_cos_sin_tuple);
-  allocated_ptrs_.insert(swa_position_ids_cos);
-  allocated_ptrs_.insert(swa_position_ids_sin);
+  // std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple =
+  //     get_cos_sin(rope_cache_seq_len, swa_pos_dim, local_rope_theta);
+  // swa_position_ids_cos = std::get<0>(swa_cos_sin_tuple);
+  // swa_position_ids_sin = std::get<1>(swa_cos_sin_tuple);
+  // allocated_ptrs_.insert(swa_position_ids_cos);
+  // allocated_ptrs_.insert(swa_position_ids_sin);
+
+  // ── Full attention RoPE ──
+  double rope_scaling_factor_full = 1.0;
+
+  std::tuple<uint16_t *, uint16_t *> cos_sin_tuple
+      = get_cos_sin (rope_cache_seq_len, pos_dim, rope_theta_full,
+          rope_type_full, rope_partial_factor, rope_scaling_factor_full);
+  position_ids_cos = std::get<0> (cos_sin_tuple);
+  position_ids_sin = std::get<1> (cos_sin_tuple);
+  allocated_ptrs_.insert (position_ids_cos);
+  allocated_ptrs_.insert (position_ids_sin);
+
+  // ── Sliding window RoPE (default = no scaling) ──
+  std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple
+      = get_cos_sin (rope_cache_seq_len, swa_pos_dim, rope_theta_sliding,
+          rope_type_sliding, /*partial=*/1.0, /*scaling=*/1.0);
+  swa_position_ids_cos = std::get<0> (swa_cos_sin_tuple);
+  swa_position_ids_sin = std::get<1> (swa_cos_sin_tuple);
+  allocated_ptrs_.insert (swa_position_ids_cos);
+  allocated_ptrs_.insert (swa_position_ids_sin);
 
   // ── PLE per-layer dst + scale/offset collection ──
-  auto collect_per_layer = [](
-      const GraphInfo &gi,
-      std::vector<ml::train::TensorDim::IO_TensorType> &inputs,
-      std::vector<uint16_t *> &dsts,
-      std::vector<float> &scales,
-      std::vector<int> &offsets) {
+  auto collect_per_layer = [] (const GraphInfo &gi,
+                               std::vector<ml::train::TensorDim::IO_TensorType> &inputs,
+                               std::vector<uint16_t *> &dsts,
+                               std::vector<float> &scales, std::vector<int> &offsets) {
     std::map<int, std::tuple<uint16_t *, float, int>> by_index;
     for (size_t idx = 0; idx < gi.raw_inputs.size(); ++idx) {
       const auto &[name, info] = gi.raw_inputs[idx];
       const std::string prefix = "per_layer_inputs_";
-      if (name.rfind(prefix, 0) != 0) continue;
+      if (name.rfind(prefix, 0) != 0)
+        continue;
       int n = std::stoi(name.substr(prefix.size()));
       by_index[n] = std::make_tuple(
           std::get<uint16_t *>(inputs[idx]), info.scale, info.offset);
     }
-    dsts.clear(); scales.clear(); offsets.clear();
+    dsts.clear();
+    scales.clear ();
+    offsets.clear ();
     for (auto &kv : by_index) {
       dsts.push_back(std::get<0>(kv.second));
       scales.push_back(std::get<1>(kv.second));
@@ -570,12 +593,41 @@ void Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
   vocab_size        = cfg["vocab_size"].get<int>();
   max_seq_len       = cfg["max_seq_len"].get<int>();
   sliding_window    = cfg["sliding_window"].get<int>();
-  local_rope_theta  = cfg["local_rope_theta"].get<float>();
-  rope_theta        = cfg["rope_theta"].get<float>();
   context_size      = cfg["context_size"].get<int>();
   g_head_dim        = cfg["global_head_dim"].get<int>();
   l_head_dim        = cfg["head_dim"].get<int>();
   head_dim          = g_head_dim;
+
+  // ─── RoPE parameters (new format preferred) ───
+  if (cfg.contains("rope_parameters") && cfg["rope_parameters"].is_object()) {
+    auto &rp = cfg["rope_parameters"];
+
+    if (rp.contains("full_attention") && rp["full_attention"].is_object()) {
+      auto &fa = rp["full_attention"];
+      rope_theta_full     = fa.value("rope_theta", 1000000.0f);
+      rope_partial_factor = fa.value("partial_rotary_factor", 1.0f);
+      rope_type_full      = fa.value("rope_type", std::string("default"));
+    }
+
+    if (rp.contains("sliding_attention") &&
+        rp["sliding_attention"].is_object()) {
+      auto &sa = rp["sliding_attention"];
+      rope_theta_sliding = sa.value("rope_theta", 10000.0f);
+      rope_type_sliding  = sa.value("rope_type", std::string("default"));
+    }
+  } else {
+    // Legacy flat form
+    rope_theta_full    = cfg.value("rope_theta",       1000000.0f);
+    rope_theta_sliding = cfg.value("local_rope_theta",   10000.0f);
+  }
+
+  // rope_theta       = rope_theta_full;
+  // local_rope_theta = rope_theta_sliding;
+
+  LOGD("RoPE full: theta=%f partial=%f type=%s",
+       rope_theta_full, rope_partial_factor, rope_type_full.c_str());
+  LOGD("RoPE sliding: theta=%f type=%s",
+       rope_theta_sliding, rope_type_sliding.c_str());
 
   padding_token      = generation_cfg["pad_token_id"].get<int>();
   eos_tokens         = generation_cfg["eos_token_id"].get<std::vector<int>>();

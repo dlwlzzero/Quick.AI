@@ -16,20 +16,33 @@
 std::mt19937 rng;
 std::chrono::duration<double> raw_exec_seconds;
 
-std::tuple<uint16_t *, uint16_t *> get_cos_sin(int context_size, int pos_dim,
-                                               const double theta) {
-  const double exponent = 1.0 / static_cast<double>(pos_dim);
+std::tuple<uint16_t *, uint16_t *>
+get_cos_sin (int context_size, int pos_dim, const double theta,
+    const std::string &rope_type, double partial_rotary_factor, double rope_scaling_factor)
+{
 
-  // Quant param is constant for all QNN positional embedding
-  float scale = 3.051804378628731e-05f;
-  int offset = -32768;
+  const double exponent = 1.0 / static_cast<double> (pos_dim);
 
-  std::vector<double> inv_freq(pos_dim);
-  for (int j = 0; j < pos_dim; j++)
-    inv_freq[j] = 1.0 / pow(theta, j * exponent);
+  const float scale = 3.051804378628731e-05f;
+  const int offset = -32768;
+
+  std::vector<double> inv_freq (pos_dim);
+  for (int j = 0; j < pos_dim; j++) {
+    inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
+  }
 
   double attention_factor = 1.0;
-  // For Llama3 or LongROPE, this should be changed
+
+  if (rope_type == "default") {
+    // already computed
+  } else if (rope_type == "linear" || rope_type == "proportional") {
+    if (rope_scaling_factor > 1.0) {
+      for (int j = 0; j < pos_dim; j++)
+        inv_freq[j] /= rope_scaling_factor;
+    }
+  } else {
+    // layter implementation for dynamic / yarn / longrope / llama3
+  }
 
   uint16_t *cos_val =
       (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
@@ -40,12 +53,11 @@ std::tuple<uint16_t *, uint16_t *> get_cos_sin(int context_size, int pos_dim,
     for (int j = 0; j < pos_dim; j++) {
       const double freq = i * inv_freq[j];
       cos_val[i * pos_dim + j] =
-          (cos(freq) * attention_factor) / scale - offset;
+          (std::cos(freq) * attention_factor) / scale - offset;
       sin_val[i * pos_dim + j] =
-          (sin(freq) * attention_factor) / scale - offset;
+          (std::sin(freq) * attention_factor) / scale - offset;
     }
   }
-
   return std::make_tuple(cos_val, sin_val);
 }
 
@@ -140,55 +152,7 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
     }
   }
 
-  // Apply repetition penalty
-  // for (unsigned int i = 0; i < number_of_tokens; ++i) {
-  //   if (tokens[i] < length) {
-  //     logits[tokens[i]] /= repetition_penalty;
-  //   }
-  // }
 
-  // Apply temperature & Sort logits
-  // std::vector<std::pair<int, float>> top_indices_and_logits(length);
-  // for (int i = 0; i < length; ++i) {
-  //   if (temperature > 1e-5)
-  //     logits[i] = logits[i] / temperature;
-  //   top_indices_and_logits[i] = {i, logits[i]};
-  // }
-  // sort(top_indices_and_logits.begin(), top_indices_and_logits.end(),
-  //      [](auto &a, auto &b) { return a.second > b.second; });
-
-  // // Accumulate logits
-  // float cum_prob = 0;
-  // unsigned int top_index = 0;
-  // while (cum_prob <= top_p) {
-  //   cum_prob += top_indices_and_logits[top_index].second;
-  //   ++top_index;
-  // }
-
-  // // Apply Top-P
-  // // std::fill_n(logits, sizeof(len), -INFINITY);
-  // for (int i = 0; i < length; ++i) {
-  //   logits[i] = -INFINITY;
-  // }
-  // for (unsigned int i = 0; i < top_index; ++i) {
-  //   logits[top_indices_and_logits[i].first] = top_indices_and_logits[i].second;
-  // }
-
-  // float max_logits = top_indices_and_logits[0].second;
-  // float sum_exp_logits = 0;
-  // for (unsigned int i = 0; i < length; i++) {
-  //   float exp_x = exp(logits[i] - max_logits);
-  //   sum_exp_logits += exp_x;
-  //   logits[i] = exp_x;
-  // }
-
-  // for (unsigned int i = 0; i < length; ++i) {
-  //   logits[i] /= sum_exp_logits;
-  // }
-
-  // // sample from final logits
-  // std::discrete_distribution<int> dist(logits.data(), logits.data() +
-  // length); return indices[dist(rng)]; Sort logits descending
   std::vector<std::pair<int, float>> top_indices_and_logits (length);
   for (int i = 0; i < length; ++i) {
     if (temperature > 1e-5)
@@ -198,7 +162,6 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
   sort (top_indices_and_logits.begin (), top_indices_and_logits.end (),
       [] (auto &a, auto &b) { return a.second > b.second; });
 
-  // ─── 새 top-p: logit → softmax 확률 변환 후 누적 ───
   const float max_logit = top_indices_and_logits[0].second;
   std::vector<float> probs (length);
   float sum_exp = 0.0f;
@@ -207,19 +170,19 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
     sum_exp += probs[i];
   }
   if (sum_exp <= 0.0f)
-    sum_exp = 1.0f; // 안전 가드
+    sum_exp = 1.0f;
   for (int i = 0; i < length; ++i) {
     probs[i] /= sum_exp;
   }
 
   float cum_prob = 0.0f;
   unsigned int top_index = 0;
-  while (top_index < (unsigned)length && cum_prob < top_p) { // ← bound 추가
+  while (top_index < (unsigned)length && cum_prob < top_p) {
     cum_prob += probs[top_index];
     ++top_index;
   }
   if (top_index == 0)
-    top_index = 1; // 최소 1개
+    top_index = 1;
 
   // Apply Top-P: nuke beyond top_index
   for (int i = 0; i < length; ++i)
