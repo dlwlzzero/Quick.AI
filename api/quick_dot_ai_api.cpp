@@ -328,7 +328,7 @@ static std::string apply_chat_template(const std::string &architecture,
   return input;
 }
 
-static bool is_gauss_qnn_architecture(const std::string &architecture)
+static bool is_gauss_architecture(const std::string &architecture)
 {
   return architecture == "Gauss_3_6_QNN" || architecture == "Gauss_3_8_QNN";
 }
@@ -431,7 +431,7 @@ static void update_handle_session_after_run(CausalLmModel &h,
     return;
   }
 
-  if (!is_gauss_qnn_architecture(h.architectures[model_index]))
+  if (!is_gauss_architecture(h.architectures[model_index]))
   {
     return;
   }
@@ -450,7 +450,7 @@ static std::string prepare_input_for_model(CausalLmModel &h, size_t model_index,
   }
 
   const std::string &architecture = h.architectures[model_index];
-  if (is_gauss_qnn_architecture(architecture) && h.conversation_started &&
+  if (is_gauss_architecture(architecture) && h.conversation_started &&
       h.kv_len > 0)
   {
     return build_gauss_incremental_user_prompt(
@@ -1434,7 +1434,7 @@ apply_chat_template_messages(const std::string &architecture,
       result += "<start_of_turn>model\n";
     }
   }
-  else if (is_gauss_qnn_architecture(architecture))
+  else if (is_gauss_architecture(architecture))
   {
     result = "<|begin_of_text|>";
     for (const auto &msg : messages)

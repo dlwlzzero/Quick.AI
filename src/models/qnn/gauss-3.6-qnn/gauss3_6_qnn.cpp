@@ -238,7 +238,6 @@ void causallm::Gauss3_6_QNN::initialize() {
 
   // Initialize generation KV cache as the canonical history. Prefill keeps its
   // own input buffers because gauss3.6 prefill and generation KV shapes differ.
-  this->fresh_kvs.clear();
   this->kvs.clear();
   this->kv_sizes.clear();
   this->kv_row_lengths.clear();
@@ -280,13 +279,10 @@ void causallm::Gauss3_6_QNN::initialize() {
       int size = GraphParser::get_tensor_size(generation_info);
 
       auto *current_kv = static_cast<uint8_t *>(tracked_allocate(size));
-      auto *fresh_kv = static_cast<uint8_t *>(tracked_allocate(size));
       std::fill_n(current_kv, size, static_cast<uint8_t>(128));
-      std::fill_n(fresh_kv, size, static_cast<uint8_t>(128));
 
       int kv_input_index = static_cast<int>(this->kvs.size());
       this->kvs.push_back(current_kv);
-      this->fresh_kvs.push_back(fresh_kv);
       this->kv_sizes.push_back(size);
       generation_kv_index_by_name[name] = kv_input_index;
 
@@ -327,9 +323,8 @@ void causallm::Gauss3_6_QNN::initialize() {
 void causallm::Gauss3_6_QNN::initialize_kv_cache() {
   kv_len = 0;
   
-  // KV Cache Initialization
   for (int i = 0; i < this->kvs.size(); i++) {
-    std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
+    std::memset(this->kvs[i], 128, this->kv_sizes[i]);
   }
   reset_prefill_kv_cache_inputs();
 }

@@ -325,7 +325,6 @@ void causallm::Gauss3_8_QNN::initialize() {
     }
   }
 
-  fresh_kvs.clear();
   kvs.clear();
   kv_sizes.clear();
   kv_row_lengths.clear();
@@ -365,13 +364,10 @@ void causallm::Gauss3_8_QNN::initialize() {
       const int size = GraphParser::get_tensor_size(generation_info);
 
       auto *current_kv = static_cast<uint8_t *>(tracked_allocate(size));
-      auto *fresh_kv = static_cast<uint8_t *>(tracked_allocate(size));
       std::fill_n(current_kv, size, static_cast<uint8_t>(128));
-      std::fill_n(fresh_kv, size, static_cast<uint8_t>(128));
 
       const int kv_input_index = static_cast<int>(kvs.size());
       kvs.push_back(current_kv);
-      fresh_kvs.push_back(fresh_kv);
       kv_sizes.push_back(size);
       generation_kv_index_by_name[name] = kv_input_index;
 
@@ -418,7 +414,7 @@ void causallm::Gauss3_8_QNN::initialize_kv_cache() {
   kv_len = 0;
 
   for (size_t i = 0; i < kvs.size(); i++) {
-    std::memcpy(kvs[i], fresh_kvs[i], kv_sizes[i]);
+    std::memset(kvs[i], 128, kv_sizes[i]);
   }
   reset_prefill_kv_cache_inputs();
 }

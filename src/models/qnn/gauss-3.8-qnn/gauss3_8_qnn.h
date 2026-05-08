@@ -100,7 +100,6 @@ private:
 
   std::vector<uint8_t *> kvs;
   std::vector<int> kv_sizes;
-  std::vector<uint8_t *> fresh_kvs;
   std::vector<int> kv_row_lengths;
 
   std::vector<uint8_t *> prefill_kvs;
