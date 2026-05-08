@@ -85,6 +85,8 @@ struct CausalLmModel
   std::string native_lib_dir;
   std::vector<double> initialization_duration_ms;
   bool initialized = false;
+  int kv_len = 0;
+  bool conversation_started = false;
 };
 
 // Globals shared across all handles — options set via setOptions() apply
@@ -324,6 +326,143 @@ static std::string apply_chat_template(const std::string &architecture,
            input + "\n<|turn_end|>\n<|turn_start|>Assistant\n";
   }
   return input;
+}
+
+static bool is_gauss_qnn_architecture(const std::string &architecture)
+{
+  return architecture == "Gauss_3_6_QNN" || architecture == "Gauss_3_8_QNN";
+}
+
+static std::string trim_wrapping_newlines(std::string value)
+{
+  while (!value.empty() && (value.front() == '\n' || value.front() == '\r'))
+  {
+    value.erase(value.begin());
+  }
+  while (!value.empty() && (value.back() == '\n' || value.back() == '\r'))
+  {
+    value.pop_back();
+  }
+  return value;
+}
+
+static std::string extract_latest_gauss_user_content(const std::string &prompt)
+{
+  static constexpr const char *kGaussTurnStart = "<|turn_start|>";
+  static constexpr const char *kGaussTurnEnd = "<|turn_end|>";
+
+  size_t latest_content_start = std::string::npos;
+  size_t latest_content_end = std::string::npos;
+
+  for (size_t pos = prompt.find(kGaussTurnStart); pos != std::string::npos;
+       pos = prompt.find(kGaussTurnStart, pos + std::strlen(kGaussTurnStart)))
+  {
+    const size_t role_start = pos + std::strlen(kGaussTurnStart);
+    if (prompt.compare(role_start, 4, "User") != 0 &&
+        prompt.compare(role_start, 4, "user") != 0)
+    {
+      continue;
+    }
+
+    size_t content_start = role_start + 4;
+    if (content_start < prompt.size() && prompt[content_start] == '\r')
+    {
+      content_start++;
+    }
+    if (content_start < prompt.size() && prompt[content_start] == '\n')
+    {
+      content_start++;
+    }
+
+    size_t content_end = prompt.find(kGaussTurnEnd, content_start);
+    if (content_end == std::string::npos)
+    {
+      content_end = prompt.size();
+    }
+
+    latest_content_start = content_start;
+    latest_content_end = content_end;
+  }
+
+  if (latest_content_start == std::string::npos)
+  {
+    return prompt;
+  }
+
+  return trim_wrapping_newlines(
+      prompt.substr(latest_content_start,
+                    latest_content_end - latest_content_start));
+}
+
+static std::string
+build_gauss_incremental_user_prompt(const std::string &user_content)
+{
+  return "<|turn_start|>User\n" + user_content +
+         "\n<|turn_end|>\n<|turn_start|>Assistant\n";
+}
+
+static int read_gauss_qnn_kv_len(causallm::Transformer *model)
+{
+#ifdef ENABLE_QNN
+  if (auto *m = dynamic_cast<causallm::Gauss3_6_QNN *>(model))
+  {
+    return m->getKvLen();
+  }
+  if (auto *m = dynamic_cast<causallm::Gauss3_8_QNN *>(model))
+  {
+    return m->getKvLen();
+  }
+#endif
+  (void)model;
+  return 0;
+}
+
+static void reset_handle_session_state(CausalLmModel &h)
+{
+  h.kv_len = 0;
+  h.conversation_started = false;
+}
+
+static void update_handle_session_after_run(CausalLmModel &h,
+                                            size_t model_index)
+{
+  if (model_index >= h.models.size() || model_index >= h.architectures.size())
+  {
+    return;
+  }
+
+  if (!is_gauss_qnn_architecture(h.architectures[model_index]))
+  {
+    return;
+  }
+
+  h.kv_len = read_gauss_qnn_kv_len(h.models[model_index].get());
+  h.conversation_started = h.kv_len > 0;
+}
+
+static std::string prepare_input_for_model(CausalLmModel &h, size_t model_index,
+                                           const std::string &input,
+                                           bool input_already_formatted)
+{
+  if (model_index >= h.architectures.size() || !g_use_chat_template)
+  {
+    return input;
+  }
+
+  const std::string &architecture = h.architectures[model_index];
+  if (is_gauss_qnn_architecture(architecture) && h.conversation_started &&
+      h.kv_len > 0)
+  {
+    return build_gauss_incremental_user_prompt(
+        extract_latest_gauss_user_content(input));
+  }
+
+  if (input_already_formatted)
+  {
+    return input;
+  }
+
+  return apply_chat_template(architecture, input);
 }
 
 static std::string get_quantization_suffix(ModelQuantizationType type)
@@ -591,6 +730,12 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
   std::lock_guard<std::mutex> lock(h.mtx);
   try
   {
+    h.models.clear();
+    h.architectures.clear();
+    h.model_dirs.clear();
+    h.initialization_duration_ms.clear();
+    h.initialized = false;
+    reset_handle_session_state(h);
 
     // Check if it's a registered in-memory config
     std::string input_name = std::string(target_model_name);
@@ -1113,7 +1258,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
  * @brief Core runner shared by runModel and runModelHandle.
  */
 static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
-                               const char **outputText)
+                               const char **outputText,
+                               bool input_already_formatted = false)
 {
   if (inputTextPrompt == nullptr || outputText == nullptr)
   {
@@ -1129,14 +1275,8 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
   try
   {
     auto &model = *h.models[0];
-    const std::string &architecture = h.architectures[0];
-
-    std::string input(inputTextPrompt);
-
-    if (g_use_chat_template)
-    {
-      input = apply_chat_template(architecture, input);
-    }
+    std::string input = prepare_input_for_model(
+        h, 0, std::string(inputTextPrompt), input_already_formatted);
 
 // We assume single batch request for this API
 #if defined(_WIN32)
@@ -1148,6 +1288,7 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
 
     h.last_output = model.getOutput(0);
     *outputText = h.last_output.c_str();
+    update_handle_session_after_run(h, 0);
   }
   catch (const std::exception &e)
   {
@@ -1293,6 +1434,32 @@ apply_chat_template_messages(const std::string &architecture,
       result += "<start_of_turn>model\n";
     }
   }
+  else if (is_gauss_qnn_architecture(architecture))
+  {
+    result = "<|begin_of_text|>";
+    for (const auto &msg : messages)
+    {
+      std::string role = msg.role;
+      if (role == "system")
+      {
+        role = "System";
+      }
+      else if (role == "user")
+      {
+        role = "User";
+      }
+      else if (role == "assistant")
+      {
+        role = "Assistant";
+      }
+      result += "<|turn_start|>" + role + "\n" + msg.content +
+                "\n<|turn_end|>\n";
+    }
+    if (add_generation_prompt)
+    {
+      result += "<|turn_start|>Assistant\n";
+    }
+  }
   else
   {
     for (const auto &msg : messages)
@@ -1352,7 +1519,8 @@ ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
     return err;
   }
 
-  return runModel(formattedInput, outputText);
+  return run_on_handle(get_default_handle(), formattedInput, outputText,
+                       /*input_already_formatted=*/true);
 }
 /*============================================================================
  * Legacy non-handle API implementation
@@ -1515,19 +1683,14 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   try
   {
     LOGD("[DEBUG] runModelHandleStreaming: Preparing input text...");
-    std::string input(inputTextPrompt);
-    LOGD("[DEBUG]   raw input length: %zu", input.length());
+    const std::string raw_input(inputTextPrompt);
+    std::string input = prepare_input_for_model(
+        h, 0, raw_input,
+        /*input_already_formatted=*/false);
+    LOGD("[DEBUG]   raw input length: %zu", raw_input.length());
     LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
-
-    if (g_use_chat_template)
-    {
-      LOGD("[DEBUG] runModelHandleStreaming: Applying chat template...");
-      input = apply_chat_template(architecture, input);
-      LOGD("[DEBUG]   templated input length: %zu", input.length());
-      LOGD("[DEBUG]   templated input: %s", input.c_str());
-      // LOGD("[DEBUG]   templated input preview: %.100s%s", input.c_str(),
-      //      input.length() > 100 ? "..." : "");
-    }
+    LOGD("[DEBUG]   model input length: %zu", input.length());
+    LOGD("[DEBUG]   model input: %s", input.c_str());
 
     LOGD("[DEBUG] runModelHandleStreaming: Calling model->run()...");
 #if defined(_WIN32)
@@ -1542,6 +1705,7 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
     h.last_output = m->getOutput(0);
     LOGD("[DEBUG]   output length: %zu", h.last_output.length());
     LOGD("[DEBUG]   output: %s", h.last_output.c_str());
+    update_handle_session_after_run(h, 0);
 
     // Log performance metrics after successful run
     if (m->hasRun())
@@ -1601,6 +1765,7 @@ ErrorCode unloadModelHandle(CausalLmHandle handle)
   handle->model_dirs.clear();
   handle->initialization_duration_ms.clear();
   handle->initialized = false;
+  reset_handle_session_state(*handle);
   return CAUSAL_LM_ERROR_NONE;
 }
 
@@ -1621,6 +1786,7 @@ ErrorCode destroyModelHandle(CausalLmHandle handle)
     handle->model_dirs.clear();
     handle->initialization_duration_ms.clear();
     handle->initialized = false;
+    reset_handle_session_state(*handle);
   }
   delete handle;
   return CAUSAL_LM_ERROR_NONE;
@@ -1786,6 +1952,8 @@ execute_multimodal_llm(CausalLmModel &h, causallm::Gauss3_8_QNN *llm,
     llm->run_with_embeddings(combined.data(), n_total, text_ids,
                              /*do_sample=*/false,
                              /*log_output=*/g_verbose);
+    h.kv_len = llm->getKvLen();
+    h.conversation_started = h.kv_len > 0;
   }
   catch (const std::exception &e)
   {
@@ -1901,18 +2069,14 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   }
 
   LOGD("[DEBUG] runMultimodalHandleStreaming: Preparing input text...");
-  std::string input(prompt);
-  LOGD("[DEBUG]   raw input length: %zu", input.length());
+  const std::string raw_input(prompt);
+  std::string input = prepare_input_for_model(
+      h, 1, raw_input, /*input_already_formatted=*/false);
+  LOGD("[DEBUG]   raw input length: %zu", raw_input.length());
   LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
-
-  if (g_use_chat_template)
-  {
-    LOGD("[DEBUG] runMultimodalHandleStreaming: Applying chat template...");
-    input = apply_chat_template(h.architectures[1], input);
-    LOGD("[DEBUG]   templated input length: %zu", input.length());
-    LOGD("[DEBUG]   templated input preview: %.100s%s", input.c_str(),
-         input.length() > 100 ? "..." : "");
-  }
+  LOGD("[DEBUG]   model input length: %zu", input.length());
+  LOGD("[DEBUG]   model input preview: %.100s%s", input.c_str(),
+       input.length() > 100 ? "..." : "");
 
   return execute_multimodal_llm(h, llm, image_embeds, input, callback,
                                 user_data);
@@ -2026,8 +2190,10 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
     return 0;
   };
 
-  ErrorCode ec = execute_multimodal_llm(h, llm, image_embeds,
-                                        std::string(prompt), accumulate_cb,
+  std::string input = prepare_input_for_model(
+      h, 1, std::string(prompt), /*input_already_formatted=*/false);
+  ErrorCode ec = execute_multimodal_llm(h, llm, image_embeds, input,
+                                        accumulate_cb,
                                         static_cast<void *>(&h.last_output));
   if (ec != CAUSAL_LM_ERROR_NONE)
   {

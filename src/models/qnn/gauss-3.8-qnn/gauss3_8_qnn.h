@@ -10,6 +10,7 @@
 #ifndef __GAUSS_3_8_QNN_H__
 #define __GAUSS_3_8_QNN_H__
 
+#include "generate_qnn_utils.h"
 #include "quick_dot_ai_qnn.h"
 
 #include <cstddef>
@@ -52,24 +53,13 @@ public:
 
   const void *lookupEmbedding(int token_id) const;
 
+  int getKvLen() const { return kv_len; }
   size_t embeddingBytesPerToken() const { return embedding_bytes_per_token; }
   std::pair<float, int> get_embedding_info();
 
 private:
-  struct KvOutputBinding {
-    int output_index;
-    int kv_index;
-    int layer_index;
-    bool is_key;
-  };
-
   void reset_prefill_kv_cache_inputs();
   void sync_generation_kv_cache_to_prefill();
-  std::string normalize_conversation_prompt(const std::string &prompt) const;
-  void append_outputs_to_kv_cache(
-      const std::vector<ml::train::TensorDim::IO_TensorType> &step_outputs,
-      const std::vector<KvOutputBinding> &bindings, int target_position,
-      int rows, int src_row_length, const std::string &graph_name);
 
   // Input/output tensors
   uint16_t *attention_mask = nullptr;
@@ -98,7 +88,6 @@ private:
 
   // KV cache variables
   int kv_len = 0;
-  bool conversation_started_ = false;
 
   int generation_logits_output_index = -1;
   int prefill_attention_mask_elements = 0;
@@ -120,8 +109,8 @@ private:
   std::vector<int> prefill_to_generation_kv_indices;
   std::vector<int> prefill_kv_is_key;
 
-  std::vector<KvOutputBinding> prefill_output_kv_bindings;
-  std::vector<KvOutputBinding> generation_output_kv_bindings;
+  std::vector<QnnKvOutputBinding> prefill_output_kv_bindings;
+  std::vector<QnnKvOutputBinding> generation_output_kv_bindings;
 
   // Language model specific variables
   int num_hidden_layers;

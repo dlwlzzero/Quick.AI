@@ -10,6 +10,7 @@
 #ifndef __GAUSS_3_6_QNN_H__
 #define __GAUSS_3_6_QNN_H__
 
+#include "generate_qnn_utils.h"
 #include "quick_dot_ai_qnn.h"
 
 #include <cstdint>
@@ -44,8 +45,9 @@ public:
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
            bool log_output = true) override;
 
+  int getKvLen() const { return kv_len; }
+
 private:
-  std::string normalize_conversation_prompt(const std::string &prompt) const;
   void reset_prefill_kv_cache_inputs();
   void sync_generation_kv_cache_to_prefill();
 
@@ -73,7 +75,6 @@ private:
 
   // KV cache variables
   int kv_len;
-  bool conversation_started_ = false;
   
   std::vector<uint8_t *> kvs;
   std::vector<int> kv_sizes;
@@ -85,14 +86,8 @@ private:
   std::vector<int> prefill_to_generation_kv_indices;
   std::vector<int> prefill_kv_is_key;
 
-  struct KvOutputBinding {
-    int output_index;
-    int kv_index;
-    int layer_index;
-    bool is_key;
-  };
-  std::vector<KvOutputBinding> prefill_output_kv_bindings;
-  std::vector<KvOutputBinding> generation_output_kv_bindings;
+  std::vector<QnnKvOutputBinding> prefill_output_kv_bindings;
+  std::vector<QnnKvOutputBinding> generation_output_kv_bindings;
 
   int prefill_attention_mask_elements = 0;
   int prefill_sliding_attention_mask_elements = 0;
