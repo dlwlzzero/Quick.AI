@@ -24,7 +24,8 @@ extern std::chrono::duration<double> raw_exec_seconds;
 
 std::tuple<uint16_t *, uint16_t *> get_cos_sin (int context_size, int pos_dim,
     const double theta, const std::string &rope_type = "default",
-    double partial_rotary_factor = 1.0, double rope_scaling_factor = 1.0);
+    double partial_rotary_factor = 1.0, double rope_scaling_factor = 1.0,
+    int rope_head_dim = 0);
 
 void process_key (uint8_t *pointer, int row, int column, uint8_t *dest, int idx,
     int dest_row_length, int src_row_length);

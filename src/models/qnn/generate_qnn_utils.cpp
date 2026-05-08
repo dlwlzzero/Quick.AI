@@ -1,6 +1,7 @@
 #include "generate_qnn_utils.h"
 #include "android_memory_allocator.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -35,19 +36,21 @@ uint16_t quantize_rope_value(double value, double attention_factor) {
 
 std::tuple<uint16_t *, uint16_t *>
 get_cos_sin (int context_size, int pos_dim, const double theta,
-    const std::string &rope_type, double partial_rotary_factor, double rope_scaling_factor)
+    const std::string &rope_type, double partial_rotary_factor,
+    double rope_scaling_factor, int rope_head_dim)
 {
   double attention_factor = 1.0;
   const double scaling_factor = rope_scaling_factor > 0.0 ?
                                     rope_scaling_factor : 1.0;
+  const int frequency_dim = rope_head_dim > 0 ? rope_head_dim : pos_dim * 2;
+  // inv_freq indexes angle pairs, so the exponent advances by 2/head_dim.
+  const double exponent = 2.0 / static_cast<double> (frequency_dim);
   std::vector<double> inv_freq (pos_dim, 0.0);
 
   if (rope_type == "default") {
-    const double exponent = 1.0 / static_cast<double> (pos_dim);
     for (int j = 0; j < pos_dim; j++)
       inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
   } else if (rope_type == "linear" || rope_type == "proportional") {
-    const double exponent = 1.0 / static_cast<double> (pos_dim);
     int rotary_freq_count = pos_dim;
 
     if (rope_type == "proportional") {
@@ -57,13 +60,14 @@ get_cos_sin (int context_size, int pos_dim, const double theta,
       if (proportion > 1.0)
         proportion = 1.0;
       rotary_freq_count =
-          static_cast<int>(std::floor(proportion * pos_dim));
+          static_cast<int>(std::floor(
+              proportion * static_cast<double> (frequency_dim) / 2.0));
+      rotary_freq_count = std::max(0, std::min(pos_dim, rotary_freq_count));
     }
 
     for (int j = 0; j < rotary_freq_count; j++)
       inv_freq[j] = (1.0 / std::pow (theta, j * exponent)) / scaling_factor;
   } else {
-    const double exponent = 1.0 / static_cast<double> (pos_dim);
     for (int j = 0; j < pos_dim; j++)
       inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
   }

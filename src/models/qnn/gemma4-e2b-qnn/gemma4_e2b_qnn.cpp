@@ -402,7 +402,8 @@ void Gemma4_E2B_QNN::initialize() {
 
   std::tuple<uint16_t *, uint16_t *> cos_sin_tuple
       = get_cos_sin (rope_cache_seq_len, pos_dim, rope_theta_full,
-          rope_type_full, rope_partial_factor, rope_scaling_factor_full);
+          rope_type_full, rope_partial_factor, rope_scaling_factor_full,
+          g_head_dim);
   position_ids_cos = std::get<0> (cos_sin_tuple);
   position_ids_sin = std::get<1> (cos_sin_tuple);
   allocated_ptrs_.insert (position_ids_cos);
@@ -411,7 +412,8 @@ void Gemma4_E2B_QNN::initialize() {
   // ── Sliding window RoPE (default = no scaling) ──
   std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple
       = get_cos_sin (rope_cache_seq_len, swa_pos_dim, rope_theta_sliding,
-          rope_type_sliding, /*partial=*/1.0, rope_scaling_factor_sliding);
+          rope_type_sliding, /*partial=*/1.0, rope_scaling_factor_sliding,
+          l_head_dim);
   swa_position_ids_cos = std::get<0> (swa_cos_sin_tuple);
   swa_position_ids_sin = std::get<1> (swa_cos_sin_tuple);
   allocated_ptrs_.insert (swa_position_ids_cos);
