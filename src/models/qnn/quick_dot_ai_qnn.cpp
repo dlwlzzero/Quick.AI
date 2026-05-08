@@ -11,6 +11,11 @@
 #include "engine.h"
 #include "graph_parser.h"
 
+#if defined(_WIN32)
+#include <codecvt>
+#include <locale>
+#endif
+
 using namespace ml::train;
 using namespace nntrainer;
 using namespace causallm;
@@ -57,6 +62,15 @@ void causallm::Quick_Dot_AI_QNN::deallocate_all() {
     deallocate(ptr);
   }
   allocated_ptrs_.clear();
+}
+
+std::string causallm::Quick_Dot_AI_QNN::promptToUtf8(const WSTR &prompt) {
+#if defined(_WIN32)
+  std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+  return converter.to_bytes(prompt);
+#else
+  return prompt;
+#endif
 }
 
 causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN() {

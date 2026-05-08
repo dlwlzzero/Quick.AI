@@ -162,6 +162,17 @@ protected:
 
   /// Deallocate every tracked pointer and clear the set.
   void deallocate_all();
+
+  /**
+   * @brief Convert the run() prompt argument into UTF-8 text for tokenization.
+   *
+   * This helper only normalizes the platform string representation required by
+   * Transformer::run(WSTR): on Windows it converts wide strings to UTF-8, while
+   * on Android/Linux WSTR is already UTF-8-compatible and is returned as-is.
+   * Chat-template formatting and incremental conversation handling must remain
+   * in the API layer before the prompt reaches the model.
+   */
+  static std::string promptToUtf8(const WSTR &prompt);
 };
 
 } // namespace causallm

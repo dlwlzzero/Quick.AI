@@ -26,29 +26,12 @@
 #include <unistd.h>
 
 #include <algorithm>
-#if defined(_WIN32)
-#include <codecvt>
-#include <locale>
-#endif
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <unordered_map>
 
 using namespace causallm;
-
-namespace {
-
-std::string prompt_to_utf8(const WSTR &prompt) {
-#if defined(_WIN32)
-  std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-  return converter.to_bytes(prompt);
-#else
-  return prompt;
-#endif
-}
-
-} // namespace
 
 /**
  * @brief Auto-registration via constructor attribute
@@ -424,7 +407,7 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
 
   stop_requested_.store(false, std::memory_order_release);
 
-  const std::string model_prompt = prompt_to_utf8(prompt);
+  const std::string model_prompt = promptToUtf8(prompt);
   auto input = tokenizer->Encode(model_prompt);
 
   if (input.size() <= 1) {
