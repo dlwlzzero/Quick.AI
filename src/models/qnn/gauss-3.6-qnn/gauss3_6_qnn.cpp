@@ -535,13 +535,6 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     if (token == eos_token || token == padding_token) {
       break;
     }
-    // Accept token in grammar matcher if xgrammar_ is provided (from base class)
-    // Only accept non-eos tokens
-    if (xgrammar_ != nullptr && xgrammar_->isGrammarEnabled()) {
-      xgrammar_->getGrammarMatcher()->AcceptToken(token);
-      // Update bitmask for next token
-      xgrammar_->getGrammarMatcher()->FillNextTokenBitmask(&xgrammar_->getBitmaskTensor());
-    }
     output.push_back(token);
     if (token == eos_token) {
       append_generation_token_to_kv_cache(token);
