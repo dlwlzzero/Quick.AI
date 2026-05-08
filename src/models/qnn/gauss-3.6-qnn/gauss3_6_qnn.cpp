@@ -346,19 +346,6 @@ void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
   context_size = cfg["context_size"].get<int>();
   pos_dim = cfg["pos_dim"].get<int>();
   head_dim = cfg["head_dim"].get<int>();
-
-  // Read generation_config parameters
-  padding_token = generation_cfg["padding_token"].get<int>();
-  eos_token = generation_cfg["eos_token_id"].get<int>();
-  temperature = generation_cfg["temperature"].get<float>();
-  top_k = generation_cfg["top_k"].get<int>();
-  top_p = generation_cfg["top_p"].get<float>();
-  repetition_penalty = generation_cfg["repetition_penalty"].get<float>();
-  logit_scale = generation_cfg["logit_scale"].get<float>();
-  logit_offset = generation_cfg["logit_offset"].get<int>();
-
-  // Read optional lora_path
-  lora_path = nntr_cfg.value("lora_path", "");
 }
 
 void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,

@@ -280,6 +280,19 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
     LOGD("---------------- embedding_file_name : %s",
          embedding_file_name.c_str());
   }
+
+  // Read generation_config parameters
+  padding_token = generation_cfg["padding_token"].get<int>();
+  eos_token = generation_cfg["eos_token_id"].get<int>();
+  temperature = generation_cfg["temperature"].get<float>();
+  top_k = generation_cfg["top_k"].get<int>();
+  top_p = generation_cfg["top_p"].get<float>();
+  repetition_penalty = generation_cfg["repetition_penalty"].get<float>();
+  logit_scale = generation_cfg["logit_scale"].get<float>();
+  logit_offset = generation_cfg["logit_offset"].get<int>();
+
+  // Read optional lora_path
+  lora_path = nntr_cfg.value("lora_path", "");
 }
 
 void causallm::Quick_Dot_AI_QNN::constructModel() {
