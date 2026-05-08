@@ -277,9 +277,13 @@ void causallm::Gauss3_6_QNN::initialize() {
           generation_graph_info.raw_inputs[generation_input_index].second;
 
       int size = GraphParser::get_tensor_size(generation_info);
+      if (generation_info.data_type != "QNN_DATATYPE_UFIXED_POINT_8") {
+        throw std::runtime_error("Unexpected generation KV dtype for " + name);
+      }
 
-      auto *current_kv = static_cast<uint8_t *>(tracked_allocate(size));
-      std::fill_n(current_kv, size, static_cast<uint8_t>(128));
+      auto *current_kv =
+          std::get<uint8_t *>(generation_inputs[generation_input_index]);
+      std::memset(current_kv, 128, size);
 
       int kv_input_index = static_cast<int>(this->kvs.size());
       this->kvs.push_back(current_kv);
@@ -299,7 +303,6 @@ void causallm::Gauss3_6_QNN::initialize() {
         this->prefill_to_generation_kv_indices.push_back(kv_input_index);
         this->prefill_kv_is_key.push_back(is_key ? 1 : 0);
       }
-      generation_inputs[generation_input_index] = current_kv;
     }
   }
 
