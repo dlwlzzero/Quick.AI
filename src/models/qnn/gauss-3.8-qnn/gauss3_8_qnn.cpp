@@ -38,6 +38,8 @@ using namespace causallm;
 namespace {
 
 constexpr int kKvNumColumns = 128;
+constexpr const char *kGaussTurnStart = "<|turn_start|>";
+constexpr const char *kGaussTurnEnd = "<|turn_end|>";
 
 bool starts_with(const std::string &value, const std::string &prefix) {
   return value.compare(0, prefix.size(), prefix) == 0;
@@ -50,6 +52,59 @@ std::string prompt_to_utf8(const WSTR &prompt) {
 #else
   return prompt;
 #endif
+}
+
+std::string trim_wrapping_newlines(std::string value) {
+  while (!value.empty() && (value.front() == '\n' || value.front() == '\r')) {
+    value.erase(value.begin());
+  }
+  while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
+    value.pop_back();
+  }
+  return value;
+}
+
+std::string extract_latest_user_content(const std::string &prompt) {
+  size_t latest_content_start = std::string::npos;
+  size_t latest_content_end = std::string::npos;
+
+  for (size_t pos = prompt.find(kGaussTurnStart); pos != std::string::npos;
+       pos = prompt.find(kGaussTurnStart, pos + std::strlen(kGaussTurnStart))) {
+    const size_t role_start = pos + std::strlen(kGaussTurnStart);
+    if (prompt.compare(role_start, 4, "User") != 0 &&
+        prompt.compare(role_start, 4, "user") != 0) {
+      continue;
+    }
+
+    size_t content_start = role_start + 4;
+    if (content_start < prompt.size() && prompt[content_start] == '\r') {
+      content_start++;
+    }
+    if (content_start < prompt.size() && prompt[content_start] == '\n') {
+      content_start++;
+    }
+
+    size_t content_end = prompt.find(kGaussTurnEnd, content_start);
+    if (content_end == std::string::npos) {
+      content_end = prompt.size();
+    }
+
+    latest_content_start = content_start;
+    latest_content_end = content_end;
+  }
+
+  if (latest_content_start == std::string::npos) {
+    return prompt;
+  }
+
+  return trim_wrapping_newlines(
+      prompt.substr(latest_content_start,
+                    latest_content_end - latest_content_start));
+}
+
+std::string build_gauss_user_turn_prompt(const std::string &user_content) {
+  return std::string(kGaussTurnStart) + "User\n" + user_content + "\n" +
+         kGaussTurnEnd + "\n" + kGaussTurnStart + "Assistant\n";
 }
 
 int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
@@ -520,6 +575,7 @@ void causallm::Gauss3_8_QNN::initialize() {
 
 void causallm::Gauss3_8_QNN::initialize_kv_cache() {
   kv_len = 0;
+  conversation_started_ = false;
 
   for (size_t i = 0; i < kvs.size(); i++) {
     std::memcpy(kvs[i], fresh_kvs[i], kv_sizes[i]);
@@ -556,6 +612,15 @@ void causallm::Gauss3_8_QNN::sync_generation_kv_cache_to_prefill() {
                          kv_row_lengths[generation_layer_idx], kv_len,
                          prefill_kv_is_key[i] != 0);
   }
+}
+
+std::string causallm::Gauss3_8_QNN::normalize_conversation_prompt(
+    const std::string &prompt) const {
+  if (!conversation_started_ || kv_len <= 0) {
+    return prompt;
+  }
+
+  return build_gauss_user_turn_prompt(extract_latest_user_content(prompt));
 }
 
 void causallm::Gauss3_8_QNN::append_outputs_to_kv_cache(
@@ -643,7 +708,8 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
 
   stop_requested_.store(false, std::memory_order_release);
 
-  const std::string model_prompt = prompt_to_utf8(prompt);
+  const std::string raw_prompt = prompt_to_utf8(prompt);
+  const std::string model_prompt = normalize_conversation_prompt(raw_prompt);
   auto input = tokenizer->Encode(model_prompt);
 
   if (input.size() <= 1) {
@@ -667,6 +733,12 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
 
   std::cout << "len: " << input_len << ", n_chunks: " << n_chunks
             << std::endl;
+  LOGD("prompt token length=%u, n_chunks=%u, full_kv_past=%d, "
+       "sliding_kv_past=%d, rope_cache_seq_len=%d, conversation_started=%d, "
+       "raw_prompt_bytes=%zu, model_prompt_bytes=%zu",
+       input_len, n_chunks, generation_full_kv_past_length,
+       generation_sliding_kv_past_length, rope_cache_seq_len,
+       conversation_started_ ? 1 : 0, raw_prompt.size(), model_prompt.size());
 
   std::vector<int> output;
   std::vector<ml::train::TensorDim::IO_TensorType> outputs;
@@ -746,6 +818,20 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     std::memcpy(generation_swa_position_ids_sin,
                 swa_position_ids_sin + position * pos_dim,
                 pos_dim * sizeof(uint16_t));
+  };
+
+  auto append_generation_token_to_kv_cache = [&](int token_to_append) {
+    if (kv_len >= generation_full_kv_past_length) {
+      LOGD("skip appending terminal token to KV: kv_len=%d, full_kv_past=%d",
+           kv_len, generation_full_kv_past_length);
+      return;
+    }
+
+    fill_generation_inputs(token_to_append, kv_len);
+    auto terminal_outputs = generation_model->inference(1, generation_inputs);
+    append_outputs_to_kv_cache(terminal_outputs, generation_output_kv_bindings,
+                               kv_len, 1, 1, generation_graph);
+    kv_len += 1;
   };
 
   for (unsigned int c = 0; c < n_chunks; c++) {
@@ -830,6 +916,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
 
     output.push_back(token);
     if (token == eos_token) {
+      append_generation_token_to_kv_cache(token);
       break;
     }
 
@@ -851,6 +938,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
   }
 
   has_run_ = true;
+  conversation_started_ = true;
 
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;

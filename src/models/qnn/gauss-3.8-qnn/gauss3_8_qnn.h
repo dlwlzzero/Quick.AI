@@ -65,6 +65,7 @@ private:
 
   void reset_prefill_kv_cache_inputs();
   void sync_generation_kv_cache_to_prefill();
+  std::string normalize_conversation_prompt(const std::string &prompt) const;
   void append_outputs_to_kv_cache(
       const std::vector<ml::train::TensorDim::IO_TensorType> &step_outputs,
       const std::vector<KvOutputBinding> &bindings, int target_position,
@@ -97,6 +98,7 @@ private:
 
   // KV cache variables
   int kv_len = 0;
+  bool conversation_started_ = false;
 
   int generation_logits_output_index = -1;
   int prefill_attention_mask_elements = 0;
