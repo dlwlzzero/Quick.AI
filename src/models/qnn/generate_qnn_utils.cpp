@@ -16,32 +16,56 @@
 std::mt19937 rng;
 std::chrono::duration<double> raw_exec_seconds;
 
+namespace {
+
+constexpr float kRopeQuantScale = 3.051804378628731e-05f;
+constexpr int kRopeQuantOffset = -32768;
+
+uint16_t quantize_rope_value(double value, double attention_factor) {
+  const double q = (value * attention_factor) / kRopeQuantScale -
+                   kRopeQuantOffset;
+  if (q <= 0.0)
+    return 0;
+  if (q >= 65535.0)
+    return 65535;
+  return static_cast<uint16_t>(std::lrint(q));
+}
+
+} // namespace
+
 std::tuple<uint16_t *, uint16_t *>
 get_cos_sin (int context_size, int pos_dim, const double theta,
     const std::string &rope_type, double partial_rotary_factor, double rope_scaling_factor)
 {
-
-  const double exponent = 1.0 / static_cast<double> (pos_dim);
-
-  const float scale = 3.051804378628731e-05f;
-  const int offset = -32768;
-
-  std::vector<double> inv_freq (pos_dim);
-  for (int j = 0; j < pos_dim; j++) {
-    inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
-  }
-
   double attention_factor = 1.0;
+  const double scaling_factor = rope_scaling_factor > 0.0 ?
+                                    rope_scaling_factor : 1.0;
+  std::vector<double> inv_freq (pos_dim, 0.0);
 
   if (rope_type == "default") {
-    // already computed
+    const double exponent = 1.0 / static_cast<double> (pos_dim);
+    for (int j = 0; j < pos_dim; j++)
+      inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
   } else if (rope_type == "linear" || rope_type == "proportional") {
-    if (rope_scaling_factor > 1.0) {
-      for (int j = 0; j < pos_dim; j++)
-        inv_freq[j] /= rope_scaling_factor;
+    const double exponent = 1.0 / static_cast<double> (pos_dim);
+    int rotary_freq_count = pos_dim;
+
+    if (rope_type == "proportional") {
+      double proportion = partial_rotary_factor;
+      if (proportion < 0.0)
+        proportion = 0.0;
+      if (proportion > 1.0)
+        proportion = 1.0;
+      rotary_freq_count =
+          static_cast<int>(std::floor(proportion * pos_dim));
     }
+
+    for (int j = 0; j < rotary_freq_count; j++)
+      inv_freq[j] = (1.0 / std::pow (theta, j * exponent)) / scaling_factor;
   } else {
-    // layter implementation for dynamic / yarn / longrope / llama3
+    const double exponent = 1.0 / static_cast<double> (pos_dim);
+    for (int j = 0; j < pos_dim; j++)
+      inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
   }
 
   uint16_t *cos_val =
@@ -53,9 +77,9 @@ get_cos_sin (int context_size, int pos_dim, const double theta,
     for (int j = 0; j < pos_dim; j++) {
       const double freq = i * inv_freq[j];
       cos_val[i * pos_dim + j] =
-          (std::cos(freq) * attention_factor) / scale - offset;
+          quantize_rope_value(std::cos(freq), attention_factor);
       sin_val[i * pos_dim + j] =
-          (std::sin(freq) * attention_factor) / scale - offset;
+          quantize_rope_value(std::sin(freq), attention_factor);
     }
   }
   return std::make_tuple(cos_val, sin_val);

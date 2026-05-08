@@ -400,9 +400,6 @@ void Gemma4_E2B_QNN::initialize() {
   // allocated_ptrs_.insert(swa_position_ids_cos);
   // allocated_ptrs_.insert(swa_position_ids_sin);
 
-  // ── Full attention RoPE ──
-  double rope_scaling_factor_full = 1.0;
-
   std::tuple<uint16_t *, uint16_t *> cos_sin_tuple
       = get_cos_sin (rope_cache_seq_len, pos_dim, rope_theta_full,
           rope_type_full, rope_partial_factor, rope_scaling_factor_full);
@@ -414,7 +411,7 @@ void Gemma4_E2B_QNN::initialize() {
   // ── Sliding window RoPE (default = no scaling) ──
   std::tuple<uint16_t *, uint16_t *> swa_cos_sin_tuple
       = get_cos_sin (rope_cache_seq_len, swa_pos_dim, rope_theta_sliding,
-          rope_type_sliding, /*partial=*/1.0, /*scaling=*/1.0);
+          rope_type_sliding, /*partial=*/1.0, rope_scaling_factor_sliding);
   swa_position_ids_cos = std::get<0> (swa_cos_sin_tuple);
   swa_position_ids_sin = std::get<1> (swa_cos_sin_tuple);
   allocated_ptrs_.insert (swa_position_ids_cos);
@@ -606,6 +603,7 @@ void Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
       auto &fa = rp["full_attention"];
       rope_theta_full     = fa.value("rope_theta", 1000000.0f);
       rope_partial_factor = fa.value("partial_rotary_factor", 1.0f);
+      rope_scaling_factor_full = fa.value("factor", 1.0f);
       rope_type_full      = fa.value("rope_type", std::string("default"));
     }
 
@@ -613,21 +611,26 @@ void Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
         rp["sliding_attention"].is_object()) {
       auto &sa = rp["sliding_attention"];
       rope_theta_sliding = sa.value("rope_theta", 10000.0f);
+      rope_scaling_factor_sliding = sa.value("factor", 1.0f);
       rope_type_sliding  = sa.value("rope_type", std::string("default"));
     }
   } else {
     // Legacy flat form
     rope_theta_full    = cfg.value("rope_theta",       1000000.0f);
     rope_theta_sliding = cfg.value("local_rope_theta",   10000.0f);
+    rope_scaling_factor_full = 1.0f;
+    rope_scaling_factor_sliding = 1.0f;
   }
 
   // rope_theta       = rope_theta_full;
   // local_rope_theta = rope_theta_sliding;
 
-  LOGD("RoPE full: theta=%f partial=%f type=%s",
-       rope_theta_full, rope_partial_factor, rope_type_full.c_str());
-  LOGD("RoPE sliding: theta=%f type=%s",
-       rope_theta_sliding, rope_type_sliding.c_str());
+  LOGD("RoPE full: theta=%f partial=%f factor=%f type=%s",
+       rope_theta_full, rope_partial_factor, rope_scaling_factor_full,
+       rope_type_full.c_str());
+  LOGD("RoPE sliding: theta=%f factor=%f type=%s",
+       rope_theta_sliding, rope_scaling_factor_sliding,
+       rope_type_sliding.c_str());
 
   padding_token      = generation_cfg["pad_token_id"].get<int>();
   eos_tokens         = generation_cfg["eos_token_id"].get<std::vector<int>>();

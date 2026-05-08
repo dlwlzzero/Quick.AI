@@ -146,9 +146,11 @@ private:
   int   sliding_window;
   float local_rope_theta;
   float rope_theta_sliding = 10000.0f;
+  float rope_scaling_factor_sliding = 1.0f;
   std::string rope_type_sliding = "default";
   float rope_theta_full = 1000000.0;
   float rope_partial_factor = 1.0f;
+  float rope_scaling_factor_full = 1.0f;
   std::string rope_type_full = "default";
 
   int   context_size;

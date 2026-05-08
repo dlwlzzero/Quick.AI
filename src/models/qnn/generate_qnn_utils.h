@@ -8,6 +8,7 @@
 #include <memory>
 #include <queue>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
