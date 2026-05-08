@@ -141,6 +141,114 @@ __attribute__((constructor)) static void register_custom_models() {
 // =====================================================================
 // PLE methods
 // =====================================================================
+void Gemma4_E2B_QNN::open_embedding_file_() {
+  if (embedding_file_name.empty())
+    throw std::runtime_error("Gemma4 embedding manifest is not configured");
+
+  std::ifstream mf(embedding_file_name);
+  if (!mf.is_open())
+    throw std::runtime_error("Failed to open embedding manifest: " +
+                             embedding_file_name);
+  json j; mf >> j;
+
+  const std::string lut_rel  = j.at("lut-path").get<std::string>();
+  const int row_elems        = j.at("size").get<int>();
+  const std::string datatype = j.value("datatype", std::string("ufixed8"));
+  const auto &qp             = j.at("quant-param");
+
+  if (datatype != "ufixed8")
+    throw std::runtime_error("Embedding: only ufixed8 supported, got " +
+                             datatype);
+
+  embedding_scale_     = qp.at("scale").get<float>();
+  embedding_offset_    = qp.at("offset").get<int>();
+  embedding_row_elems_ = static_cast<size_t>(row_elems);
+  embedding_row_bytes_ = (embedding_row_elems_ + 1) / 2;
+
+  if (embedding_row_elems_ != static_cast<size_t>(hidden_size))
+    throw std::runtime_error("Embedding LUT width does not match hidden_size");
+
+  std::string lut_abs =
+      rebase_relative_to_model_file(lut_rel, embedding_file_name);
+
+  embedding_fd_ = open(lut_abs.c_str(), O_RDONLY);
+  if (embedding_fd_ < 0)
+    throw std::runtime_error("open embedding bin: " + lut_abs);
+  struct stat st;
+  if (fstat(embedding_fd_, &st) < 0) {
+    ::close(embedding_fd_); embedding_fd_ = -1;
+    throw std::runtime_error("stat embedding bin: " + lut_abs);
+  }
+  embedding_file_size_ = static_cast<size_t>(st.st_size);
+  if (embedding_file_size_ % embedding_row_bytes_ != 0) {
+    ::close(embedding_fd_); embedding_fd_ = -1;
+    throw std::runtime_error("Embedding bin size not multiple of row bytes");
+  }
+  embedding_rows_ = embedding_file_size_ / embedding_row_bytes_;
+  if (embedding_rows_ < static_cast<size_t>(vocab_size)) {
+    ::close(embedding_fd_); embedding_fd_ = -1;
+    throw std::runtime_error("Embedding row count smaller than vocab_size");
+  }
+
+  void *m = mmap(nullptr, embedding_file_size_, PROT_READ, MAP_PRIVATE,
+                 embedding_fd_, 0);
+  if (m == MAP_FAILED) {
+    ::close(embedding_fd_); embedding_fd_ = -1;
+    throw std::runtime_error("mmap embedding bin: " + lut_abs);
+  }
+  embedding_mmap_ = static_cast<const uint8_t *>(m);
+#ifdef POSIX_MADV_RANDOM
+  posix_madvise((void *)embedding_mmap_, embedding_file_size_,
+                POSIX_MADV_RANDOM);
+#endif
+}
+
+void Gemma4_E2B_QNN::close_embedding_file_() {
+  if (embedding_mmap_) {
+    munmap((void *)embedding_mmap_, embedding_file_size_);
+    embedding_mmap_ = nullptr;
+  }
+  if (embedding_fd_ >= 0) {
+    ::close(embedding_fd_);
+    embedding_fd_ = -1;
+  }
+}
+
+void Gemma4_E2B_QNN::fill_prefill_embedding_chunk_(
+    const std::vector<int> &tokens, int chunk_idx, int chunk_len) {
+  if (!embedding_mmap_)
+    throw std::runtime_error("Embedding LUT is not loaded");
+
+  for (int t = 0; t < context_size; ++t) {
+    const int abs_idx  = chunk_idx * context_size + t;
+    const int token_id = (t < chunk_len) ? tokens[abs_idx] : padding_token;
+    if (token_id < 0 || static_cast<size_t>(token_id) >= embedding_rows_)
+      throw std::runtime_error("Embedding token id out of range");
+
+    const uint8_t *row =
+        embedding_mmap_ + static_cast<size_t>(token_id) * embedding_row_bytes_;
+    uint16_t *dst = input_sample + static_cast<size_t>(t) * embedding_row_elems_;
+    dequant_nibbles_requant_u16(row, embedding_row_elems_, embedding_scale_,
+                                embedding_offset_, prefill_input_embed_scale_,
+                                prefill_input_embed_offset_, dst);
+  }
+}
+
+void Gemma4_E2B_QNN::fill_generation_embedding_(int token_id) {
+  if (!embedding_mmap_)
+    throw std::runtime_error("Embedding LUT is not loaded");
+  if (token_id < 0 || static_cast<size_t>(token_id) >= embedding_rows_)
+    throw std::runtime_error("Embedding token id out of range");
+
+  const uint8_t *row =
+      embedding_mmap_ + static_cast<size_t>(token_id) * embedding_row_bytes_;
+  dequant_nibbles_requant_u16(row, embedding_row_elems_, embedding_scale_,
+                              embedding_offset_,
+                              generation_input_embed_scale_,
+                              generation_input_embed_offset_,
+                              generation_sample);
+}
+
 void Gemma4_E2B_QNN::open_ple_file_() {
   if (ple_file_name.empty()) return;
 
@@ -243,6 +351,7 @@ void Gemma4_E2B_QNN::fill_generation_ple_(int token_id) {
 // Destructor
 // =====================================================================
 Gemma4_E2B_QNN::~Gemma4_E2B_QNN() {
+  close_embedding_file_();
   close_ple_file_();
   this->prefill_kv_zero_byte_.clear();
 }
@@ -343,8 +452,20 @@ void Gemma4_E2B_QNN::initialize() {
       prefill_graph_info.raw_inputs, "input_embeds");
   int generation_input_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "input_embeds");
-  input_sample      = std::get<float *>(prefill_inputs[prefill_input_idx]);
-  generation_sample = std::get<float *>(generation_inputs[generation_input_idx]);
+  const auto &prefill_embed_info =
+      prefill_graph_info.raw_inputs[prefill_input_idx].second;
+  const auto &generation_embed_info =
+      generation_graph_info.raw_inputs[generation_input_idx].second;
+  if (prefill_embed_info.data_type != "QNN_DATATYPE_UFIXED_POINT_16" ||
+      generation_embed_info.data_type != "QNN_DATATYPE_UFIXED_POINT_16") {
+    throw std::runtime_error("Gemma4 input_embeds must be uint16 QNN inputs");
+  }
+  prefill_input_embed_scale_     = prefill_embed_info.scale;
+  prefill_input_embed_offset_    = prefill_embed_info.offset;
+  generation_input_embed_scale_  = generation_embed_info.scale;
+  generation_input_embed_offset_ = generation_embed_info.offset;
+  input_sample      = std::get<uint16_t *>(prefill_inputs[prefill_input_idx]);
+  generation_sample = std::get<uint16_t *>(generation_inputs[generation_input_idx]);
 
   attention_mask = std::get<uint16_t *>(prefill_inputs[
       GraphParser::find_tensor_index(prefill_graph_info.raw_inputs,
@@ -455,6 +576,7 @@ void Gemma4_E2B_QNN::initialize() {
             << " generation slots=" << generation_per_layer_dst_.size()
             << std::endl;
 
+  open_embedding_file_();
   open_ple_file_();
 
   // ── KV cache mapping (Gauss 3.6 pattern, 2 KV per layer) ──
@@ -587,6 +709,7 @@ void Gemma4_E2B_QNN::initialize() {
 void Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
                                      json &nntr_cfg) {
   Quick_Dot_AI_QNN::setupParameters(cfg, generation_cfg, nntr_cfg);
+  uses_embedding = false;
 
   num_hidden_layers = cfg["num_hidden_layers"].get<int>();
   hidden_size       = cfg["hidden_size"].get<int>();
@@ -681,7 +804,7 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
     if (position < 0 || position >= rope_cache_seq_len)
       throw std::runtime_error("Generation position out of rope cache");
 
-    generation_sample[0] = current_token;
+    fill_generation_embedding_(current_token);
 
     std::fill_n(generation_attention_mask,
                 generation_attention_mask_elements, 0);
@@ -774,8 +897,7 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
 
     sync_generation_kv_cache_to_prefill();
 
-    for (int i = 0; i < context_size; ++i)
-      input_sample[i] = (i < chunk_len) ? _input[c * 256 + i] : padding_token;
+    fill_prefill_embedding_chunk_(_input, c, chunk_len);
 
     fill_attention_mask_with_length(context_size, prefill_attention_mask_columns,
                                     chunk_len, attention_mask);

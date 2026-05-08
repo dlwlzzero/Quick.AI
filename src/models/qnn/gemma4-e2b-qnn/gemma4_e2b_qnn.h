@@ -39,6 +39,29 @@ public:
 
 private:
   // -------------------------------------------------------------------
+  // Embedding: tensorwise 4-bit packed LUT, mmap-backed.
+  // -------------------------------------------------------------------
+  int            embedding_fd_         = -1;
+  const uint8_t *embedding_mmap_       = nullptr;
+  size_t         embedding_file_size_  = 0;
+  float          embedding_scale_      = 1.0f;
+  int            embedding_offset_     = 0;
+  size_t         embedding_row_elems_  = 0;
+  size_t         embedding_row_bytes_  = 0;
+  size_t         embedding_rows_       = 0;
+
+  float prefill_input_embed_scale_     = 1.0f;
+  int   prefill_input_embed_offset_    = 0;
+  float generation_input_embed_scale_  = 1.0f;
+  int   generation_input_embed_offset_ = 0;
+
+  void open_embedding_file_();
+  void close_embedding_file_();
+  void fill_prefill_embedding_chunk_(const std::vector<int> &tokens,
+                                     int chunk_idx, int chunk_len);
+  void fill_generation_embedding_(int token_id);
+
+  // -------------------------------------------------------------------
   // PLE: tensorwise 4-bit packed LUT, mmap-backed.
   // -------------------------------------------------------------------
   int            ple_fd_         = -1;
@@ -86,8 +109,8 @@ private:
   uint16_t *generation_swa_position_ids_cos;
   uint16_t *generation_swa_position_ids_sin;
 
-  float *input_sample;
-  float *generation_sample;
+  uint16_t *input_sample;
+  uint16_t *generation_sample;
 
   // -------------------------------------------------------------------
   // KV cache (Gauss 3.6 pattern adapted for Gemma 4: 2 KV per layer)
