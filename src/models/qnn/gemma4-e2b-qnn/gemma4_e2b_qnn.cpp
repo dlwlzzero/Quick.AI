@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -104,6 +105,7 @@ void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
 }
 
 // PLE 4-bit packed → uint16 (QNN consumer space) two-step requant.
+// ufixed8 path: f = (q4bit + lut_offset) * lut_scale.
 inline void dequant_nibbles_requant_u16(const uint8_t *packed, size_t elems,
                                         float lut_scale, int lut_offset,
                                         float out_scale, int out_offset,
@@ -111,6 +113,31 @@ inline void dequant_nibbles_requant_u16(const uint8_t *packed, size_t elems,
   const float inv_out = 1.0f / out_scale;
   auto requant = [&](uint8_t nib) -> uint16_t {
     const float f = (static_cast<float>(nib) + lut_offset) * lut_scale;
+    int q = static_cast<int>(std::lrintf(f * inv_out)) - out_offset;
+    return static_cast<uint16_t>(std::max(0, std::min(65535, q)));
+  };
+  const size_t whole = elems / 2;
+  for (size_t i = 0; i < whole; ++i) {
+    const uint8_t b = packed[i];
+    dst[2 * i]     = requant(b & 0x0F);
+    dst[2 * i + 1] = requant((b >> 4) & 0x0F);
+  }
+  if (elems & 1) dst[2 * whole] = requant(packed[whole] & 0x0F);
+}
+
+// Sign-extend a 4-bit value (0..15 → -8..7).
+inline int s4(unsigned nib) {
+  return (nib & 0x8u) ? static_cast<int>(nib) - 16 : static_cast<int>(nib);
+}
+
+// PLE sfixed4 (per-row-per-layer) → uint16 requant. f = s4(nib) * row_scale.
+inline void dequant_sfixed4_requant_u16(const uint8_t *packed, size_t elems,
+                                         float row_scale,
+                                         float out_scale, int out_offset,
+                                         uint16_t *dst) {
+  const float inv_out = 1.0f / out_scale;
+  auto requant = [&](unsigned nib) -> uint16_t {
+    const float f = static_cast<float>(s4(nib)) * row_scale;
     int q = static_cast<int>(std::lrintf(f * inv_out)) - out_offset;
     return static_cast<uint16_t>(std::max(0, std::min(65535, q)));
   };
@@ -139,65 +166,168 @@ __attribute__((constructor)) static void register_custom_models() {
 }
 
 // =====================================================================
-// PLE methods
+// PLE methods (dual-mode: 4-bit manifest OR raw uint16 bin)
 // =====================================================================
+namespace {
+inline bool ends_with(const std::string &s, const std::string &suf) {
+  return s.size() >= suf.size() &&
+         0 == s.compare(s.size() - suf.size(), suf.size(), suf);
+}
+} // namespace
+
 void Gemma4_E2B_QNN::open_ple_file_() {
   if (ple_file_name.empty()) return;
 
-  std::ifstream mf(ple_file_name);
-  if (!mf.is_open())
-    throw std::runtime_error("Failed to open PLE manifest: " + ple_file_name);
-  json j; mf >> j;
-
-  const std::string lut_rel  = j.at("lut-path").get<std::string>();
-  const int row_elems        = j.at("size").get<int>();
-  const std::string datatype = j.value("datatype", std::string("ufixed8"));
-  const auto &qp             = j.at("quant-param");
-
-  if (datatype != "ufixed8")
-    throw std::runtime_error("PLE: only ufixed8 supported, got " + datatype);
-
-  ple_scale_     = qp.at("scale").get<float>();
-  ple_offset_    = qp.at("offset").get<int>();
-  ple_row_elems_ = static_cast<size_t>(row_elems);
-  ple_row_bytes_ = (ple_row_elems_ + 1) / 2;
+  ple_is_4bit_ = ends_with(ple_file_name, ".json");
   ple_per_layer_ = 256;
-  ple_layers_    = ple_row_elems_ / ple_per_layer_;
 
-  if (ple_layers_ * ple_per_layer_ != ple_row_elems_)
-    throw std::runtime_error("PLE 'size' not divisible by 256");
-  if (generation_per_layer_dst_.size() > ple_layers_)
-    throw std::runtime_error("PLE layer count too small");
+  if (ple_is_4bit_) {
+    // ── 4-bit manifest: dispatch by `datatype` (ufixed8 / sfixed4) ──
+    std::ifstream mf(ple_file_name);
+    if (!mf.is_open())
+      throw std::runtime_error("Failed to open PLE manifest: " + ple_file_name);
+    json j; mf >> j;
 
-  std::string lut_abs = rebase_relative_to_model_file(lut_rel, ple_file_name);
+    const std::string lut_rel  = j.at("lut-path").get<std::string>();
+    const int row_elems        = j.at("size").get<int>();
+    const std::string datatype = j.value("datatype", std::string("ufixed8"));
+    const auto &qp             = j.at("quant-param");
 
-  ple_fd_ = open(lut_abs.c_str(), O_RDONLY);
+    ple_is_signed4_ = (datatype == "sfixed4");
+    if (!ple_is_signed4_ && datatype != "ufixed8")
+      throw std::runtime_error("PLE: unsupported datatype: " + datatype);
+
+    ple_row_elems_ = static_cast<size_t>(row_elems);
+    ple_row_bytes_ = (ple_row_elems_ + 1) / 2;
+    ple_layers_    = ple_row_elems_ / ple_per_layer_;
+
+    if (ple_layers_ * ple_per_layer_ != ple_row_elems_)
+      throw std::runtime_error("PLE 'size' not divisible by 256");
+    if (generation_per_layer_dst_.size() > ple_layers_)
+      throw std::runtime_error("PLE layer count too small");
+
+    if (ple_is_signed4_) {
+      // Per-row-per-layer scale array; shape [vocab][layers] flat in
+      // row-major. No offset (symmetric).
+      const auto &scale_arr = qp.at("scale");
+      if (!scale_arr.is_array())
+        throw std::runtime_error(
+          "PLE sfixed4: quant-param.scale must be an array");
+      ple_row_layer_scales_.clear();
+      ple_row_layer_scales_.reserve(scale_arr.size());
+      for (const auto &v : scale_arr)
+        ple_row_layer_scales_.push_back(v.get<float>());
+      // Validate shape: must be a multiple of ple_layers_; vocab inferred.
+      if (ple_row_layer_scales_.size() % ple_layers_ != 0)
+        throw std::runtime_error(
+          "PLE sfixed4: scale array length not divisible by num_layers");
+      ple_scale_  = 1.0f; // unused
+      ple_offset_ = 0;    // unused
+    } else {
+      ple_scale_  = qp.at("scale").get<float>();
+      ple_offset_ = qp.at("offset").get<int>();
+    }
+
+    std::string lut_abs =
+        rebase_relative_to_model_file(lut_rel, ple_file_name);
+
+    ple_fd_ = open(lut_abs.c_str(), O_RDONLY);
+    if (ple_fd_ < 0)
+      throw std::runtime_error("open PLE bin: " + lut_abs);
+    struct stat st;
+    if (fstat(ple_fd_, &st) < 0) {
+      ::close(ple_fd_); ple_fd_ = -1;
+      throw std::runtime_error("stat PLE bin: " + lut_abs);
+    }
+    ple_file_size_ = static_cast<size_t>(st.st_size);
+    if (ple_file_size_ % ple_row_bytes_ != 0) {
+      ::close(ple_fd_); ple_fd_ = -1;
+      throw std::runtime_error("PLE bin size not multiple of row bytes");
+    }
+
+    // For sfixed4 the scale array's vocab dim must match the bin's row
+    // count; for ufixed8 there is no per-row scale to validate.
+    if (ple_is_signed4_) {
+      const size_t expected_vocab = ple_file_size_ / ple_row_bytes_;
+      const size_t scale_vocab    = ple_row_layer_scales_.size() / ple_layers_;
+      if (scale_vocab != expected_vocab)
+        throw std::runtime_error(
+          "PLE sfixed4 scale vocab=" + std::to_string(scale_vocab) +
+          " != bin vocab=" + std::to_string(expected_vocab));
+    }
+
+    void *m = mmap(nullptr, ple_file_size_, PROT_READ, MAP_PRIVATE, ple_fd_, 0);
+    if (m == MAP_FAILED) {
+      ::close(ple_fd_); ple_fd_ = -1;
+      throw std::runtime_error("mmap PLE bin: " + lut_abs);
+    }
+    ple_mmap_ = static_cast<const uint8_t *>(m);
+#ifdef POSIX_MADV_RANDOM
+    posix_madvise((void *)ple_mmap_, ple_file_size_, POSIX_MADV_RANDOM);
+#endif
+    if (ple_is_signed4_) {
+      std::cout << "[PLE] sfixed4 (rowwise+layerwise) mmaped " << lut_abs
+                << " rows=" << (ple_file_size_ / ple_row_bytes_)
+                << " layers=" << ple_layers_ << " per_layer=" << ple_per_layer_
+                << " scales=" << ple_row_layer_scales_.size() << std::endl;
+    } else {
+      std::cout << "[PLE] ufixed8 (tensorwise) mmaped " << lut_abs
+                << " rows=" << (ple_file_size_ / ple_row_bytes_)
+                << " layers=" << ple_layers_ << " per_layer=" << ple_per_layer_
+                << " scale=" << ple_scale_ << " offset=" << ple_offset_
+                << std::endl;
+    }
+    return;
+  }
+
+  // ── raw UINT16: row = ple_layers * 256 uint16, no manifest ──
+  // Derive layer count from the generation graph's per_layer_inputs_*
+  // count (collected before open_ple_file_() is called).
+  ple_layers_    = generation_per_layer_dst_.size();
+  if (ple_layers_ == 0)
+    throw std::runtime_error(
+      "PLE raw uint16: no per_layer slots collected from generation graph");
+  ple_row_elems_ = ple_layers_ * ple_per_layer_;
+  ple_row_bytes_ = ple_row_elems_ * sizeof(uint16_t);
+
+  ple_fd_ = open(ple_file_name.c_str(), O_RDONLY);
   if (ple_fd_ < 0)
-    throw std::runtime_error("open PLE bin: " + lut_abs);
+    throw std::runtime_error("open PLE bin: " + ple_file_name);
   struct stat st;
   if (fstat(ple_fd_, &st) < 0) {
     ::close(ple_fd_); ple_fd_ = -1;
-    throw std::runtime_error("stat PLE bin: " + lut_abs);
+    throw std::runtime_error("stat PLE bin: " + ple_file_name);
   }
   ple_file_size_ = static_cast<size_t>(st.st_size);
   if (ple_file_size_ % ple_row_bytes_ != 0) {
     ::close(ple_fd_); ple_fd_ = -1;
-    throw std::runtime_error("PLE bin size not multiple of row bytes");
+    throw std::runtime_error(
+      "PLE raw uint16: file size not multiple of row bytes (expected "
+      + std::to_string(ple_row_bytes_) + ")");
   }
 
   void *m = mmap(nullptr, ple_file_size_, PROT_READ, MAP_PRIVATE, ple_fd_, 0);
   if (m == MAP_FAILED) {
     ::close(ple_fd_); ple_fd_ = -1;
-    throw std::runtime_error("mmap PLE bin: " + lut_abs);
+    throw std::runtime_error("mmap PLE bin: " + ple_file_name);
   }
-  ple_mmap_ = static_cast<const uint8_t *>(m);
+  ple_u16_mmap_ = static_cast<const uint16_t *>(m);
+  ple_mmap_     = static_cast<const uint8_t *>(m); // alias for cleanup
 #ifdef POSIX_MADV_RANDOM
-  posix_madvise((void *)ple_mmap_, ple_file_size_, POSIX_MADV_RANDOM);
+  posix_madvise(m, ple_file_size_, POSIX_MADV_RANDOM);
 #endif
+  std::cout << "[PLE] raw u16 mmaped " << ple_file_name
+            << " rows=" << (ple_file_size_ / ple_row_bytes_)
+            << " layers=" << ple_layers_ << " per_layer=" << ple_per_layer_
+            << " (no requant)" << std::endl;
 }
 
 void Gemma4_E2B_QNN::close_ple_file_() {
-  if (ple_mmap_) { munmap((void *)ple_mmap_, ple_file_size_); ple_mmap_ = nullptr; }
+  if (ple_mmap_) {
+    munmap((void *)ple_mmap_, ple_file_size_);
+    ple_mmap_     = nullptr;
+    ple_u16_mmap_ = nullptr;
+  }
   if (ple_fd_ >= 0) { ::close(ple_fd_); ple_fd_ = -1; }
 }
 
@@ -206,19 +336,63 @@ void Gemma4_E2B_QNN::fill_prefill_ple_chunk_(const std::vector<int> &tokens,
   if (!ple_mmap_) return;
   const size_t L_pre = prefill_per_layer_dst_.size();
   const size_t per_layer_elems = ple_per_layer_;
-  const size_t per_layer_bytes = per_layer_elems / 2;
   const int    chunk_size_tokens = context_size;
 
-  for (int t = 0; t < chunk_size_tokens; ++t) {
-    const int abs_idx  = chunk_idx * chunk_size_tokens + t;
-    const int token_id = (t < chunk_len) ? tokens[abs_idx] : padding_token;
-    const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
-    for (size_t l = 0; l < L_pre; ++l) {
-      uint16_t *dst = prefill_per_layer_dst_[l] + (size_t)t * per_layer_elems;
-      dequant_nibbles_requant_u16(row + l * per_layer_bytes, per_layer_elems,
-                                  ple_scale_, ple_offset_,
-                                  prefill_per_layer_scale_[l],
-                                  prefill_per_layer_offset_[l], dst);
+  // The PLE binary is laid out per model-layer (`ple_layers_` chunks of
+  // `per_layer_elems` per row). The prefill graph may expose a SUBSET of
+  // model layers via `per_layer_inputs_N`, so source rows MUST be indexed
+  // by the parsed N (model layer index), not by the dense slot index `l`.
+  const int *pre_layer_idx = prefill_per_layer_model_index_.data();
+
+  if (ple_is_4bit_) {
+    const size_t per_layer_bytes = per_layer_elems / 2;
+    if (ple_is_signed4_) {
+      // sfixed4: per-row-per-layer scale lookup, signed nibble decode.
+      const float *scales = ple_row_layer_scales_.data();
+      for (int t = 0; t < chunk_size_tokens; ++t) {
+        const int abs_idx  = chunk_idx * chunk_size_tokens + t;
+        const int token_id = (t < chunk_len) ? tokens[abs_idx] : padding_token;
+        const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
+        const float *row_scales =
+            scales + (size_t)token_id * ple_layers_;
+        for (size_t l = 0; l < L_pre; ++l) {
+          const size_t ml = (size_t)pre_layer_idx[l];
+          uint16_t *dst =
+              prefill_per_layer_dst_[l] + (size_t)t * per_layer_elems;
+          dequant_sfixed4_requant_u16(
+              row + ml * per_layer_bytes, per_layer_elems, row_scales[ml],
+              prefill_per_layer_scale_[l],
+              prefill_per_layer_offset_[l], dst);
+        }
+      }
+    } else {
+      for (int t = 0; t < chunk_size_tokens; ++t) {
+        const int abs_idx  = chunk_idx * chunk_size_tokens + t;
+        const int token_id = (t < chunk_len) ? tokens[abs_idx] : padding_token;
+        const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
+        for (size_t l = 0; l < L_pre; ++l) {
+          const size_t ml = (size_t)pre_layer_idx[l];
+          uint16_t *dst =
+              prefill_per_layer_dst_[l] + (size_t)t * per_layer_elems;
+          dequant_nibbles_requant_u16(row + ml * per_layer_bytes, per_layer_elems,
+                                      ple_scale_, ple_offset_,
+                                      prefill_per_layer_scale_[l],
+                                      prefill_per_layer_offset_[l], dst);
+        }
+      }
+    }
+  } else {
+    // raw uint16: per-layer slice memcpy. Source already in consumer space.
+    for (int t = 0; t < chunk_size_tokens; ++t) {
+      const int abs_idx  = chunk_idx * chunk_size_tokens + t;
+      const int token_id = (t < chunk_len) ? tokens[abs_idx] : padding_token;
+      const uint16_t *row = ple_u16_mmap_ + (size_t)token_id * ple_row_elems_;
+      for (size_t l = 0; l < L_pre; ++l) {
+        const size_t ml = (size_t)pre_layer_idx[l];
+        uint16_t *dst = prefill_per_layer_dst_[l] + (size_t)t * per_layer_elems;
+        std::memcpy(dst, row + ml * per_layer_elems,
+                    per_layer_elems * sizeof(uint16_t));
+      }
     }
   }
 }
@@ -227,15 +401,68 @@ void Gemma4_E2B_QNN::fill_generation_ple_(int token_id) {
   if (!ple_mmap_) return;
   const size_t L_gen = generation_per_layer_dst_.size();
   const size_t per_layer_elems = ple_per_layer_;
-  const size_t per_layer_bytes = per_layer_elems / 2;
-  const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
+  const int *gen_layer_idx = generation_per_layer_model_index_.data();
 
-  for (size_t l = 0; l < L_gen; ++l) {
-    dequant_nibbles_requant_u16(row + l * per_layer_bytes, per_layer_elems,
-                                ple_scale_, ple_offset_,
-                                generation_per_layer_scale_[l],
-                                generation_per_layer_offset_[l],
-                                generation_per_layer_dst_[l]);
+  if (ple_is_4bit_) {
+    const size_t per_layer_bytes = per_layer_elems / 2;
+    const uint8_t *row = ple_mmap_ + (size_t)token_id * ple_row_bytes_;
+    if (ple_is_signed4_) {
+      const float *row_scales =
+          ple_row_layer_scales_.data() + (size_t)token_id * ple_layers_;
+      for (size_t l = 0; l < L_gen; ++l) {
+        const size_t ml = (size_t)gen_layer_idx[l];
+        dequant_sfixed4_requant_u16(
+            row + ml * per_layer_bytes, per_layer_elems, row_scales[ml],
+            generation_per_layer_scale_[l],
+            generation_per_layer_offset_[l],
+            generation_per_layer_dst_[l]);
+      }
+      // ── Debug: dump token's first decoded nibbles + scales (once) ──
+      static bool dbg_done = false;
+      if (!dbg_done) {
+        dbg_done = true;
+        std::cout << "[PLE-S4-DBG] token=" << token_id
+                  << " row_offset=" << (size_t)token_id * ple_row_bytes_
+                  << "\n[PLE-S4-DBG] L0 row_scale=" << row_scales[0]
+                  << " L1=" << row_scales[1]
+                  << " L17=" << row_scales[17]
+                  << " L34=" << row_scales[34] << "\n";
+        std::cout << "[PLE-S4-DBG] L0 raw bytes [0..7]: ";
+        for (int i = 0; i < 8; ++i)
+          std::cout << std::hex << (int)row[i] << " ";
+        std::cout << std::dec
+                  << "\n[PLE-S4-DBG] L0 nibbles s4 [0..15]: ";
+        for (int i = 0; i < 8; ++i) {
+          int lo = s4(row[i] & 0x0F);
+          int hi = s4((row[i] >> 4) & 0x0F);
+          std::cout << lo << " " << hi << " ";
+        }
+        std::cout << "\n[PLE-S4-DBG] L0 dst u16 [0..7]: ";
+        for (int i = 0; i < 8; ++i)
+          std::cout << generation_per_layer_dst_[0][i] << " ";
+        std::cout << "\n[PLE-S4-DBG] L0 consumer scale="
+                  << generation_per_layer_scale_[0]
+                  << " offset=" << generation_per_layer_offset_[0]
+                  << "\n";
+      }
+    } else {
+      for (size_t l = 0; l < L_gen; ++l) {
+        const size_t ml = (size_t)gen_layer_idx[l];
+        dequant_nibbles_requant_u16(row + ml * per_layer_bytes, per_layer_elems,
+                                    ple_scale_, ple_offset_,
+                                    generation_per_layer_scale_[l],
+                                    generation_per_layer_offset_[l],
+                                    generation_per_layer_dst_[l]);
+      }
+    }
+  } else {
+    const uint16_t *row = ple_u16_mmap_ + (size_t)token_id * ple_row_elems_;
+    for (size_t l = 0; l < L_gen; ++l) {
+      const size_t ml = (size_t)gen_layer_idx[l];
+      std::memcpy(generation_per_layer_dst_[l],
+                  row + ml * per_layer_elems,
+                  per_layer_elems * sizeof(uint16_t));
+    }
   }
 }
 
@@ -336,6 +563,23 @@ void Gemma4_E2B_QNN::initialize() {
   swa_pos_dim = GraphParser::get_tensor_info_or_throw(
       prefill_graph_info.raw_inputs, "swa_position_ids_cos").dimensions.back();
 
+  // ── Debug: confirm prefill and generation share the same pos/swa dims ──
+  {
+    const int gen_pos = GraphParser::get_tensor_info_or_throw(
+        generation_graph_info.raw_inputs, "position_ids_cos")
+        .dimensions.back();
+    const int gen_swa = GraphParser::get_tensor_info_or_throw(
+        generation_graph_info.raw_inputs, "swa_position_ids_cos")
+        .dimensions.back();
+    std::cout << "[ROPE-DBG] prefill pos_dim=" << pos_dim
+              << " gen pos_dim=" << gen_pos
+              << " | prefill swa_pos_dim=" << swa_pos_dim
+              << " gen swa_pos_dim=" << gen_swa << std::endl;
+    if (gen_pos != pos_dim || gen_swa != swa_pos_dim)
+      std::cout << "[ROPE-DBG] !!! prefill/gen position dims DIFFER !!!"
+                << std::endl;
+  }
+
   rope_cache_seq_len = std::max(max_seq_len, generation_attention_mask_elements);
 
   // ── Bind input tensor pointers ──
@@ -424,7 +668,8 @@ void Gemma4_E2B_QNN::initialize() {
   auto collect_per_layer = [] (const GraphInfo &gi,
                                std::vector<ml::train::TensorDim::IO_TensorType> &inputs,
                                std::vector<uint16_t *> &dsts,
-                               std::vector<float> &scales, std::vector<int> &offsets) {
+                               std::vector<float> &scales, std::vector<int> &offsets,
+                               std::vector<int> &model_indices) {
     std::map<int, std::tuple<uint16_t *, float, int>> by_index;
     for (size_t idx = 0; idx < gi.raw_inputs.size(); ++idx) {
       const auto &[name, info] = gi.raw_inputs[idx];
@@ -438,7 +683,9 @@ void Gemma4_E2B_QNN::initialize() {
     dsts.clear();
     scales.clear ();
     offsets.clear ();
+    model_indices.clear();
     for (auto &kv : by_index) {
+      model_indices.push_back(kv.first);
       dsts.push_back(std::get<0>(kv.second));
       scales.push_back(std::get<1>(kv.second));
       offsets.push_back(std::get<2>(kv.second));
@@ -446,14 +693,21 @@ void Gemma4_E2B_QNN::initialize() {
   };
   collect_per_layer(prefill_graph_info, prefill_inputs,
                     prefill_per_layer_dst_, prefill_per_layer_scale_,
-                    prefill_per_layer_offset_);
+                    prefill_per_layer_offset_,
+                    prefill_per_layer_model_index_);
   collect_per_layer(generation_graph_info, generation_inputs,
                     generation_per_layer_dst_, generation_per_layer_scale_,
-                    generation_per_layer_offset_);
+                    generation_per_layer_offset_,
+                    generation_per_layer_model_index_);
 
   std::cout << "[PLE] prefill slots=" << prefill_per_layer_dst_.size()
             << " generation slots=" << generation_per_layer_dst_.size()
             << std::endl;
+  std::cout << "[PLE] prefill model indices: ";
+  for (int n : prefill_per_layer_model_index_) std::cout << n << " ";
+  std::cout << "\n[PLE] generation model indices: ";
+  for (int n : generation_per_layer_model_index_) std::cout << n << " ";
+  std::cout << std::endl;
 
   open_ple_file_();
 
@@ -481,6 +735,9 @@ void Gemma4_E2B_QNN::initialize() {
     kv_layer_count++;
   }
 
+  std::cout << "[KV-DBG] kv_layer_count=" << kv_layer_count
+            << " (num_hidden_layers=" << num_hidden_layers << ")" << std::endl;  
+
   LOGD("KV layer count = %d (num_hidden_layers config = %d)", kv_layer_count, num_hidden_layers);
   for(int layer=0; layer<kv_layer_count;++layer){
     const std::vector<std::string> kv_names = {
@@ -493,6 +750,34 @@ void Gemma4_E2B_QNN::initialize() {
           generation_graph_info.raw_inputs, kv_names[0]);
       this->kv_row_lengths.push_back(gen_key_info.dimensions.back());
       this->kv_columns.push_back(gen_key_info.dimensions[2]);
+
+      // ── Debug: dump KV tensor shape for first 6 + last layer ──
+      if (layer < 6 || layer + 1 == kv_layer_count) {      
+        std::cout << "[KV-DBG] layer " << layer << " key dims=[";
+        for (size_t i = 0; i < gen_key_info.dimensions.size(); ++i) {
+          if (i) std::cout << ",";
+          std::cout << gen_key_info.dimensions[i];
+        }
+        std::cout << "] → row_len=" << gen_key_info.dimensions.back()
+                  << " columns(dim[2])=" << gen_key_info.dimensions[2]
+		  << " dtype=" << gen_key_info.data_type
+                  << " scale=" << gen_key_info.scale
+                  << " offset=" << gen_key_info.offset
+                  << " size_bytes=" << GraphParser::get_tensor_size(gen_key_info)
+                  << "\n";
+        const auto &gen_val_info = GraphParser::get_tensor_info_or_throw(
+            generation_graph_info.raw_inputs, kv_names[1]);
+        std::cout << "[KV-DBG] layer " << layer << " val dims=[";
+        for (size_t i = 0; i < gen_val_info.dimensions.size(); ++i) {
+          if (i) std::cout << ",";
+          std::cout << gen_val_info.dimensions[i];
+        }
+        std::cout << "] dtype=" << gen_val_info.data_type
+                  << " scale=" << gen_val_info.scale
+                  << " offset=" << gen_val_info.offset
+                  << " size_bytes=" << GraphParser::get_tensor_size(gen_val_info)
+                  << "\n";
+      }
     }
 
     for (const auto &name : kv_names) {
@@ -570,15 +855,67 @@ void Gemma4_E2B_QNN::initialize() {
        this->prefill_output_kv_bindings.size(),
        this->generation_output_kv_bindings.size());
 
+    // ── Debug: dump prefill/gen output KV bindings (layer indices) ──
+  std::cout << "[KV-OUT-DBG] prefill output KV layers (key only): ";
+  for (const auto &b : prefill_output_kv_bindings)
+    if (b.is_key) std::cout << b.layer_index << " ";
+  std::cout << "\n[KV-OUT-DBG] generation output KV layers (key only): ";
+  for (const auto &b : generation_output_kv_bindings)
+    if (b.is_key) std::cout << b.layer_index << " ";
+  std::cout << "\n[KV-OUT-DBG] prefill bindings count=" << prefill_output_kv_bindings.size()
+            << " generation bindings count=" << generation_output_kv_bindings.size()
+            << std::endl;
+  // ── Debug: dump prefill OUTPUT past_key shapes (sliding & full layers) ──
+  // Confirms whether the output is per-chunk [head_dim, 256] or full
+  // updated cache [head_dim, 7936+] or something else. The append code
+  // assumes per-chunk with src_row_length=context_size=256.
+  std::cout << "[KV-OUT-SHAPE-DBG] prefill output K shapes: ";
+  for (const auto &b : prefill_output_kv_bindings) {
+    if (!b.is_key) continue;
+    if (b.layer_index > 5 && b.layer_index != 14) continue;
+    const auto &info = prefill_graph_info.raw_outputs[b.output_index].second;
+    std::cout << "L" << b.layer_index << "=[";
+    for (size_t i = 0; i < info.dimensions.size(); ++i) {
+      if (i) std::cout << ",";
+      std::cout << info.dimensions[i];
+    }
+    std::cout << "] ";
+  }
+  std::cout << "\n[KV-OUT-SHAPE-DBG] generation output K shapes: ";
+  for (const auto &b : generation_output_kv_bindings) {
+    if (!b.is_key) continue;
+    if (b.layer_index > 5 && b.layer_index != 14) continue;
+    const auto &info = generation_graph_info.raw_outputs[b.output_index].second;
+    std::cout << "L" << b.layer_index << "=[";
+    for (size_t i = 0; i < info.dimensions.size(); ++i) {
+      if (i) std::cout << ",";
+      std::cout << info.dimensions[i];
+    }
+    std::cout << "] ";
+  }
+  std::cout << std::endl;
+
+
   // ── Logit dequant params (overrides setupParameters defaults) ──
   const auto &logits_info = GraphParser::get_tensor_info_or_throw(
       generation_graph_info.raw_outputs, "logits");
-  logit_scale  = logits_info.scale;
+  logit_scale = logits_info.scale;
   logit_offset = logits_info.offset;
+  std::cout << "[LOGIT-DBG] dtype=" << logits_info.data_type
+            << " scale=" << logit_scale << " offset=" << logit_offset
+            << " | final_logit_softcapping=" << final_logit_softcapping << std::endl;
+  // Diagnostic experiment: disable our externally-applied softcap if the
+  // QNN graph already applies it internally (double-softcap would flatten
+  // the distribution and produce structured-but-mixed-language gibberish).
+  // Toggle by env var GEMMA4_DISABLE_SOFTCAP=1 to test.
+  if (const char *env = std::getenv ("GEMMA4_DISABLE_SOFTCAP"); env && env[0] == '1') {
+    std::cout << "[LOGIT-DBG] GEMMA4_DISABLE_SOFTCAP=1 → forcing softcap=0" << std::endl;
+    final_logit_softcapping = 0.0f;
+  }
 
-  initialize_kv_cache();
+  initialize_kv_cache ();
 
-  LOGD("----------------------- initialize() done");
+  LOGD ("----------------------- initialize() done");
 }
 
 // =====================================================================
@@ -637,6 +974,11 @@ void Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
   repetition_penalty = generation_cfg.value("repetition_penalty", 1.0f);
   logit_scale        = generation_cfg.value("logit_scale", 1.0f);
   logit_offset       = generation_cfg.value("logit_offset", 0);
+
+  // Gemma final-logit soft-cap (0 disables). Without it the model
+  // collapses into repetition since a few raw logits dominate softmax.
+  final_logit_softcapping = cfg.value("final_logit_softcapping", 0.0f);
+  LOGD("final_logit_softcapping = %f", final_logit_softcapping);
 
   lora_path     = nntr_cfg.value("lora_path", "");
   lora_path     = rebase_relative_to_model_file(lora_path, model_file_name);
@@ -779,19 +1121,31 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
 
     fill_attention_mask_with_length(context_size, prefill_attention_mask_columns,
                                     chunk_len, attention_mask);
-    fill_attention_mask_with_prev_length(context_size,
-                                         prefill_attention_mask_columns,
-                                         std::min(kv_len,
-                                                  generation_full_kv_past_length),
-                                         attention_mask);
+    // Past KV cap MUST reserve the trailing `context_size` cols for the
+    // current chunk's causal triangle (those cols are written by
+    // fill_attention_mask_with_length above). Using
+    // generation_full_kv_past_length here would overlap chunk cols when
+    // kv_len > prefill_attention_mask_columns - context_size, corrupting
+    // the mask on multi-chunk prefill. Match Gauss 3.6 convention:
+    //   past_max = mask_columns - context_size
+    {
+      const int prefill_full_past_max =
+          prefill_attention_mask_columns - context_size;
+      fill_attention_mask_with_prev_length(
+          context_size, prefill_attention_mask_columns,
+          std::min(kv_len, prefill_full_past_max), attention_mask);
+    }
     fill_attention_mask_with_length(context_size,
                                     prefill_sliding_attention_mask_columns,
                                     chunk_len, sliding_attention_mask);
-    fill_attention_mask_with_prev_length(context_size,
-                                         prefill_sliding_attention_mask_columns,
-                                         std::min(kv_len,
-                                                  generation_sliding_kv_past_length),
-                                         sliding_attention_mask);
+    {
+      const int prefill_sliding_past_max =
+          prefill_sliding_attention_mask_columns - context_size;
+      fill_attention_mask_with_prev_length(
+          context_size, prefill_sliding_attention_mask_columns,
+          std::min(kv_len, prefill_sliding_past_max),
+          sliding_attention_mask);
+    }
 
     std::fill_n(prefill_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_position_ids_sin, context_size * pos_dim, 32768);
@@ -833,7 +1187,8 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
     kv_len += 1;
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
                    _input.data(), _input.size(), logit_scale, logit_offset,
-                   repetition_penalty, temperature, top_p, top_k);
+                   repetition_penalty, temperature, top_p, top_k,
+                   final_logit_softcapping);
     output.push_back(token);
 
     bool reached_eos = false;
@@ -879,3 +1234,4 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
               << std::endl;
   }
 }
+

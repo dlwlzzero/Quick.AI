@@ -39,17 +39,31 @@ public:
 
 private:
   // -------------------------------------------------------------------
-  // PLE: tensorwise 4-bit packed LUT, mmap-backed.
+  // PLE: tri-mode (auto-detected from `ple_file_name` + manifest
+  // datatype).
+  //   *.json + datatype="ufixed8" → tensorwise 4-bit (legacy):
+  //       single (ple_scale_, ple_offset_) for the whole table.
+  //   *.json + datatype="sfixed4" → per-row-per-layer signed 4-bit:
+  //       ple_row_layer_scales_[token_id*num_layers + layer] is the
+  //       float scale, no offset, sign-extend the 4-bit nibble.
+  //   any other extension → raw UINT16 binary (already in each
+  //       layer's consumer quant space; per-layer fill is a memcpy).
   // -------------------------------------------------------------------
-  int            ple_fd_         = -1;
-  const uint8_t *ple_mmap_       = nullptr;
-  size_t         ple_file_size_  = 0;
-  float          ple_scale_      = 1.0f;
-  int            ple_offset_     = 0;
-  size_t         ple_row_elems_  = 0;
-  size_t         ple_row_bytes_  = 0;
-  size_t         ple_layers_     = 0;
-  size_t         ple_per_layer_  = 0;
+  bool           ple_is_4bit_     = false;
+  bool           ple_is_signed4_  = false;   // sfixed4 (per-row-per-layer)
+  int            ple_fd_          = -1;
+  const uint8_t *ple_mmap_        = nullptr; // 4-bit byte view
+  const uint16_t *ple_u16_mmap_   = nullptr; // raw uint16 view
+  size_t         ple_file_size_   = 0;
+  float          ple_scale_       = 1.0f;    // ufixed8 only
+  int            ple_offset_      = 0;       // ufixed8 only
+  // sfixed4: per-token per-layer scales. Layout is row-major
+  // [vocab][num_layers]; index with token_id * ple_layers_ + layer.
+  std::vector<float> ple_row_layer_scales_;
+  size_t         ple_row_elems_   = 0;
+  size_t         ple_row_bytes_   = 0;
+  size_t         ple_layers_      = 0;
+  size_t         ple_per_layer_   = 0;
 
   std::vector<uint16_t *> prefill_per_layer_dst_;     // 14
   std::vector<uint16_t *> generation_per_layer_dst_;  // 35
@@ -57,6 +71,13 @@ private:
   std::vector<int>        prefill_per_layer_offset_;
   std::vector<float>      generation_per_layer_scale_;
   std::vector<int>        generation_per_layer_offset_;
+  // Model layer index that each prefill/generation `per_layer_inputs_N` slot
+  // corresponds to. Built from the integer `N` parsed from the tensor name
+  // (sorted ascending). The PLE binary file is laid out per model-layer 0..L-1
+  // per row, so source rows must be indexed by these model indices, NOT by
+  // the dense slot index.
+  std::vector<int>        prefill_per_layer_model_index_;
+  std::vector<int>        generation_per_layer_model_index_;
   std::vector<uint8_t> prefill_kv_zero_byte_;
 
   void open_ple_file_();
@@ -166,6 +187,9 @@ private:
   float              repetition_penalty;
   float              logit_scale;
   int                logit_offset;
+  // Gemma soft-cap on final logits. config.json key:
+  // "final_logit_softcapping": 30.0. 0 disables the cap.
+  float              final_logit_softcapping = 0.0f;
 
   std::string lora_path;
   std::string ple_file_name;
@@ -174,3 +198,4 @@ private:
 } // namespace causallm
 
 #endif /* __GEMMA4_E2B_QNN_H__ */
+
