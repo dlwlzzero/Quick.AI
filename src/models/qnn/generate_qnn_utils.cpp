@@ -96,11 +96,9 @@ get_cos_sin (int context_size, int pos_dim, const double theta,
   uint16_t *sin_val =
       (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
 
-  // Quantized identity values: cos=1.0 → 1/scale - offset; sin=0.0 → -offset.
-  const uint16_t cos_one = static_cast<uint16_t> (
-      std::min (65535.0f, std::max (0.0f, 1.0f / scale - offset)));
-  const uint16_t sin_zero = static_cast<uint16_t> (
-      std::min (65535.0f, std::max (0.0f, 0.0f / scale - offset)));
+  // Quantized identity values for non-rotary lanes.
+  const uint16_t cos_one = quantize_rope_value(1.0, attention_factor);
+  const uint16_t sin_zero = quantize_rope_value(0.0, attention_factor);
 
   for (int i = 0; i < context_size; i++) {
     for (int j = 0; j < effective_dim; j++) {
