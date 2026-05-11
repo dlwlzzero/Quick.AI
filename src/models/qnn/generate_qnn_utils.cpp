@@ -77,18 +77,42 @@ get_cos_sin (int context_size, int pos_dim, const double theta,
       inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
   }
 
+  // Partial RoPE (Gemma 4 full attention uses partial_rotary_factor=0.25):
+  // only the first `effective_dim` lanes carry an actual rotation; the
+  // remaining lanes are identity (cos=1, sin=0) so multiplication is
+  // pass-through. Without this the non-rotary lanes get a small bogus
+  // rotation that compounds across the 35 transformer layers and the
+  // model collapses into repetition after a few dozen tokens.
+  int effective_dim = pos_dim;
+  if (partial_rotary_factor > 0.0 && partial_rotary_factor < 1.0) {
+    effective_dim =
+        static_cast<int> (std::floor (pos_dim * partial_rotary_factor));
+    if (effective_dim < 0) effective_dim = 0;
+    if (effective_dim > pos_dim) effective_dim = pos_dim;
+  }
+
   uint16_t *cos_val =
       (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
   uint16_t *sin_val =
       (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
 
+  // Quantized identity values: cos=1.0 → 1/scale - offset; sin=0.0 → -offset.
+  const uint16_t cos_one = static_cast<uint16_t> (
+      std::min (65535.0f, std::max (0.0f, 1.0f / scale - offset)));
+  const uint16_t sin_zero = static_cast<uint16_t> (
+      std::min (65535.0f, std::max (0.0f, 0.0f / scale - offset)));
+
   for (int i = 0; i < context_size; i++) {
-    for (int j = 0; j < pos_dim; j++) {
+    for (int j = 0; j < effective_dim; j++) {
       const double freq = i * inv_freq[j];
       cos_val[i * pos_dim + j] =
           quantize_rope_value(std::cos(freq), attention_factor);
       sin_val[i * pos_dim + j] =
           quantize_rope_value(std::sin(freq), attention_factor);
+    }
+    for (int j = effective_dim; j < pos_dim; j++) {
+      cos_val[i * pos_dim + j] = cos_one;
+      sin_val[i * pos_dim + j] = sin_zero;
     }
   }
   return std::make_tuple(cos_val, sin_val);
@@ -285,7 +309,8 @@ uint16_t *get_zero_memory(int size, int zero_point) {
 
 int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
            float logit_scale, int logit_offset, float repetition_penalty,
-           float temperature, float top_p, int top_k) {
+           float temperature, float top_p, int top_k,
+           float final_logit_softcapping) {
   // Priority queue!
   std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>,
                       std::greater<std::pair<int, int>>>
@@ -301,12 +326,21 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
   }
   length = top_k_elements.size();
 
-  // Convert to float
+  // Convert to float, dequant, then apply Gemma final-logit soft-cap.
+  // Soft-cap: l = soft_cap * tanh(l / soft_cap). Without it, a few raw
+  // logits dominate softmax and the model collapses into repetition.
   std::vector<int> indices(length);
   std::vector<float> logits(length);
+  const bool use_softcap = final_logit_softcapping > 0.0f;
+  const float inv_softcap =
+      use_softcap ? 1.0f / final_logit_softcapping : 0.0f;
   for (int i = 0; i < length; i++) {
     auto element = top_k_elements.top();
-    logits[i] = (1.0 * element.first + logit_offset) * logit_scale;
+    float l = (1.0f * element.first + logit_offset) * logit_scale;
+    if (use_softcap) {
+      l = final_logit_softcapping * std::tanh(l * inv_softcap);
+    }
+    logits[i] = l;
     indices[i] = element.second;
     top_k_elements.pop();
   }
