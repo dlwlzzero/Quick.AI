@@ -87,7 +87,6 @@ struct CausalLmModel
   std::vector<double> initialization_duration_ms;
   bool initialized = false;
   int kv_len = 0;
-  bool conversation_started = false;
 };
 
 // Globals shared across all handles — options set via setOptions() apply
@@ -440,7 +439,6 @@ find_qnn_kv_cache_model(CausalLmModel &h)
 static void reset_handle_session_state(CausalLmModel &h)
 {
   h.kv_len = 0;
-  h.conversation_started = false;
 }
 
 static void update_handle_session_after_run(CausalLmModel &h,
@@ -457,7 +455,6 @@ static void update_handle_session_after_run(CausalLmModel &h,
   }
 
   h.kv_len = read_gauss_qnn_kv_len(h.models[model_index].get());
-  h.conversation_started = h.kv_len > 0;
 }
 
 static ErrorCode save_qnn_kv_cache_on_handle(CausalLmModel &h,
@@ -489,7 +486,6 @@ static ErrorCode save_qnn_kv_cache_on_handle(CausalLmModel &h,
   {
     model->saveKvCache(cache_path);
     h.kv_len = model->getKvLen();
-    h.conversation_started = h.kv_len > 0;
   }
   catch (const std::exception &e)
   {
@@ -530,7 +526,6 @@ static ErrorCode load_qnn_kv_cache_on_handle(CausalLmModel &h,
   {
     model->loadKvCache(cache_path);
     h.kv_len = model->getKvLen();
-    h.conversation_started = h.kv_len > 0;
   }
   catch (const std::exception &e)
   {
@@ -585,8 +580,7 @@ static std::string prepare_input_for_model(CausalLmModel &h, size_t model_index,
   }
 
   const std::string &architecture = h.architectures[model_index];
-  if (is_gauss_architecture(architecture) && h.conversation_started &&
-      h.kv_len > 0)
+  if (is_gauss_architecture(architecture) && h.kv_len > 0)
   {
     return build_gauss_incremental_user_prompt(
         extract_latest_gauss_user_content(input));
@@ -2130,7 +2124,6 @@ execute_multimodal_llm(CausalLmModel &h, causallm::Gauss3_8_QNN *llm,
                              /*do_sample=*/false,
                              /*log_output=*/g_verbose);
     h.kv_len = llm->getKvLen();
-    h.conversation_started = h.kv_len > 0;
   }
   catch (const std::exception &e)
   {
