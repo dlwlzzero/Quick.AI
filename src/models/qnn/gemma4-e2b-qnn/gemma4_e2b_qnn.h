@@ -130,6 +130,7 @@ private:
   int prefill_sliding_attention_mask_columns   = 0;
   int generation_attention_mask_elements       = 0;
   int generation_sliding_attention_mask_elements = 0;
+  int generation_logits_output_index           = -1;
   int generation_full_kv_past_length           = 0;
   int generation_sliding_kv_past_length        = 0;
   int rope_cache_seq_len                       = 0;

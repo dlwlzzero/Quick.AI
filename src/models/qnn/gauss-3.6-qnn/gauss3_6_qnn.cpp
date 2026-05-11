@@ -26,135 +26,12 @@
 #include <unistd.h>
 
 #include <algorithm>
-#if defined(_WIN32)
-#include <codecvt>
-#include <locale>
-#endif
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <unordered_map>
 
 using namespace causallm;
-
-namespace {
-
-constexpr int kKvNumColumns = 128;
-constexpr const char *kGaussTurnStart = "<|turn_start|>";
-constexpr const char *kGaussTurnEnd = "<|turn_end|>";
-
-bool starts_with(const std::string &value, const std::string &prefix) {
-  return value.compare(0, prefix.size(), prefix) == 0;
-}
-
-std::string prompt_to_utf8(const WSTR &prompt) {
-#if defined(_WIN32)
-  std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-  return converter.to_bytes(prompt);
-#else
-  return prompt;
-#endif
-}
-
-std::string trim_wrapping_newlines(std::string value) {
-  while (!value.empty() && (value.front() == '\n' || value.front() == '\r')) {
-    value.erase(value.begin());
-  }
-  while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
-    value.pop_back();
-  }
-  return value;
-}
-
-std::string extract_latest_user_content(const std::string &prompt) {
-  size_t latest_content_start = std::string::npos;
-  size_t latest_content_end = std::string::npos;
-
-  for (size_t pos = prompt.find(kGaussTurnStart); pos != std::string::npos;
-       pos = prompt.find(kGaussTurnStart, pos + std::strlen(kGaussTurnStart))) {
-    size_t role_start = pos + std::strlen(kGaussTurnStart);
-    if (prompt.compare(role_start, 4, "User") != 0 &&
-        prompt.compare(role_start, 4, "user") != 0) {
-      continue;
-    }
-
-    size_t content_start = role_start + 4;
-    if (content_start < prompt.size() && prompt[content_start] == '\r') {
-      content_start++;
-    }
-    if (content_start < prompt.size() && prompt[content_start] == '\n') {
-      content_start++;
-    }
-
-    size_t content_end = prompt.find(kGaussTurnEnd, content_start);
-    if (content_end == std::string::npos) {
-      content_end = prompt.size();
-    }
-
-    latest_content_start = content_start;
-    latest_content_end = content_end;
-  }
-
-  if (latest_content_start == std::string::npos) {
-    return prompt;
-  }
-
-  return trim_wrapping_newlines(
-      prompt.substr(latest_content_start,
-                    latest_content_end - latest_content_start));
-}
-
-std::string build_gauss_user_turn_prompt(const std::string &user_content) {
-  return std::string(kGaussTurnStart) + "User\n" + user_content + "\n" +
-         kGaussTurnEnd + "\n" + kGaussTurnStart + "Assistant\n";
-}
-
-int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
-                                   const std::string &tensor_name) {
-  for (size_t idx = 0; idx < tensor_infos.size(); idx++) {
-    if (tensor_infos[idx].first == tensor_name) {
-      return static_cast<int>(idx);
-    }
-  }
-  return -1;
-}
-
-std::string kv_output_to_input_name(const std::string &output_name) {
-  if (output_name.size() >= 4 &&
-      output_name.compare(output_name.size() - 4, 4, "_out") == 0) {
-    return output_name.substr(0, output_name.size() - 4) + "_in";
-  }
-  return output_name;
-}
-
-void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
-                          const uint8_t *src, int src_row_length,
-                          int history_length, bool is_key) {
-  if (dest == nullptr || src == nullptr || history_length <= 0 ||
-      dest_row_length <= 0 || src_row_length <= 0) {
-    return;
-  }
-
-  const int available_history = std::min(history_length, src_row_length);
-  const int copy_length = std::min(available_history, dest_row_length);
-  const int src_start = available_history - copy_length;
-  const bool align_to_tail =
-      history_length >= src_row_length && dest_row_length > copy_length;
-  const int dest_start = align_to_tail ? dest_row_length - copy_length : 0;
-
-  if (is_key) {
-    for (int col = 0; col < kKvNumColumns; ++col) {
-      std::memcpy(dest + col * dest_row_length + dest_start,
-                  src + col * src_row_length + src_start, copy_length);
-    }
-  } else {
-    std::memcpy(dest + dest_start * kKvNumColumns,
-                src + src_start * kKvNumColumns,
-                copy_length * kKvNumColumns);
-  }
-}
-
-} // namespace
 
 /**
  * @brief Auto-registration via constructor attribute
@@ -361,7 +238,6 @@ void causallm::Gauss3_6_QNN::initialize() {
 
   // Initialize generation KV cache as the canonical history. Prefill keeps its
   // own input buffers because gauss3.6 prefill and generation KV shapes differ.
-  this->fresh_kvs.clear();
   this->kvs.clear();
   this->kv_sizes.clear();
   this->kv_row_lengths.clear();
@@ -401,66 +277,41 @@ void causallm::Gauss3_6_QNN::initialize() {
           generation_graph_info.raw_inputs[generation_input_index].second;
 
       int size = GraphParser::get_tensor_size(generation_info);
+      if (generation_info.data_type != "QNN_DATATYPE_UFIXED_POINT_8") {
+        throw std::runtime_error("Unexpected generation KV dtype for " + name);
+      }
 
-      auto *current_kv = static_cast<uint8_t *>(tracked_allocate(size));
-      auto *fresh_kv = static_cast<uint8_t *>(tracked_allocate(size));
-      std::fill_n(current_kv, size, static_cast<uint8_t>(128));
-      std::fill_n(fresh_kv, size, static_cast<uint8_t>(128));
+      auto *current_kv =
+          std::get<uint8_t *>(generation_inputs[generation_input_index]);
+      std::memset(current_kv, 128, size);
 
       int kv_input_index = static_cast<int>(this->kvs.size());
       this->kvs.push_back(current_kv);
-      this->fresh_kvs.push_back(fresh_kv);
       this->kv_sizes.push_back(size);
       generation_kv_index_by_name[name] = kv_input_index;
 
       if (prefill_input_index >= 0) {
         const auto &prefill_info =
             prefill_graph_info.raw_inputs[prefill_input_index].second;
-        const bool is_key = starts_with(name, "past_key_");
-        const int prefill_row_length =
-            is_key ? prefill_info.dimensions.back()
-                   : prefill_info.dimensions[prefill_info.dimensions.size() - 2];
+        const bool is_key = qnn_starts_with(name, "past_key_");
 
         this->prefill_kvs.push_back(
             std::get<uint8_t *>(prefill_inputs[prefill_input_index]));
         this->prefill_kv_sizes.push_back(GraphParser::get_tensor_size(prefill_info));
-        this->prefill_kv_row_lengths.push_back(prefill_row_length);
+        this->prefill_kv_row_lengths.push_back(
+            get_kv_row_length(prefill_info, is_key, name));
         this->prefill_to_generation_kv_indices.push_back(kv_input_index);
         this->prefill_kv_is_key.push_back(is_key ? 1 : 0);
       }
-      generation_inputs[generation_input_index] = current_kv;
     }
   }
 
-  auto build_output_kv_bindings =
-      [&](const TensorInfoList &outputs, const std::string &graph_name) {
-        std::vector<KvOutputBinding> bindings;
-        for (size_t idx = 0; idx < outputs.size(); idx++) {
-          const auto &name = outputs[idx].first;
-          if (!starts_with(name, "past_")) {
-            continue;
-          }
-
-          auto input_name = kv_output_to_input_name(name);
-          auto it = generation_kv_index_by_name.find(input_name);
-          if (it == generation_kv_index_by_name.end()) {
-            throw std::runtime_error(graph_name +
-                                     " KV output has no generation input: " +
-                                     name);
-          }
-
-          int kv_index = it->second;
-          bindings.push_back(
-              {static_cast<int>(idx), kv_index, kv_index / 4,
-               starts_with(name, "past_key_")});
-        }
-        return bindings;
-      };
-
   this->prefill_output_kv_bindings =
-      build_output_kv_bindings(prefill_graph_info.raw_outputs, prefill_graph);
-  this->generation_output_kv_bindings = build_output_kv_bindings(
-      generation_graph_info.raw_outputs, generation_graph);
+      build_kv_output_bindings(prefill_graph_info.raw_outputs,
+                               generation_kv_index_by_name, prefill_graph);
+  this->generation_output_kv_bindings =
+      build_kv_output_bindings(generation_graph_info.raw_outputs,
+                               generation_kv_index_by_name, generation_graph);
 
   LOGD("KV cache mapping: generation_inputs=%zu prefill_inputs=%zu "
        "prefill_outputs=%zu generation_outputs=%zu",
@@ -474,11 +325,9 @@ void causallm::Gauss3_6_QNN::initialize() {
 
 void causallm::Gauss3_6_QNN::initialize_kv_cache() {
   kv_len = 0;
-  conversation_started_ = false;
   
-  // KV Cache Initialization
   for (int i = 0; i < this->kvs.size(); i++) {
-    std::memcpy(this->kvs[i], this->fresh_kvs[i], this->kv_sizes[i]);
+    std::memset(this->kvs[i], 128, this->kv_sizes[i]);
   }
   reset_prefill_kv_cache_inputs();
 }
@@ -512,15 +361,6 @@ void causallm::Gauss3_6_QNN::sync_generation_kv_cache_to_prefill() {
                          this->kv_row_lengths[generation_layer_idx], kv_len,
                          this->prefill_kv_is_key[i] != 0);
   }
-}
-
-std::string causallm::Gauss3_6_QNN::normalize_conversation_prompt(
-    const std::string &prompt) const {
-  if (!conversation_started_ || kv_len <= 0) {
-    return prompt;
-  }
-
-  return build_gauss_user_turn_prompt(extract_latest_user_content(prompt));
 }
 
 void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
@@ -559,10 +399,13 @@ void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
 void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
                                  const WSTR system_prompt,
                                  const WSTR tail_prompt, bool log_output) {
+  (void)do_sample;
+  (void)system_prompt;
+  (void)tail_prompt;
+
   stop_requested_.store(false, std::memory_order_release);
 
-  const std::string raw_prompt = prompt_to_utf8(prompt);
-  const std::string model_prompt = normalize_conversation_prompt(raw_prompt);
+  const std::string model_prompt = promptToUtf8(prompt);
   auto input = tokenizer->Encode(model_prompt);
 
   if (input.size() <= 1) {
@@ -580,16 +423,17 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
         std::to_string(generation_full_kv_past_length));
   }
 
-  auto n_chunks = (input_len % 256 != 0) ? ((input_len / 256) + 1) : (input_len / 256);
+  auto n_chunks = (input_len % context_size != 0)
+                      ? ((input_len / context_size) + 1)
+                      : (input_len / context_size);
   auto token  = input.back();
 
   std::cout << "len: " << input_len << ", n_chunks: " << n_chunks << std::endl;
   LOGD("prompt token length=%u, n_chunks=%u, full_kv_past=%d, "
-       "sliding_kv_past=%d, rope_cache_seq_len=%d, conversation_started=%d, "
-       "raw_prompt_bytes=%zu, model_prompt_bytes=%zu",
+       "sliding_kv_past=%d, rope_cache_seq_len=%d, model_prompt_bytes=%zu",
        input_len, n_chunks, generation_full_kv_past_length,
        generation_sliding_kv_past_length, rope_cache_seq_len,
-       conversation_started_ ? 1 : 0, raw_prompt.size(), model_prompt.size());
+       model_prompt.size());
 
   std::vector<int> output;
   std::vector<ml::train::TensorDim::IO_TensorType> outputs;
@@ -643,56 +487,6 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
                 pos_dim * sizeof(uint16_t));
   };
 
-  auto append_outputs_to_kv_cache =
-      [&](const std::vector<ml::train::TensorDim::IO_TensorType> &step_outputs,
-          const std::vector<KvOutputBinding> &bindings, int target_position,
-          int rows, int src_row_length, const std::string &graph_name) {
-        for (const auto &binding : bindings) {
-          if (binding.output_index < 0 ||
-              binding.output_index >= (int)step_outputs.size() ||
-              binding.kv_index < 0 || binding.kv_index >= (int)this->kvs.size() ||
-              binding.layer_index < 0 ||
-              binding.layer_index >= (int)this->kv_row_lengths.size()) {
-            throw std::runtime_error(graph_name +
-                                     " output KV binding is out of range");
-          }
-        }
-
-#pragma omp parallel for
-        for (int binding_idx = 0; binding_idx < (int)bindings.size();
-             binding_idx++) {
-          const auto &binding = bindings[binding_idx];
-          int dest_row_length = kv_row_lengths[binding.layer_index];
-          auto output = std::get<uint8_t *>(step_outputs[binding.output_index]);
-          auto dest = this->kvs[binding.kv_index];
-          int num_column = kKvNumColumns;
-
-          int target_idx = target_position;
-          int valid_before = std::min(target_position, dest_row_length);
-          int shift = valid_before + rows - dest_row_length;
-          if (shift > 0) {
-            target_idx = valid_before - shift;
-            if (binding.is_key) {
-              for (int col = 0; col < num_column; ++col) {
-                uint8_t *col_base = dest + col * dest_row_length;
-                std::memmove(col_base, col_base + shift,
-                             dest_row_length - shift);
-              }
-            } else {
-              std::memmove(dest, dest + shift * num_column,
-                           (dest_row_length - shift) * num_column);
-            }
-          }
-
-          if (binding.is_key) {
-            process_key(output, rows, num_column, dest, target_idx,
-                        dest_row_length, src_row_length);
-          } else {
-            process_value(output, rows, num_column, dest, target_idx);
-          }
-        }
-      };
-
   auto append_generation_token_to_kv_cache = [&](int token_to_append) {
     if (kv_len >= generation_full_kv_past_length) {
       LOGD("skip appending terminal token to KV: kv_len=%d, full_kv_past=%d",
@@ -703,20 +497,23 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     fill_generation_inputs(token_to_append, kv_len);
     auto terminal_outputs = generation_model->inference(1, generation_inputs);
     append_outputs_to_kv_cache(terminal_outputs,
-                               this->generation_output_kv_bindings, kv_len, 1,
-                               1, generation_graph);
+                               this->generation_output_kv_bindings, this->kvs,
+                               this->kv_row_lengths, kv_len, 1, 1,
+                               generation_graph);
     kv_len += 1;
   };
 
   for (int c = 0; c < n_chunks; c++) {
-    int chunk_len = ((c + 1) * 256 < input_len)
+    const int chunk_offset = c * context_size;
+    int chunk_len = ((c + 1) * context_size < input_len)
                         ? context_size
-                        : (input_len - (c * 256));
+                        : (input_len - chunk_offset);
     LOGD("kv_len : %d, chunk_len : %d", kv_len, chunk_len);
     sync_generation_kv_cache_to_prefill();
 
     for (int i = 0; i < context_size; i++)
-      input_sample[i] = (i < chunk_len) ? input[c * 256 + i] : padding_token;
+      input_sample[i] =
+          (i < chunk_len) ? input[chunk_offset + i] : padding_token;
 
     fill_attention_mask_with_length(context_size, max_seq_len, chunk_len,
                                     attention_mask);
@@ -765,7 +562,8 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     auto outputs = prefill_model->inference(1, prefill_inputs);
     // Append prefill output KV into the shared prefill/generation cache.
     append_outputs_to_kv_cache(outputs, this->prefill_output_kv_bindings,
-                               kv_len, chunk_len, context_size, prefill_graph);
+                               this->kvs, this->kv_row_lengths, kv_len,
+                               chunk_len, context_size, prefill_graph);
 
     kv_len += chunk_len;
   }
@@ -778,7 +576,8 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
 
     outputs = generation_model->inference(1, generation_inputs);
     append_outputs_to_kv_cache(outputs, this->generation_output_kv_bindings,
-                               idx, 1, 1, generation_graph);
+                               this->kvs, this->kv_row_lengths, idx, 1, 1,
+                               generation_graph);
     kv_len += 1;
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
                    input.data(), input.size(), logit_scale, logit_offset,
@@ -811,7 +610,6 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
   }
 
   has_run_ = true;
-  conversation_started_ = true;
 
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;

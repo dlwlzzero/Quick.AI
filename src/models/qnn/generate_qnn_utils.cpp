@@ -8,6 +8,9 @@
 #include <memory>
 #include <queue>
 #include <random>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -18,6 +21,8 @@ std::mt19937 rng;
 std::chrono::duration<double> raw_exec_seconds;
 
 namespace {
+
+constexpr int kQnnKvNumColumns = 128;
 
 constexpr float kRopeQuantScale = 3.051804378628731e-05f;
 constexpr int kRopeQuantOffset = -32768;
@@ -87,6 +92,143 @@ get_cos_sin (int context_size, int pos_dim, const double theta,
     }
   }
   return std::make_tuple(cos_val, sin_val);
+}
+
+bool qnn_starts_with(const std::string &value, const std::string &prefix) {
+  return value.compare(0, prefix.size(), prefix) == 0;
+}
+
+int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
+                                   const std::string &tensor_name) {
+  for (size_t idx = 0; idx < tensor_infos.size(); idx++) {
+    if (tensor_infos[idx].first == tensor_name) {
+      return static_cast<int>(idx);
+    }
+  }
+  return -1;
+}
+
+std::string kv_output_to_input_name(const std::string &output_name) {
+  if (output_name.size() >= 4 &&
+      output_name.compare(output_name.size() - 4, 4, "_out") == 0) {
+    return output_name.substr(0, output_name.size() - 4) + "_in";
+  }
+  return output_name;
+}
+
+int get_kv_row_length(const TensorInfo &tensor_info, bool is_key,
+                      const std::string &tensor_name) {
+  if (tensor_info.dimensions.size() < 2) {
+    throw std::runtime_error("Unexpected KV dims for " + tensor_name);
+  }
+
+  if (is_key) {
+    return tensor_info.dimensions.back();
+  }
+
+  return tensor_info.dimensions[tensor_info.dimensions.size() - 2];
+}
+
+void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
+                          const uint8_t *src, int src_row_length,
+                          int history_length, bool is_key) {
+  if (dest == nullptr || src == nullptr || history_length <= 0 ||
+      dest_row_length <= 0 || src_row_length <= 0) {
+    return;
+  }
+
+  const int available_history = std::min(history_length, src_row_length);
+  const int copy_length = std::min(available_history, dest_row_length);
+  const int src_start = available_history - copy_length;
+  const bool align_to_tail =
+      history_length >= src_row_length && dest_row_length > copy_length;
+  const int dest_start = align_to_tail ? dest_row_length - copy_length : 0;
+
+  if (is_key) {
+    for (int col = 0; col < kQnnKvNumColumns; ++col) {
+      std::memcpy(dest + col * dest_row_length + dest_start,
+                  src + col * src_row_length + src_start, copy_length);
+    }
+  } else {
+    std::memcpy(dest + dest_start * kQnnKvNumColumns,
+                src + src_start * kQnnKvNumColumns,
+                copy_length * kQnnKvNumColumns);
+  }
+}
+
+std::vector<QnnKvOutputBinding> build_kv_output_bindings(
+    const TensorInfoList &outputs,
+    const std::unordered_map<std::string, int> &generation_kv_index_by_name,
+    const std::string &graph_name) {
+  std::vector<QnnKvOutputBinding> bindings;
+  for (size_t idx = 0; idx < outputs.size(); idx++) {
+    const auto &name = outputs[idx].first;
+    if (!qnn_starts_with(name, "past_")) {
+      continue;
+    }
+
+    const auto input_name = kv_output_to_input_name(name);
+    auto it = generation_kv_index_by_name.find(input_name);
+    if (it == generation_kv_index_by_name.end()) {
+      throw std::runtime_error(graph_name +
+                               " KV output has no generation input: " + name);
+    }
+
+    const int kv_index = it->second;
+    bindings.push_back({static_cast<int>(idx), kv_index, kv_index / 4,
+                        qnn_starts_with(name, "past_key_")});
+  }
+  return bindings;
+}
+
+void append_outputs_to_kv_cache(
+    const std::vector<IO_TensorType> &step_outputs,
+    const std::vector<QnnKvOutputBinding> &bindings,
+    const std::vector<uint8_t *> &kvs, const std::vector<int> &kv_row_lengths,
+    int target_position, int rows, int src_row_length,
+    const std::string &graph_name) {
+  for (const auto &binding : bindings) {
+    if (binding.output_index < 0 ||
+        binding.output_index >= static_cast<int>(step_outputs.size()) ||
+        binding.kv_index < 0 ||
+        binding.kv_index >= static_cast<int>(kvs.size()) ||
+        binding.layer_index < 0 ||
+        binding.layer_index >= static_cast<int>(kv_row_lengths.size())) {
+      throw std::runtime_error(graph_name + " output KV binding is out of range");
+    }
+  }
+
+#pragma omp parallel for
+  for (int binding_idx = 0; binding_idx < static_cast<int>(bindings.size());
+       binding_idx++) {
+    const auto &binding = bindings[binding_idx];
+    const int dest_row_length = kv_row_lengths[binding.layer_index];
+    auto output = std::get<uint8_t *>(step_outputs[binding.output_index]);
+    auto dest = kvs[binding.kv_index];
+
+    int target_idx = target_position;
+    const int valid_before = std::min(target_position, dest_row_length);
+    const int shift = valid_before + rows - dest_row_length;
+    if (shift > 0) {
+      target_idx = valid_before - shift;
+      if (binding.is_key) {
+        for (int col = 0; col < kQnnKvNumColumns; ++col) {
+          uint8_t *col_base = dest + col * dest_row_length;
+          std::memmove(col_base, col_base + shift, dest_row_length - shift);
+        }
+      } else {
+        std::memmove(dest, dest + shift * kQnnKvNumColumns,
+                     (dest_row_length - shift) * kQnnKvNumColumns);
+      }
+    }
+
+    if (binding.is_key) {
+      process_key(output, rows, kQnnKvNumColumns, dest, target_idx,
+                  dest_row_length, src_row_length);
+    } else {
+      process_value(output, rows, kQnnKvNumColumns, dest, target_idx);
+    }
+  }
 }
 
 void process_key(uint8_t *pointer, int row, int column, uint8_t *dest, int idx,

@@ -14,6 +14,11 @@
 #include <fstream>
 #include <sstream>
 
+#if defined(_WIN32)
+#include <codecvt>
+#include <locale>
+#endif
+
 using namespace ml::train;
 using namespace nntrainer;
 using namespace causallm;
@@ -200,8 +205,16 @@ causallm::Quick_Dot_AI_QNN::deallocate_all ()
   allocated_ptrs_.clear ();
 }
 
-causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN ()
-{
+std::string causallm::Quick_Dot_AI_QNN::promptToUtf8(const WSTR &prompt) {
+#if defined(_WIN32)
+  std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+  return converter.to_bytes(prompt);
+#else
+  return prompt;
+#endif
+}
+
+causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN() {
   // Tear down each graph's NeuralNetwork (and the QNNGraph layer inside it)
   // FIRST, so ~QNNGraph releases its zero-copy references to our input
   // buffers before we free them. Without this, the deallocate loop below

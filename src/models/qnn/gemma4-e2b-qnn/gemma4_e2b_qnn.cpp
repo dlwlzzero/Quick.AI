@@ -29,6 +29,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
@@ -60,22 +61,6 @@ std::string rebase_relative_to_model_file(const std::string &path,
   auto base = dirname(model_file);
   if (base.empty()) return path;
   return base + "/" + path;
-}
-
-int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
-                                   const std::string &name) {
-  for (size_t i = 0; i < tensor_infos.size(); ++i) {
-    if (tensor_infos[i].first == name) return (int)i;
-  }
-  return -1;
-}
-
-std::string kv_output_to_input_name(const std::string &out_name) {
-  if (out_name.size() >= 4 &&
-      out_name.compare(out_name.size() - 4, 4, "_out") == 0) {
-    return out_name.substr(0, out_name.size() - 4) + "_in";
-  }
-  return out_name;
 }
 
 // Window copy used by sync_generation_kv_cache_to_prefill().
@@ -564,10 +549,17 @@ void Gemma4_E2B_QNN::initialize() {
   generation_output_kv_bindings = build_bindings(generation_graph_info.raw_outputs,
                                                   generation_graph);
 
-  LOGD("KV mapping: gen_inputs=%zu pre_inputs=%zu pre_outs=%zu gen_outs=%zu",
+  generation_logits_output_index = find_tensor_index_or_minus_one(
+      generation_graph_info.raw_outputs, "logits");
+  if (generation_logits_output_index < 0) {
+    generation_logits_output_index =
+        static_cast<int>(generation_graph_info.raw_outputs.size()) - 1;
+  }
+
+  LOGD("KV mapping: gen_inputs=%zu pre_inputs=%zu pre_outs=%zu gen_outs=%zu logits_output=%d",
        this->kvs.size(), this->prefill_kvs.size(),
        this->prefill_output_kv_bindings.size(),
-       this->generation_output_kv_bindings.size());
+       this->generation_output_kv_bindings.size(), generation_logits_output_index);
 
   // ── Logit dequant params (overrides setupParameters defaults) ──
   const auto &logits_info = GraphParser::get_tensor_info_or_throw(
@@ -665,15 +657,17 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
   auto &prefill_model     = models[prefill_graph].model_handle;
   auto &generation_model  = models[generation_graph].model_handle;
 
-  auto _input = tokenizer->Encode(prompt);
+  const std::string model_prompt = promptToUtf8(prompt);
+  auto _input = tokenizer->Encode(model_prompt);
   if (_input.size() <= 1) {
     std::cout << "[Error] Empty input\n";
     return;
   }
   unsigned int input_len = _input.size() - 1;
   int          token     = _input.back();
-  auto n_chunks = (input_len % 256 != 0)
-                  ? ((input_len / 256) + 1) : (input_len / 256);
+  auto n_chunks = (input_len % context_size != 0)
+                  ? ((input_len / context_size) + 1)
+                  : (input_len / context_size);
 
   if (kv_len + (int)input_len >= generation_full_kv_past_length)
     throw std::runtime_error("Input prompt leaves no room for generation");
@@ -774,13 +768,14 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
 
   // ── Prefill ──
   for (int c = 0; c < (int)n_chunks; ++c) {
-    int chunk_len = ((c + 1) * 256 < (int)input_len)
-                    ? context_size : ((int)input_len - c * 256);
+    int chunk_len = ((c + 1) * context_size < (int)input_len)
+                    ? context_size : ((int)input_len - c * context_size);
 
     sync_generation_kv_cache_to_prefill();
 
     for (int i = 0; i < context_size; ++i)
-      input_sample[i] = (i < chunk_len) ? _input[c * 256 + i] : padding_token;
+      input_sample[i] =
+          (i < chunk_len) ? _input[c * context_size + i] : padding_token;
 
     fill_attention_mask_with_length(context_size, prefill_attention_mask_columns,
                                     chunk_len, attention_mask);
@@ -836,9 +831,9 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
     append_outputs_to_kv_cache(outputs, generation_output_kv_bindings,
                                idx, 1, 1, generation_graph);
     kv_len += 1;
-    token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
-                   _input.data(), _input.size(), logit_scale, logit_offset,
-                   repetition_penalty, temperature, top_p, top_k);
+    token = sample(std::get<uint16_t *>(outputs[generation_logits_output_index]),
+                   vocab_size, _input.data(), _input.size(), logit_scale,
+                   logit_offset, repetition_penalty, temperature, top_p, top_k);
     output.push_back(token);
 
     bool reached_eos = false;

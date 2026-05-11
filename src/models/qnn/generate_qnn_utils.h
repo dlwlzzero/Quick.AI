@@ -9,10 +9,12 @@
 #include <queue>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "android_memory_allocator.h"
+#include "graph_parser.h"
 #include <model.h>
 #include <tokenizers_cpp.h>
 
@@ -22,13 +24,47 @@ using IO_TensorType = ml::train::TensorDim::IO_TensorType;
 extern std::mt19937 rng;
 extern std::chrono::duration<double> raw_exec_seconds;
 
-std::tuple<uint16_t *, uint16_t *> get_cos_sin (int context_size, int pos_dim,
-    const double theta, const std::string &rope_type = "default",
-    double partial_rotary_factor = 1.0, double rope_scaling_factor = 1.0,
-    int rope_head_dim = 0);
+struct QnnKvOutputBinding {
+  int output_index;
+  int kv_index;
+  int layer_index;
+  bool is_key;
+};
 
-void process_key (uint8_t *pointer, int row, int column, uint8_t *dest, int idx,
-    int dest_row_length, int src_row_length);
+std::tuple<uint16_t *, uint16_t *>
+get_cos_sin(int context_size, int pos_dim, const double theta,
+            const std::string &rope_type = "default",
+            double partial_rotary_factor = 1.0,
+            double rope_scaling_factor = 1.0, int rope_head_dim = 0);
+
+bool qnn_starts_with(const std::string &value, const std::string &prefix);
+
+int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
+                                   const std::string &tensor_name);
+
+std::string kv_output_to_input_name(const std::string &output_name);
+
+int get_kv_row_length(const TensorInfo &tensor_info, bool is_key,
+                      const std::string &tensor_name);
+
+void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
+                          const uint8_t *src, int src_row_length,
+                          int history_length, bool is_key);
+
+std::vector<QnnKvOutputBinding> build_kv_output_bindings(
+    const TensorInfoList &outputs,
+    const std::unordered_map<std::string, int> &generation_kv_index_by_name,
+    const std::string &graph_name);
+
+void append_outputs_to_kv_cache(
+    const std::vector<IO_TensorType> &step_outputs,
+    const std::vector<QnnKvOutputBinding> &bindings,
+    const std::vector<uint8_t *> &kvs, const std::vector<int> &kv_row_lengths,
+    int target_position, int rows, int src_row_length,
+    const std::string &graph_name);
+
+void process_key(uint8_t *pointer, int row, int column, uint8_t *dest, int idx,
+                 int dest_row_length, int src_row_length);
 
 void process_value (uint8_t *pointer, int row, int column, uint8_t *dest, int idx);
 
