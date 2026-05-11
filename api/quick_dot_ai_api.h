@@ -125,6 +125,10 @@ WIN_EXPORT ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics);
 WIN_EXPORT ErrorCode runModel(const char *inputTextPrompt,
                               const char **outputText);
 
+WIN_EXPORT ErrorCode saveQnnKvCache(const char *cache_path);
+WIN_EXPORT ErrorCode loadQnnKvCache(const char *cache_path);
+WIN_EXPORT ErrorCode resetQnnKvCache(void);
+
 /**
  * @brief Run inference with chat template formatted messages
  * @param messages Array of chat messages with role and content
@@ -224,6 +228,12 @@ WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
 WIN_EXPORT ErrorCode runModelHandle(CausalLmHandle handle,
                                     const char *inputTextPrompt,
                                     const char **outputText);
+
+WIN_EXPORT ErrorCode saveQnnKvCacheHandle(CausalLmHandle handle,
+                                           const char *cache_path);
+WIN_EXPORT ErrorCode loadQnnKvCacheHandle(CausalLmHandle handle,
+                                           const char *cache_path);
+WIN_EXPORT ErrorCode resetQnnKvCacheHandle(CausalLmHandle handle);
 
 /**
  * @brief Retrieve performance metrics of the last run for a given handle.

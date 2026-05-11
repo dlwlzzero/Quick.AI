@@ -10,8 +10,8 @@
 #ifndef __GAUSS_3_8_QNN_H__
 #define __GAUSS_3_8_QNN_H__
 
-#include "generate_qnn_utils.h"
 #include "quick_dot_ai_qnn.h"
+#include "qnn_kv_cache_manager.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -53,14 +53,15 @@ public:
 
   const void *lookupEmbedding(int token_id) const;
 
-  int getKvLen() const { return kv_len; }
+  bool supportsKvCachePersistence() const override { return true; }
+  int getKvLen() const override { return kv_cache_.length(); }
+  void resetKvCache() override;
+  void saveKvCache(const std::string &cache_path) const override;
+  void loadKvCache(const std::string &cache_path) override;
   size_t embeddingBytesPerToken() const { return embedding_bytes_per_token; }
   std::pair<float, int> get_embedding_info();
 
 private:
-  void reset_prefill_kv_cache_inputs();
-  void sync_generation_kv_cache_to_prefill();
-
   // Input/output tensors
   uint16_t *attention_mask = nullptr;
   uint16_t *sliding_attention_mask = nullptr;
@@ -86,8 +87,7 @@ private:
   uint16_t *input_sample_u16 = nullptr;
   uint16_t *generation_sample_u16 = nullptr;
 
-  // KV cache variables
-  int kv_len = 0;
+  QnnKvCacheManager kv_cache_;
 
   int generation_logits_output_index = -1;
   int prefill_attention_mask_elements = 0;
@@ -97,19 +97,6 @@ private:
   int generation_full_kv_past_length = 0;
   int generation_sliding_kv_past_length = 0;
   int rope_cache_seq_len = 0;
-
-  std::vector<uint8_t *> kvs;
-  std::vector<int> kv_sizes;
-  std::vector<int> kv_row_lengths;
-
-  std::vector<uint8_t *> prefill_kvs;
-  std::vector<int> prefill_kv_sizes;
-  std::vector<int> prefill_kv_row_lengths;
-  std::vector<int> prefill_to_generation_kv_indices;
-  std::vector<int> prefill_kv_is_key;
-
-  std::vector<QnnKvOutputBinding> prefill_output_kv_bindings;
-  std::vector<QnnKvOutputBinding> generation_output_kv_bindings;
 
   // Language model specific variables
   int num_hidden_layers;

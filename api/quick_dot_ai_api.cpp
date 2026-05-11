@@ -42,6 +42,7 @@
 #include "gauss3_6_qnn.h"
 #include "gauss3_8_qnn.h"
 #include "gauss3_8_vision_encoder_qnn.h"
+#include "quick_dot_ai_qnn.h"
 
 #endif
 #include <fstream>
@@ -404,18 +405,37 @@ build_gauss_incremental_user_prompt(const std::string &user_content)
 static int read_gauss_qnn_kv_len(causallm::Transformer *model)
 {
 #ifdef ENABLE_QNN
-  if (auto *m = dynamic_cast<causallm::Gauss3_6_QNN *>(model))
+  if (auto *m = dynamic_cast<causallm::Quick_Dot_AI_QNN *>(model))
   {
-    return m->getKvLen();
-  }
-  if (auto *m = dynamic_cast<causallm::Gauss3_8_QNN *>(model))
-  {
-    return m->getKvLen();
+    if (m->supportsKvCachePersistence())
+    {
+      return m->getKvLen();
+    }
   }
 #endif
   (void)model;
   return 0;
 }
+
+#ifdef ENABLE_QNN
+static causallm::Quick_Dot_AI_QNN *
+find_qnn_kv_cache_model(CausalLmModel &h)
+{
+  for (auto &entry : h.models)
+  {
+    if (!entry)
+    {
+      continue;
+    }
+    auto *model = dynamic_cast<causallm::Quick_Dot_AI_QNN *>(entry.get());
+    if (model != nullptr && model->supportsKvCachePersistence())
+    {
+      return model;
+    }
+  }
+  return nullptr;
+}
+#endif
 
 static void reset_handle_session_state(CausalLmModel &h)
 {
@@ -438,6 +458,121 @@ static void update_handle_session_after_run(CausalLmModel &h,
 
   h.kv_len = read_gauss_qnn_kv_len(h.models[model_index].get());
   h.conversation_started = h.kv_len > 0;
+}
+
+static ErrorCode save_qnn_kv_cache_on_handle(CausalLmModel &h,
+                                             const char *cache_path)
+{
+#ifndef ENABLE_QNN
+  (void)h;
+  (void)cache_path;
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
+#else
+  if (cache_path == nullptr || cache_path[0] == '\0')
+  {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  std::lock_guard<std::mutex> lock(h.mtx);
+  if (!h.initialized || h.models.empty())
+  {
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  auto *model = find_qnn_kv_cache_model(h);
+  if (model == nullptr)
+  {
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
+
+  try
+  {
+    model->saveKvCache(cache_path);
+    h.kv_len = model->getKvLen();
+    h.conversation_started = h.kv_len > 0;
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("saveQnnKvCacheHandle failed: %s", e.what());
+    return CAUSAL_LM_ERROR_UNKNOWN;
+  }
+
+  return CAUSAL_LM_ERROR_NONE;
+#endif
+}
+
+static ErrorCode load_qnn_kv_cache_on_handle(CausalLmModel &h,
+                                             const char *cache_path)
+{
+#ifndef ENABLE_QNN
+  (void)h;
+  (void)cache_path;
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
+#else
+  if (cache_path == nullptr || cache_path[0] == '\0')
+  {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  std::lock_guard<std::mutex> lock(h.mtx);
+  if (!h.initialized || h.models.empty())
+  {
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  auto *model = find_qnn_kv_cache_model(h);
+  if (model == nullptr)
+  {
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
+
+  try
+  {
+    model->loadKvCache(cache_path);
+    h.kv_len = model->getKvLen();
+    h.conversation_started = h.kv_len > 0;
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("loadQnnKvCacheHandle failed: %s", e.what());
+    return CAUSAL_LM_ERROR_UNKNOWN;
+  }
+
+  return CAUSAL_LM_ERROR_NONE;
+#endif
+}
+
+static ErrorCode reset_qnn_kv_cache_on_handle(CausalLmModel &h)
+{
+#ifndef ENABLE_QNN
+  (void)h;
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
+#else
+  std::lock_guard<std::mutex> lock(h.mtx);
+  if (!h.initialized || h.models.empty())
+  {
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  auto *model = find_qnn_kv_cache_model(h);
+  if (model == nullptr)
+  {
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
+
+  try
+  {
+    model->resetKvCache();
+    reset_handle_session_state(h);
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("resetQnnKvCacheHandle failed: %s", e.what());
+    return CAUSAL_LM_ERROR_UNKNOWN;
+  }
+
+  return CAUSAL_LM_ERROR_NONE;
+#endif
 }
 
 static std::string prepare_input_for_model(CausalLmModel &h, size_t model_index,
@@ -1538,6 +1673,21 @@ ErrorCode runModel(const char *inputTextPrompt, const char **outputText)
   return run_on_handle(get_default_handle(), inputTextPrompt, outputText);
 }
 
+ErrorCode saveQnnKvCache(const char *cache_path)
+{
+  return save_qnn_kv_cache_on_handle(get_default_handle(), cache_path);
+}
+
+ErrorCode loadQnnKvCache(const char *cache_path)
+{
+  return load_qnn_kv_cache_on_handle(get_default_handle(), cache_path);
+}
+
+ErrorCode resetQnnKvCache(void)
+{
+  return reset_qnn_kv_cache_on_handle(get_default_handle());
+}
+
 ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics)
 {
   return metrics_on_handle(get_default_handle(), metrics);
@@ -1605,6 +1755,33 @@ ErrorCode runModelHandle(CausalLmHandle handle, const char *inputTextPrompt,
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
   return run_on_handle(*handle, inputTextPrompt, outputText);
+}
+
+ErrorCode saveQnnKvCacheHandle(CausalLmHandle handle, const char *cache_path)
+{
+  if (handle == nullptr)
+  {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+  return save_qnn_kv_cache_on_handle(*handle, cache_path);
+}
+
+ErrorCode loadQnnKvCacheHandle(CausalLmHandle handle, const char *cache_path)
+{
+  if (handle == nullptr)
+  {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+  return load_qnn_kv_cache_on_handle(*handle, cache_path);
+}
+
+ErrorCode resetQnnKvCacheHandle(CausalLmHandle handle)
+{
+  if (handle == nullptr)
+  {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+  return reset_qnn_kv_cache_on_handle(*handle);
 }
 
 ErrorCode getPerformanceMetricsHandle(CausalLmHandle handle,

@@ -25,6 +25,7 @@
 
 #include <atomic>
 #include <set>
+#include <stdexcept>
 
 namespace causallm {
 /**
@@ -57,6 +58,20 @@ public:
   void load_weight(const std::string &weight_path) override;
 
   void save_weight(const std::string &weight_path) override;
+
+  virtual bool supportsKvCachePersistence() const { return false; }
+  virtual int getKvLen() const { return 0; }
+  virtual void resetKvCache() {
+    throw std::runtime_error("QNN KV cache is not supported by this model");
+  }
+  virtual void saveKvCache(const std::string &cache_path) const {
+    (void)cache_path;
+    throw std::runtime_error("QNN KV cache is not supported by this model");
+  }
+  virtual void loadKvCache(const std::string &cache_path) {
+    (void)cache_path;
+    throw std::runtime_error("QNN KV cache is not supported by this model");
+  }
 
   void setupParameters(json &cfg, json &generation_cfg,
                        json &nntr_cfg) override;

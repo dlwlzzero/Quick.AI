@@ -10,8 +10,8 @@
 #ifndef __GAUSS_3_6_QNN_H__
 #define __GAUSS_3_6_QNN_H__
 
-#include "generate_qnn_utils.h"
 #include "quick_dot_ai_qnn.h"
+#include "qnn_kv_cache_manager.h"
 
 #include <cstdint>
 
@@ -45,12 +45,13 @@ public:
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
            bool log_output = true) override;
 
-  int getKvLen() const { return kv_len; }
+  bool supportsKvCachePersistence() const override { return true; }
+  int getKvLen() const override { return kv_cache_.length(); }
+  void resetKvCache() override;
+  void saveKvCache(const std::string &cache_path) const override;
+  void loadKvCache(const std::string &cache_path) override;
 
 private:
-  void reset_prefill_kv_cache_inputs();
-  void sync_generation_kv_cache_to_prefill();
-
   // Input/output tensors
   uint16_t *attention_mask;
   uint16_t *sliding_attention_mask;
@@ -73,20 +74,7 @@ private:
   float *input_sample;
   float *generation_sample;
 
-  // KV cache variables
-  int kv_len;
-  
-  std::vector<uint8_t *> kvs;
-  std::vector<int> kv_sizes;
-  std::vector<int> kv_row_lengths;
-  std::vector<uint8_t *> prefill_kvs;
-  std::vector<int> prefill_kv_sizes;
-  std::vector<int> prefill_kv_row_lengths;
-  std::vector<int> prefill_to_generation_kv_indices;
-  std::vector<int> prefill_kv_is_key;
-
-  std::vector<QnnKvOutputBinding> prefill_output_kv_bindings;
-  std::vector<QnnKvOutputBinding> generation_output_kv_bindings;
+  QnnKvCacheManager kv_cache_;
 
   int prefill_attention_mask_elements = 0;
   int prefill_sliding_attention_mask_elements = 0;
