@@ -11,10 +11,17 @@
 #include "engine.h"
 #include "graph_parser.h"
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <set>
 #include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #include <codecvt>

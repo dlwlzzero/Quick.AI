@@ -1,8 +1,10 @@
 #include "graph_parser.h"
 #include <algorithm>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 
 #include "nntrainer_error.h"
 

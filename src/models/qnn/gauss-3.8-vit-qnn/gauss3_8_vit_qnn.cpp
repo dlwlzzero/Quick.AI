@@ -24,7 +24,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstring>
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <tuple>
+#include <vector>
 
 using namespace causallm;
 

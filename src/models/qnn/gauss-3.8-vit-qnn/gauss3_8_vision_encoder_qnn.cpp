@@ -10,6 +10,15 @@
 #include "factory.h"
 #include "nntrainer_error.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <utility>
+#include <vector>
+
 /**
  * @brief Auto-registration via constructor attribute
  *

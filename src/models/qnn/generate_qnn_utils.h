@@ -9,6 +9,7 @@
 #include <queue>
 #include <random>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>

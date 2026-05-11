@@ -1,6 +1,7 @@
 #include "android_memory_allocator.h"
 
 #include <dynamic_library_loader.h>
+#include <iostream>
 
 #define RPCMEM_HEAP_ID_SYSTEM 25
 #define RPCMEM_DEFAULT_FLAGS 1
