@@ -1643,6 +1643,8 @@ class MainActivity : AppCompatActivity() {
         ModelId.GAUSS3_8 -> "[TEXT]        ${m.name}"
         ModelId.GAUSS3_6 -> "[TEXT]        ${m.name}"
         ModelId.TINY_BERT -> "[EMBEDDING]   ${m.name}"
+        ModelId.FUNCTION_GEMMA -> "[TEXT]   ${m.name}"
+        ModelId.GEMMA4_CPU -> "[TEXT]   ${m.name}"
     }
 
     /* ════════════════════════════════════════════════════════════════
@@ -2360,6 +2362,11 @@ class MainActivity : AppCompatActivity() {
                 "$base/models/gauss-3.6"
             ModelId.TINY_BERT ->
                 "$base/models/tiny-bert"
+            ModelId.FUNCTION_GEMMA ->
+                "$base/models/function_gemma"
+            ModelId.GEMMA4_CPU ->
+                "$base/models/gemma4_cpu"
+
         }
     }
 

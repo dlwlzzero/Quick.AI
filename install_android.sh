@@ -91,6 +91,7 @@ adb shell "cat > $INSTALL_DIR/run.sh << 'EOF'
 #!/system/bin/sh
 export LD_LIBRARY_PATH=/data/local/tmp/Quick.AI:\$LD_LIBRARY_PATH
 cd /data/local/tmp/Quick.AI
+export NNTR_NUM_THREADS=7
 ./quick_dot_ai \$@
 EOF"
 adb shell "chmod 755 $INSTALL_DIR/run.sh"
@@ -99,6 +100,7 @@ adb shell "cat > $INSTALL_DIR/run_test.sh << 'EOF'
 #!/system/bin/sh
 export LD_LIBRARY_PATH=/data/local/tmp/Quick.AI:\$LD_LIBRARY_PATH
 cd /data/local/tmp/Quick.AI
+export NNTR_NUM_THREADS=7
 ./quick_dot_ai_test \$@
 EOF"
 adb shell "chmod 755 $INSTALL_DIR/run_test.sh"

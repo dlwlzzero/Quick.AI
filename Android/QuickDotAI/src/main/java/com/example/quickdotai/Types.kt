@@ -47,7 +47,9 @@ enum class ModelId {
     GAUSS3_8_VISION_QNN,
     GAUSS3_8,
     GAUSS3_6,
-    TINY_BERT
+    TINY_BERT,
+    FUNCTION_GEMMA,
+    GEMMA4_CPU
 }
 
 

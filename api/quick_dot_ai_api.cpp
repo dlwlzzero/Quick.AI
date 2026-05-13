@@ -27,6 +27,7 @@
 #include "chat_template.h"
 #include "gauss2_5_causallm.h"
 #include "gemma3_causallm.h"
+#include "gemma4_causallm.h"
 #include "gptoss_cached_slim_causallm.h"
 #include "gptoss_causallm.h"
 #include "json.hpp"
@@ -111,7 +112,9 @@ static std::map<std::string, std::string> g_model_path_map = {
   {"QWEN3-1.7B-Q40", "qwen3-1.7b-q40-arm"},
   {"GAUSS3.6", "gauss-3.6"},
   {"TINY_BERT", "tiny_bert"},
-
+  {"FUNCTION_GEMMA", "function_gemma"},
+  {"GAUSS3.8", "gauss3.8"},
+  {"GEMMA4_CPU", "gemma4_cpu"},
 #ifdef ENABLE_QNN
   {"GAUSS3.6-QNN", "gauss-3.6-qnn"},
   {"GAUSS3.8-QNN", "gauss-3.8-qnn"},
@@ -208,6 +211,11 @@ static void register_models() {
                                                           nntr_cfg);
       });
     causallm::Factory::Instance().registerModel(
+      "Gemma4ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::Gemma4CausalLM>(cfg, generation_cfg,
+                                                          nntr_cfg);
+      });
+    causallm::Factory::Instance().registerModel(
       "Gauss2_5ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::Gauss2_5_Causallm>(
           cfg, generation_cfg, nntr_cfg);
@@ -258,6 +266,12 @@ static const char *get_model_name_from_type(ModelType type) {
     return "GAUSS3.6";
   case CAUSAL_LM_MODEL_TINY_BERT:
     return "TINY_BERT";
+  case CAUSAL_LM_MODEL_FUNCTION_GEMMA:
+    return "FUNCTION_GEMMA";
+  case CAUSAL_LM_MODEL_GAUSS3_8:
+    return "GAUSS3.8";
+  case CAUSAL_LM_MODEL_GEMMA4_CPU:
+    return "GEMMA4_CPU";
 #ifdef ENABLE_QNN
   case CAUSAL_LM_MODEL_GAUSS3_6_QNN:
     return "GAUSS3.6-QNN";
@@ -1591,7 +1605,7 @@ static ErrorCode run_model_streaming_on_handle(CausalLmModel &h,
     m->run(std::wstring(input.begin(), input.end()), false, L"", L"",
            g_verbose);
 #else
-    m->run(input, false, "", "", true);
+      m->run(input, false, "", "", true);
 #endif
 
     h.last_output = m->getOutput(0);
@@ -1963,8 +1977,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   return execute_multimodal_llm(h, llm, image_embeds, input, callback,
                                 user_data);
 #else
-  LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
-  return CAUSAL_LM_ERROR_UNSUPPORTED;
+    LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
 }
 
@@ -2085,9 +2099,9 @@ ErrorCode runMultimodalHandleWithMessages(
   *outputText = h.last_output.c_str();
   return CAUSAL_LM_ERROR_NONE;
 #else
-  LOGE("[DEBUG] runMultimodalHandleWithMessages: built without ENABLE_QNN");
-  *outputText = nullptr;
-  return CAUSAL_LM_ERROR_UNSUPPORTED;
+    LOGE("[DEBUG] runMultimodalHandleWithMessages: built without ENABLE_QNN");
+    *outputText = nullptr;
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
 }
 
@@ -2198,3 +2212,4 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
 }
 
 } // extern "C"
+}
