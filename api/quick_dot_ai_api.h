@@ -122,21 +122,6 @@ typedef struct {
 
 WIN_EXPORT ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics);
 
-WIN_EXPORT ErrorCode runModel(const char *inputTextPrompt,
-                              const char **outputText);
-
-/**
- * @brief Run inference with chat template formatted messages
- * @param messages Array of chat messages with role and content
- * @param num_messages Number of messages in the array
- * @param add_generation_prompt Whether to append generation prompt at end
- * @param outputText Buffer to store output text (owned by the library)
- * @return ErrorCode
- */
-WIN_EXPORT ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
-                                          size_t num_messages,
-                                          bool add_generation_prompt,
-                                          const char **outputText);
 
 /**
  * @brief Apply chat template to messages without running inference
@@ -213,17 +198,21 @@ WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
  * mutex.
  *
  * Single-model API: drives models[0] only even when the handle was
- * populated with multiple sub-models. Use runMultimodalHandle for
+ * populated with multiple sub-models. Use runMultimodalHandleWithMessages for
  * compositions such as vision-encoder + LLM.
  *
  * @param handle          Handle returned by loadModelHandle
- * @param inputTextPrompt Input prompt
+ * @param messages        Array of chat messages with role and content
+ * @param num_messages    Number of messages in the array
+ * @param add_generation_prompt Whether to append generation prompt at end
  * @param outputText      Out-parameter that receives a pointer to the output
  * @return ErrorCode
  */
-WIN_EXPORT ErrorCode runModelHandle(CausalLmHandle handle,
-                                    const char *inputTextPrompt,
-                                    const char **outputText);
+WIN_EXPORT ErrorCode runModelHandleWithMessages(CausalLmHandle handle,
+                                                const CausalLMChatMessage *messages,
+                                                size_t num_messages,
+                                                bool add_generation_prompt,
+                                                const char **outputText);
 
 /**
  * @brief Retrieve performance metrics of the last run for a given handle.
@@ -349,10 +338,12 @@ WIN_EXPORT ErrorCode runMultimodalHandleStreaming(
     CausalLmTokenCallback callback, void *user_data);
 
 /**
- * @brief Blocking multimodal inference on a specific handle.
+ * @brief Blocking multimodal inference with OpenAI message format on a specific handle.
  *
  * @param handle         Handle returned by loadModelHandle
- * @param prompt         Text prompt (UTF-8, NUL-terminated)
+ * @param messages       Array of chat messages with role and content (text-only, image via pixelValues)
+ * @param num_messages   Number of messages in the array
+ * @param add_generation_prompt Whether to append generation prompt at end
  * @param pixelValues    Preprocessed image patches in CHW format
  * @param numPatches     Number of image patches
  * @param originalHeight Original image height before preprocessing
@@ -361,12 +352,14 @@ WIN_EXPORT ErrorCode runMultimodalHandleStreaming(
  * @return ErrorCode (CAUSAL_LM_ERROR_UNSUPPORTED until Vision Encoder
  * implemented)
  */
-WIN_EXPORT ErrorCode runMultimodalHandle(CausalLmHandle handle,
-                                         const char *prompt,
-                                         const float *pixelValues,
-                                         int numPatches, int originalHeight,
-                                         int originalWidth,
-                                         const char **outputText);
+WIN_EXPORT ErrorCode runMultimodalHandleWithMessages(CausalLmHandle handle,
+                                                     const CausalLMChatMessage *messages,
+                                                     size_t num_messages,
+                                                     bool add_generation_prompt,
+                                                     const float *pixelValues,
+                                                     int numPatches, int originalHeight,
+                                                     int originalWidth,
+                                                     const char **outputText);
 
 #ifdef __cplusplus
 }

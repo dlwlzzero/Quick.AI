@@ -278,7 +278,10 @@ int main(int argc, char *argv[]) {
   std::cout << clr::green << "│" << clr::reset << "\n";
 
   const char *outputText = nullptr;
-  err = runModelHandle(handle, prompt, &outputText);
+  CausalLMChatMessage msg;
+  msg.role = "user";
+  msg.content = prompt;
+  err = runModelHandleWithMessages(handle, &msg, 1, true, &outputText);
   if (err != CAUSAL_LM_ERROR_NONE) {
     print_error("Inference failed (code " + std::to_string(err) + ")");
     return 1;

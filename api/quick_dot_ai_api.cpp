@@ -1502,11 +1502,15 @@ ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
   return CAUSAL_LM_ERROR_NONE;
 }
 
-ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
-                               size_t num_messages, bool add_generation_prompt,
-                               const char **outputText)
+ErrorCode runModelHandleWithMessages(
+    CausalLmHandle handle,
+    const CausalLMChatMessage *messages,
+    size_t num_messages, bool add_generation_prompt,
+    const char **outputText)
 {
-  if (outputText == nullptr)
+  LOGD("[DEBUG] runModelHandleWithMessages: handle=%p", (void *)handle);
+
+  if (handle == nullptr || outputText == nullptr)
   {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
@@ -1519,7 +1523,7 @@ ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
     return err;
   }
 
-  return run_on_handle(get_default_handle(), formattedInput, outputText,
+  return run_on_handle(*handle, formattedInput, outputText,
                        /*input_already_formatted=*/true);
 }
 /*============================================================================
@@ -1531,11 +1535,6 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
                     const char *model_base_path)
 {
   return load_into_handle(get_default_handle(), compute, modeltype, quant_type, nullptr, model_base_path);
-}
-
-ErrorCode runModel(const char *inputTextPrompt, const char **outputText)
-{
-  return run_on_handle(get_default_handle(), inputTextPrompt, outputText);
 }
 
 ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics)
@@ -1597,18 +1596,8 @@ ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
   return CAUSAL_LM_ERROR_NONE;
 }
 
-ErrorCode runModelHandle(CausalLmHandle handle, const char *inputTextPrompt,
-                         const char **outputText)
-{
-  if (handle == nullptr)
-  {
-    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-  }
-  return run_on_handle(*handle, inputTextPrompt, outputText);
-}
-
 ErrorCode getPerformanceMetricsHandle(CausalLmHandle handle,
-                                      PerformanceMetrics *metrics)
+                                       PerformanceMetrics *metrics)
 {
   if (handle == nullptr)
   {
@@ -2086,29 +2075,34 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
 #endif
 }
 
-ErrorCode runMultimodalHandle(CausalLmHandle handle,
-                              const char *prompt,
-                              const float *pixelValues,
-                              int numPatches,
-                              int originalHeight,
-                              int originalWidth,
-                              const char **outputText)
+ErrorCode runMultimodalHandleWithMessages(
+    CausalLmHandle handle,
+    const CausalLMChatMessage *messages,
+    size_t num_messages,
+    bool add_generation_prompt,
+    const float *pixelValues,
+    int numPatches,
+    int originalHeight,
+    int originalWidth,
+    const char **outputText)
 {
-  LOGD("[DEBUG] runMultimodalHandle: START");
+  LOGD("[DEBUG] runMultimodalHandleWithMessages: START");
   LOGD("[DEBUG]   handle=%p", handle);
-  LOGD("[DEBUG]   prompt=%s", prompt ? prompt : "(null)");
+  LOGD("[DEBUG]   messages=%p", messages);
+  LOGD("[DEBUG]   num_messages=%zu", num_messages);
+  LOGD("[DEBUG]   add_generation_prompt=%d", add_generation_prompt);
   LOGD("[DEBUG]   pixelValues=%p", pixelValues);
   LOGD("[DEBUG]   numPatches=%d", numPatches);
   LOGD("[DEBUG]   originalHeight=%d", originalHeight);
   LOGD("[DEBUG]   originalWidth=%d", originalWidth);
   LOGD("[DEBUG]   outputText=%p", outputText);
 
-  if (handle == nullptr || prompt == nullptr || pixelValues == nullptr ||
-      outputText == nullptr)
+  if (handle == nullptr || messages == nullptr || num_messages == 0 ||
+      pixelValues == nullptr || outputText == nullptr)
   {
-    LOGE("[DEBUG] runMultimodalHandle: INVALID_PARAMETER"
-         " handle=%p prompt=%s pixelValues=%p outputText=%p",
-         handle, prompt, pixelValues, outputText);
+    LOGE("[DEBUG] runMultimodalHandleWithMessages: INVALID_PARAMETER"
+         " handle=%p messages=%p num_messages=%zu pixelValues=%p outputText=%p",
+         handle, messages, num_messages, pixelValues, outputText);
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
@@ -2116,25 +2110,34 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   std::lock_guard<std::mutex> lock(h.mtx);
   if (!h.initialized || h.models.empty())
   {
-    LOGE("[DEBUG] runMultimodalHandle: NOT_INITIALIZED");
+    LOGE("[DEBUG] runMultimodalHandleWithMessages: NOT_INITIALIZED");
     *outputText = nullptr;
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
   if (h.models.size() < 2)
   {
-    LOGE("[DEBUG] runMultimodalHandle: need >=2 sub-models (got %zu)",
+    LOGE("[DEBUG] runMultimodalHandleWithMessages: need >=2 sub-models (got %zu)",
          h.models.size());
     *outputText = nullptr;
     return CAUSAL_LM_ERROR_UNSUPPORTED;
   }
 
-  LOGD("[DEBUG] runMultimodalHandle: %zu sub-models loaded", h.models.size());
+  LOGD("[DEBUG] runMultimodalHandleWithMessages: %zu sub-models loaded", h.models.size());
   for (size_t i = 0; i < h.architectures.size(); ++i)
   {
     LOGD("[DEBUG]   models[%zu]: arch=%s dir=%s", i,
          h.architectures[i].c_str(), h.model_dirs[i].c_str());
   }
+
+  // Apply chat template
+  auto chat_messages = convertMessages(messages, num_messages);
+  std::string arch =
+      h.architectures.empty() ? std::string() : h.architectures[0];
+  std::string prompt = apply_chat_template_messages(arch, chat_messages, add_generation_prompt);
+  LOGD("[DEBUG]   formatted prompt length: %zu", prompt.length());
+  LOGD("[DEBUG]   formatted prompt preview: %.100s%s", prompt.c_str(),
+       prompt.length() > 100 ? "..." : "");
 
   // Log pixel values summary (first few values)
   // Note: patch size is fixed at 512x512
@@ -2155,7 +2158,7 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   auto *llm = dynamic_cast<causallm::Gauss3_8_QNN *>(h.models[1].get());
   if (vision == nullptr || llm == nullptr)
   {
-    LOGE("[DEBUG] runMultimodalHandle: unexpected sub-model types");
+    LOGE("[DEBUG] runMultimodalHandleWithMessages: unexpected sub-model types");
     *outputText = nullptr;
     return CAUSAL_LM_ERROR_UNSUPPORTED;
   }
@@ -2168,12 +2171,12 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   try
   {
     image_embeds = vision->run_image(
-        std::string(prompt), image_in, originalHeight, originalWidth,
+        prompt, image_in, originalHeight, originalWidth,
         /*do_sample=*/false, "", "", /*log_output=*/g_verbose);
   }
   catch (const std::exception &e)
   {
-    LOGE("[DEBUG] runMultimodalHandle: vision threw: %s", e.what());
+    LOGE("[DEBUG] runMultimodalHandleWithMessages: vision threw: %s", e.what());
     *outputText = nullptr;
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
@@ -2191,7 +2194,7 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   };
 
   std::string input = prepare_input_for_model(
-      h, 1, std::string(prompt), /*input_already_formatted=*/false);
+      h, 1, prompt, /*input_already_formatted=*/true);
   ErrorCode ec = execute_multimodal_llm(h, llm, image_embeds, input,
                                         accumulate_cb,
                                         static_cast<void *>(&h.last_output));
@@ -2203,7 +2206,7 @@ ErrorCode runMultimodalHandle(CausalLmHandle handle,
   *outputText = h.last_output.c_str();
   return CAUSAL_LM_ERROR_NONE;
 #else
-  LOGE("[DEBUG] runMultimodalHandle: built without ENABLE_QNN");
+  LOGE("[DEBUG] runMultimodalHandleWithMessages: built without ENABLE_QNN");
   *outputText = nullptr;
   return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
