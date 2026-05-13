@@ -535,9 +535,14 @@ class Gemma4TextAttention(nn.Module):
 
         # Delete original Linear projections
         del self.q_proj
+        del self.q_norm
+        del self.q_rope_mha
+        del self.k_rope_mha
         if not self.is_kv_shared_layer:
             del self.k_proj
             del self.v_proj
+            del self.k_norm
+            del self.v_norm
         del self.o_proj
 
         # Switch forward method
