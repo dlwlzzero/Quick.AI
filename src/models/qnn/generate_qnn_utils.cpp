@@ -28,8 +28,8 @@ constexpr float kRopeQuantScale = 3.051804378628731e-05f;
 constexpr int kRopeQuantOffset = -32768;
 
 uint16_t quantize_rope_value(double value, double attention_factor) {
-  const double q = (value * attention_factor) / kRopeQuantScale -
-                   kRopeQuantOffset;
+  const double q =
+      (value * attention_factor) / kRopeQuantScale - kRopeQuantOffset;
   if (q <= 0.0)
     return 0;
   if (q >= 65535.0)
@@ -40,21 +40,20 @@ uint16_t quantize_rope_value(double value, double attention_factor) {
 } // namespace
 
 std::tuple<uint16_t *, uint16_t *>
-get_cos_sin (int context_size, int pos_dim, const double theta,
-    const std::string &rope_type, double partial_rotary_factor,
-    double rope_scaling_factor, int rope_head_dim)
-{
+get_cos_sin(int context_size, int pos_dim, const double theta,
+            const std::string &rope_type, double partial_rotary_factor,
+            double rope_scaling_factor, int rope_head_dim) {
   double attention_factor = 1.0;
-  const double scaling_factor = rope_scaling_factor > 0.0 ?
-                                    rope_scaling_factor : 1.0;
+  const double scaling_factor =
+      rope_scaling_factor > 0.0 ? rope_scaling_factor : 1.0;
   const int frequency_dim = rope_head_dim > 0 ? rope_head_dim : pos_dim * 2;
   // inv_freq indexes angle pairs, so the exponent advances by 2/head_dim.
-  const double exponent = 2.0 / static_cast<double> (frequency_dim);
-  std::vector<double> inv_freq (pos_dim, 0.0);
+  const double exponent = 2.0 / static_cast<double>(frequency_dim);
+  std::vector<double> inv_freq(pos_dim, 0.0);
 
   if (rope_type == "default") {
     for (int j = 0; j < pos_dim; j++)
-      inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
+      inv_freq[j] = 1.0 / std::pow(theta, j * exponent);
   } else if (rope_type == "linear" || rope_type == "proportional") {
     int rotary_freq_count = pos_dim;
 
@@ -64,17 +63,16 @@ get_cos_sin (int context_size, int pos_dim, const double theta,
         proportion = 0.0;
       if (proportion > 1.0)
         proportion = 1.0;
-      rotary_freq_count =
-          static_cast<int>(std::floor(
-              proportion * static_cast<double> (frequency_dim) / 2.0));
+      rotary_freq_count = static_cast<int>(
+          std::floor(proportion * static_cast<double>(frequency_dim) / 2.0));
       rotary_freq_count = std::max(0, std::min(pos_dim, rotary_freq_count));
     }
 
     for (int j = 0; j < rotary_freq_count; j++)
-      inv_freq[j] = (1.0 / std::pow (theta, j * exponent)) / scaling_factor;
+      inv_freq[j] = (1.0 / std::pow(theta, j * exponent)) / scaling_factor;
   } else {
     for (int j = 0; j < pos_dim; j++)
-      inv_freq[j] = 1.0 / std::pow (theta, j * exponent);
+      inv_freq[j] = 1.0 / std::pow(theta, j * exponent);
   }
 
   // Partial RoPE (Gemma 4 full attention uses partial_rotary_factor=0.25):
@@ -86,9 +84,11 @@ get_cos_sin (int context_size, int pos_dim, const double theta,
   int effective_dim = pos_dim;
   if (partial_rotary_factor > 0.0 && partial_rotary_factor < 1.0) {
     effective_dim =
-        static_cast<int> (std::floor (pos_dim * partial_rotary_factor));
-    if (effective_dim < 0) effective_dim = 0;
-    if (effective_dim > pos_dim) effective_dim = pos_dim;
+        static_cast<int>(std::floor(pos_dim * partial_rotary_factor));
+    if (effective_dim < 0)
+      effective_dim = 0;
+    if (effective_dim > pos_dim)
+      effective_dim = pos_dim;
   }
 
   uint16_t *cos_val =
@@ -153,7 +153,7 @@ int get_kv_row_length(const TensorInfo &tensor_info, bool is_key,
 
 void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
                           const uint8_t *src, int src_row_length,
-                          int history_length, bool is_key) {
+                          int history_length, bool is_key, int num_columns) {
   if (dest == nullptr || src == nullptr || history_length <= 0 ||
       dest_row_length <= 0 || src_row_length <= 0) {
     return;
@@ -167,21 +167,20 @@ void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
   const int dest_start = align_to_tail ? dest_row_length - copy_length : 0;
 
   if (is_key) {
-    for (int col = 0; col < kQnnKvNumColumns; ++col) {
+    for (int col = 0; col < num_columns; ++col) {
       std::memcpy(dest + col * dest_row_length + dest_start,
                   src + col * src_row_length + src_start, copy_length);
     }
   } else {
-    std::memcpy(dest + dest_start * kQnnKvNumColumns,
-                src + src_start * kQnnKvNumColumns,
-                copy_length * kQnnKvNumColumns);
+    std::memcpy(dest + dest_start * num_columns, src + src_start * num_columns,
+                copy_length * num_columns);
   }
 }
 
 std::vector<QnnKvOutputBinding> build_kv_output_bindings(
     const TensorInfoList &outputs,
     const std::unordered_map<std::string, int> &generation_kv_index_by_name,
-    const std::string &graph_name) {
+    const std::string &graph_name, int kv_per_layer) {
   std::vector<QnnKvOutputBinding> bindings;
   for (size_t idx = 0; idx < outputs.size(); idx++) {
     const auto &name = outputs[idx].first;
@@ -197,18 +196,21 @@ std::vector<QnnKvOutputBinding> build_kv_output_bindings(
     }
 
     const int kv_index = it->second;
-    bindings.push_back({static_cast<int>(idx), kv_index, kv_index / 4,
+    bindings.push_back({static_cast<int>(idx), kv_index,
+                        kv_index / kv_per_layer,
                         qnn_starts_with(name, "past_key_")});
   }
   return bindings;
 }
 
-void append_outputs_to_kv_cache(
-    const std::vector<IO_TensorType> &step_outputs,
-    const std::vector<QnnKvOutputBinding> &bindings,
-    const std::vector<uint8_t *> &kvs, const std::vector<int> &kv_row_lengths,
-    int target_position, int rows, int src_row_length,
-    const std::string &graph_name) {
+void append_outputs_to_kv_cache(const std::vector<IO_TensorType> &step_outputs,
+                                const std::vector<QnnKvOutputBinding> &bindings,
+                                const std::vector<uint8_t *> &kvs,
+                                const std::vector<int> &kv_row_lengths,
+                                int target_position, int rows,
+                                int src_row_length,
+                                const std::string &graph_name,
+                                const std::vector<int> *kv_columns) {
   for (const auto &binding : bindings) {
     if (binding.output_index < 0 ||
         binding.output_index >= static_cast<int>(step_outputs.size()) ||
@@ -216,7 +218,8 @@ void append_outputs_to_kv_cache(
         binding.kv_index >= static_cast<int>(kvs.size()) ||
         binding.layer_index < 0 ||
         binding.layer_index >= static_cast<int>(kv_row_lengths.size())) {
-      throw std::runtime_error(graph_name + " output KV binding is out of range");
+      throw std::runtime_error(graph_name +
+                               " output KV binding is out of range");
     }
   }
 
@@ -225,6 +228,8 @@ void append_outputs_to_kv_cache(
        binding_idx++) {
     const auto &binding = bindings[binding_idx];
     const int dest_row_length = kv_row_lengths[binding.layer_index];
+    const int num_columns =
+        kv_columns ? (*kv_columns)[binding.layer_index] : kQnnKvNumColumns;
     auto output = std::get<uint8_t *>(step_outputs[binding.output_index]);
     auto dest = kvs[binding.kv_index];
 
@@ -234,21 +239,21 @@ void append_outputs_to_kv_cache(
     if (shift > 0) {
       target_idx = valid_before - shift;
       if (binding.is_key) {
-        for (int col = 0; col < kQnnKvNumColumns; ++col) {
+        for (int col = 0; col < num_columns; ++col) {
           uint8_t *col_base = dest + col * dest_row_length;
           std::memmove(col_base, col_base + shift, dest_row_length - shift);
         }
       } else {
-        std::memmove(dest, dest + shift * kQnnKvNumColumns,
-                     (dest_row_length - shift) * kQnnKvNumColumns);
+        std::memmove(dest, dest + shift * num_columns,
+                     (dest_row_length - shift) * num_columns);
       }
     }
 
     if (binding.is_key) {
-      process_key(output, rows, kQnnKvNumColumns, dest, target_idx,
-                  dest_row_length, src_row_length);
+      process_key(output, rows, num_columns, dest, target_idx, dest_row_length,
+                  src_row_length);
     } else {
-      process_value(output, rows, kQnnKvNumColumns, dest, target_idx);
+      process_value(output, rows, num_columns, dest, target_idx);
     }
   }
 }
@@ -289,13 +294,13 @@ void fill_attention_mask_with_length(int rows, int columns, int length,
   }
 }
 
-void fill_attention_mask_with_prev_length(int rows, int columns, int length, 
+void fill_attention_mask_with_prev_length(int rows, int columns, int length,
                                           uint16_t *attention_mask) {
-  for(int i = 0; i < rows; i++) {
-    for(int j = 0; j < length; j++) {
+  for (int i = 0; i < rows; i++) {
+    for (int j = 0; j < length; j++) {
       attention_mask[i * columns + j] = std::numeric_limits<uint16_t>::max();
     }
-  }                                            
+  }
 }
 
 uint16_t *get_zero_memory(int size, int zero_point) {
@@ -303,6 +308,102 @@ uint16_t *get_zero_memory(int size, int zero_point) {
   for (int i = 0; i < size; i++)
     memory[i] = zero_point;
   return memory;
+}
+
+void fill_generation_inputs_common(
+    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+    uint16_t *generation_sliding_attention_mask,
+    int generation_sliding_attention_mask_elements,
+    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+    uint16_t *generation_position_ids_cos,
+    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
+    const uint16_t *position_ids_sin, int pos_dim,
+    uint16_t *generation_swa_position_ids_cos,
+    uint16_t *generation_swa_position_ids_sin,
+    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+    int swa_pos_dim, int position, int rope_cache_seq_len) {
+  if (position < 0 || position >= rope_cache_seq_len) {
+    throw std::runtime_error("Generation position is out of rope cache");
+  }
+
+  std::fill_n(generation_attention_mask, generation_attention_mask_elements, 0);
+  std::fill_n(generation_sliding_attention_mask,
+              generation_sliding_attention_mask_elements, 0);
+
+  generation_attention_mask[generation_attention_mask_elements - 1] =
+      std::numeric_limits<uint16_t>::max();
+  generation_sliding_attention_mask[generation_sliding_attention_mask_elements -
+                                    1] = std::numeric_limits<uint16_t>::max();
+
+  for (int i = 0; i < position && i < generation_full_kv_past_length; i++) {
+    generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
+  }
+  for (int i = 0; i < position && i < generation_sliding_kv_past_length; i++) {
+    generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
+  }
+
+  std::memcpy(generation_position_ids_cos,
+              position_ids_cos + position * pos_dim,
+              pos_dim * sizeof(uint16_t));
+  std::memcpy(generation_position_ids_sin,
+              position_ids_sin + position * pos_dim,
+              pos_dim * sizeof(uint16_t));
+  std::memcpy(generation_swa_position_ids_cos,
+              swa_position_ids_cos + position * swa_pos_dim,
+              swa_pos_dim * sizeof(uint16_t));
+  std::memcpy(generation_swa_position_ids_sin,
+              swa_position_ids_sin + position * swa_pos_dim,
+              swa_pos_dim * sizeof(uint16_t));
+}
+
+void fill_generation_inputs(
+    float *generation_sample, int current_token,
+    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+    uint16_t *generation_sliding_attention_mask,
+    int generation_sliding_attention_mask_elements,
+    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+    uint16_t *generation_position_ids_cos,
+    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
+    const uint16_t *position_ids_sin, int pos_dim,
+    uint16_t *generation_swa_position_ids_cos,
+    uint16_t *generation_swa_position_ids_sin,
+    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+    int swa_pos_dim, int position, int rope_cache_seq_len) {
+  generation_sample[0] = current_token;
+  fill_generation_inputs_common(
+      generation_attention_mask, generation_attention_mask_elements,
+      generation_sliding_attention_mask,
+      generation_sliding_attention_mask_elements,
+      generation_full_kv_past_length, generation_sliding_kv_past_length,
+      generation_position_ids_cos, generation_position_ids_sin,
+      position_ids_cos, position_ids_sin, pos_dim,
+      generation_swa_position_ids_cos, generation_swa_position_ids_sin,
+      swa_position_ids_cos, swa_position_ids_sin, swa_pos_dim, position,
+      rope_cache_seq_len);
+}
+
+void fill_generation_inputs_u16(
+    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+    uint16_t *generation_sliding_attention_mask,
+    int generation_sliding_attention_mask_elements,
+    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+    uint16_t *generation_position_ids_cos,
+    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
+    const uint16_t *position_ids_sin, int pos_dim,
+    uint16_t *generation_swa_position_ids_cos,
+    uint16_t *generation_swa_position_ids_sin,
+    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+    int swa_pos_dim, int position, int rope_cache_seq_len) {
+  fill_generation_inputs_common(
+      generation_attention_mask, generation_attention_mask_elements,
+      generation_sliding_attention_mask,
+      generation_sliding_attention_mask_elements,
+      generation_full_kv_past_length, generation_sliding_kv_past_length,
+      generation_position_ids_cos, generation_position_ids_sin,
+      position_ids_cos, position_ids_sin, pos_dim,
+      generation_swa_position_ids_cos, generation_swa_position_ids_sin,
+      swa_position_ids_cos, swa_position_ids_sin, swa_pos_dim, position,
+      rope_cache_seq_len);
 }
 
 int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
@@ -330,8 +431,7 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
   std::vector<int> indices(length);
   std::vector<float> logits(length);
   const bool use_softcap = final_logit_softcapping > 0.0f;
-  const float inv_softcap =
-      use_softcap ? 1.0f / final_logit_softcapping : 0.0f;
+  const float inv_softcap = use_softcap ? 1.0f / final_logit_softcapping : 0.0f;
   for (int i = 0; i < length; i++) {
     auto element = top_k_elements.top();
     float l = (1.0f * element.first + logit_offset) * logit_scale;
@@ -343,32 +443,33 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
     top_k_elements.pop();
   }
 
-  for(unsigned int i=0;i<number_of_tokens;++i){
-    const int t=tokens[i];
-    for(int j=0;j<length;++j){
-      if (indices[j] == tokens[i]){
-	if(logits[j] >0.0f) logits[j] /=repetition_penalty;
-	else logits[j] *= repetition_penalty;
-	break;
+  for (unsigned int i = 0; i < number_of_tokens; ++i) {
+    const int t = tokens[i];
+    for (int j = 0; j < length; ++j) {
+      if (indices[j] == tokens[i]) {
+        if (logits[j] > 0.0f)
+          logits[j] /= repetition_penalty;
+        else
+          logits[j] *= repetition_penalty;
+        break;
       }
     }
   }
 
-
-  std::vector<std::pair<int, float>> top_indices_and_logits (length);
+  std::vector<std::pair<int, float>> top_indices_and_logits(length);
   for (int i = 0; i < length; ++i) {
     if (temperature > 1e-5)
       logits[i] = logits[i] / temperature;
-    top_indices_and_logits[i] = { i, logits[i] };
+    top_indices_and_logits[i] = {i, logits[i]};
   }
-  sort (top_indices_and_logits.begin (), top_indices_and_logits.end (),
-      [] (auto &a, auto &b) { return a.second > b.second; });
+  sort(top_indices_and_logits.begin(), top_indices_and_logits.end(),
+       [](auto &a, auto &b) { return a.second > b.second; });
 
   const float max_logit = top_indices_and_logits[0].second;
-  std::vector<float> probs (length);
+  std::vector<float> probs(length);
   float sum_exp = 0.0f;
   for (int i = 0; i < length; ++i) {
-    probs[i] = std::exp (top_indices_and_logits[i].second - max_logit);
+    probs[i] = std::exp(top_indices_and_logits[i].second - max_logit);
     sum_exp += probs[i];
   }
   if (sum_exp <= 0.0f)
@@ -397,7 +498,7 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
   const float final_max = top_indices_and_logits[0].second;
   float final_sum_exp = 0.0f;
   for (int i = 0; i < length; ++i) {
-    float ex = std::exp (logits[i] - final_max);
+    float ex = std::exp(logits[i] - final_max);
     final_sum_exp += ex;
     logits[i] = ex;
   }
@@ -407,6 +508,6 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
     logits[i] /= final_sum_exp;
 
   // Sample
-  std::discrete_distribution<int> dist (logits.data (), logits.data () + length);
-  return indices[dist (rng)];
+  std::discrete_distribution<int> dist(logits.data(), logits.data() + length);
+  return indices[dist(rng)];
 }
