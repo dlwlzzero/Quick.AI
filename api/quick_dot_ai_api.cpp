@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -96,7 +97,7 @@ static bool g_use_chat_template = true;
 static bool g_verbose = false;
 static std::string g_last_output = "";
 static double g_initialization_duration_ms = 0.0;
-static causallm::ChatTemplate g_chat_template;
+static std::optional<causallm::ChatTemplate> g_chat_template;
 static std::string g_formatted_template;
 static std::string g_chat_template_name = "default";
 
@@ -290,8 +291,17 @@ static const char *get_model_name_from_type(ModelType type) {
 static std::string apply_chat_template(const std::string &architecture,
                                        const std::string &input) {
   // Use dynamic chat template from tokenizer_config.json if available
-  if (g_chat_template.isAvailable()) {
-    return g_chat_template.apply(input);
+  if (g_chat_template) {
+    nlohmann::json request;
+    request["messages"] = nlohmann::json::array();
+    request["messages"].push_back({{"role", "user"}, {"content", input}});
+    request["add_generation_prompt"] = true;
+    try {
+      return g_chat_template->apply(request);
+    } catch (const std::exception &e) {
+      LOGE("Chat template apply failed: %s", e.what());
+      // fallback to hardcoded
+    }
   }
 
   LOGE("----------------APPLY CHAT FALLBACKS!!!!!!-------------");
@@ -1048,20 +1058,16 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
           h.initialization_duration_ms.push_back(sub_ms);
           LOGD("[DEBUG]   [%zu] loaded (%.1f ms)", i, sub_ms);
 
-          // Load chat template from tokenizer_config.json if available.
-          std::string tc_path = sub_dir + "/tokenizer_config.json";
-          if (check_file_exists(tc_path)) {
-            g_chat_template =
-              causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
-            if (g_chat_template.isAvailable()) {
+          // Load chat template from model directory if available.
+          if (causallm::ChatTemplate::Exists(sub_dir)) {
+            try {
+              g_chat_template = causallm::ChatTemplate::Load(sub_dir);
               std::cout
-                << "[Info] Chat template loaded from tokenizer_config.json"
-                << std::endl;
-            } else {
-              std::cerr << "[Warning] tokenizer_config.json found but chat "
-                           "template could "
-                           "not be loaded. Falling back to hardcoded templates."
-                        << std::endl;
+                << "[Info] Chat template loaded from " << sub_dir << std::endl;
+            } catch (const std::exception &e) {
+              std::cerr << "[Warning] Chat template load failed: " << e.what()
+                        << ". Falling back to hardcoded templates." << std::endl;
+              g_chat_template.reset();
             }
           }
         }
@@ -1103,22 +1109,19 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       }
     }
 
-    // Load chat template from tokenizer_config.json if available.
-    std::string tc_path = abs_model_dir + "/tokenizer_config.json";
-    if (check_file_exists(tc_path)) {
-      g_chat_template =
-        causallm::ChatTemplate::fromFile(tc_path, g_chat_template_name);
-      if (g_chat_template.isAvailable()) {
-        LOGD("[Info] Chat template loaded from tokenizer_config.json");
-      } else {
-        LOGE("[Warning] tokenizer_config.json found but chat template could "
-             "not be loaded. Falling back to hardcoded templates.");
+    // Load chat template from model directory if available.
+    if (causallm::ChatTemplate::Exists(abs_model_dir)) {
+      try {
+        g_chat_template = causallm::ChatTemplate::Load(abs_model_dir);
+        LOGD("[Info] Chat template loaded from %s", abs_model_dir.c_str());
+      } catch (const std::exception &e) {
+        LOGE("[Warning] Chat template load failed: %s. Falling back to hardcoded templates.", e.what());
+        g_chat_template.reset();
       }
     } else {
-      g_chat_template = causallm::ChatTemplate();
-      LOGE("[Warning] tokenizer_config.json not found in %s. Using hardcoded "
-           "chat templates.",
-           model_dir_path.c_str());
+      g_chat_template.reset();
+      LOGE("[Warning] No chat template found in %s. Using hardcoded chat templates.",
+           abs_model_dir.c_str());
     }
 
     // Construct weight file path
@@ -1328,12 +1331,18 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
  * Chat Template API - role + content message support
  *****************************************************************************/
 
-static std::vector<causallm::ChatMessage>
+// Internal ChatMessage struct for API use
+struct ChatMessage {
+  std::string role;
+  std::string content;
+};
+
+static std::vector<ChatMessage>
 convertMessages(const CausalLMChatMessage *messages, size_t num_messages) {
-  std::vector<causallm::ChatMessage> result;
+  std::vector<ChatMessage> result;
   result.reserve(num_messages);
   for (size_t i = 0; i < num_messages; ++i) {
-    causallm::ChatMessage msg;
+    ChatMessage msg;
     msg.role = messages[i].role ? messages[i].role : "";
     msg.content = messages[i].content ? messages[i].content : "";
     result.push_back(std::move(msg));
@@ -1346,12 +1355,29 @@ convertMessages(const CausalLMChatMessage *messages, size_t num_messages) {
  */
 static std::string
 apply_chat_template_messages(const std::string &architecture,
-                             const std::vector<causallm::ChatMessage> &messages,
+                             const std::vector<ChatMessage> &messages,
                              bool add_generation_prompt) {
-  if (g_chat_template.isAvailable()) {
-    return g_chat_template.apply(messages, add_generation_prompt);
+  // Use Enhanced Chat Template if available
+  if (g_chat_template) {
+    nlohmann::json request;
+    request["messages"] = nlohmann::json::array();
+    for (const auto &msg : messages) {
+      request["messages"].push_back({
+        {"role", msg.role},
+        {"content", msg.content}
+      });
+    }
+    request["add_generation_prompt"] = add_generation_prompt;
+    
+    try {
+      return g_chat_template->apply(request);
+    } catch (const std::exception &e) {
+      LOGE("Chat template apply failed: %s", e.what());
+      // fallback to hardcoded
+    }
   }
 
+  LOGD("APPLYING HARD CODED FALLBACK");
   std::string result;
 
   if (architecture == "LlamaForCausalLM") {
@@ -2212,4 +2238,3 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
 }
 
 } // extern "C"
-}

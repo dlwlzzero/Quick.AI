@@ -6,7 +6,7 @@ qnn_src = [
     meson.current_source_dir() / 'qnn_kv_cache_manager.cpp',
 ]
 
-qnn_inc = include_directories('.')
+qnn_inc = include_directories('.', '../../../api')
 
 quick_dot_ai_src += qnn_src
 quick_dot_ai_inc += qnn_inc

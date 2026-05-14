@@ -13,7 +13,7 @@
 #include "generate_qnn_utils.h"
 
 #include <llm_util.hpp>
-#include "api/streamer.h"
+#include <streamer.h>
 #include <model.h>
 
 #include <app_context.h>

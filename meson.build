@@ -112,6 +112,9 @@ foreach d : causallm_auto_inc_dirs
   causallm_inc_args += ['-I' + d]
 endforeach
 
+# Add minja include path for chat template support
+causallm_inc_args += ['-I' + causallm_root / 'third_party' / 'minja' / 'include']
+
 # ── Tokenizer: platform-specific ────────────────────────────────────────
 if is_android
   tokenizer_path = causallm_root / 'lib' / 'libtokenizers_android_c.a'
