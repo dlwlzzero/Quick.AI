@@ -153,12 +153,6 @@ object NativeCausalLm {
         modelBasePath: String?
     ): LoadResult
 
-    /** Forwards to `runModelHandle` in quick_dot_ai_api.h. */
-    external fun runModelHandleNative(
-        handle: Long,
-        prompt: String
-    ): RunResult
-
     /**
      * @brief Listener invoked by the JNI trampoline once per decoded
      * delta during [runModelHandleStreamingNative].
@@ -189,6 +183,24 @@ object NativeCausalLm {
     external fun runModelHandleStreamingNative(
         handle: Long,
         prompt: String,
+        listener: NativeStreamListener
+    ): Int
+
+    /**
+     * @brief Forwards to `runModelHandleWithMessagesStreaming` in quick_dot_ai_api.h.
+     *
+     * Streaming inference with OpenAI message format on a specific handle.
+     *
+     * @param handle              Handle returned by loadModelHandleNative
+     * @param messages            Array of chat messages
+     * @param addGenerationPrompt Whether to append generation prompt at end
+     * @param listener            Callback for streaming output
+     * @return An `ErrorCode` int; 0 on clean completion.
+     */
+    external fun runModelHandleWithMessagesStreamingNative(
+        handle: Long,
+        messages: Array< QuickAiChatMessage>,
+        addGenerationPrompt: Boolean,
         listener: NativeStreamListener
     ): Int
 
@@ -239,27 +251,30 @@ object NativeCausalLm {
     ): Int
 
     /**
-     * @brief Blocking multimodal inference.
+     * @brief Forwards to `runMultimodalHandleWithMessagesStreaming` in quick_dot_ai_api.h.
      *
-     * Same as [runMultimodalHandleStreamingNative] but returns the complete
-     * output instead of streaming.
+     * Streaming multimodal inference with OpenAI message format on a specific handle.
      *
-     * @param handle         Handle returned by loadModelHandleNative
-     * @param prompt         Text prompt
-     * @param pixelValues    Preprocessed image patches (CHW format)
-     * @param numPatches     Number of image patches
-     * @param originalHeight Original image height before preprocessing
-     * @param originalWidth  Original image width before preprocessing
-     * @return MultimodalRunResult with error code and output string
+     * @param handle              Handle returned by loadModelHandleNative
+     * @param messages            Array of chat messages (text-only, image via pixelValues)
+     * @param addGenerationPrompt Whether to append generation prompt at end
+     * @param pixelValues         Preprocessed image patches (CHW format)
+     * @param numPatches          Number of image patches
+     * @param originalHeight      Original image height before preprocessing
+     * @param originalWidth       Original image width before preprocessing
+     * @param listener            Callback for streaming output
+     * @return An `ErrorCode` int; 0 on clean completion.
      */
-    external fun runMultimodalHandleNative(
+    external fun runMultimodalHandleWithMessagesStreamingNative(
         handle: Long,
-        prompt: String,
+        messages: Array<QuickAiChatMessage>,
+        addGenerationPrompt: Boolean,
         pixelValues: FloatArray,
         numPatches: Int,
         originalHeight: Int,
-        originalWidth: Int
-    ): MultimodalRunResult
+        originalWidth: Int,
+        listener: NativeStreamListener
+    ): Int
 
     private const val TAG = "NativeCausalLm"
 }

@@ -135,17 +135,10 @@ class NativeQuickDotAI(
         if (!loaded || handle == 0L) {
             return BackendResult.Err(QuickAiError.NOT_INITIALIZED)
         }
-        return try {
-            val r = NativeCausalLm.runModelHandleNative(handle, prompt)
-            if (r.errorCode != 0) {
-                BackendResult.Err(QuickAiError.fromNativeCode(r.errorCode))
-            } else {
-                BackendResult.Ok(r.output.orEmpty())
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "runModelHandleNative threw", t)
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
+        val messages = listOf(
+            QuickAiChatMessage(role = QuickAiChatRole.USER, parts = listOf(PromptPart.Text(prompt)))
+        )
+        return runWithMessages(messages)
     }
 
     /**
@@ -352,6 +345,238 @@ class NativeQuickDotAI(
         return session.rebuild(messages)
     }
 
+    // --- OpenAI messages API (handle-based) --------------------------------
+
+    override fun runWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
+        if (!loaded || handle == 0L) {
+            return BackendResult.Err(
+                QuickAiError.NOT_INITIALIZED,
+                "NativeQuickDotAI has not been loaded yet"
+            )
+        }
+        return try {
+            val accumulated = StringBuilder()
+            val errorCode = NativeCausalLm.runModelHandleWithMessagesStreamingNative(
+                handle = handle,
+                messages = messages.toTypedArray(),
+                addGenerationPrompt = true,
+                listener = object : NativeCausalLm.NativeStreamListener {
+                    override fun onDelta(text: String) {
+                        accumulated.append(text)
+                    }
+                }
+            )
+            if (errorCode != 0) {
+                BackendResult.Err(QuickAiError.fromNativeCode(errorCode))
+            } else {
+                BackendResult.Ok(accumulated.toString())
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "runWithMessages threw", t)
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
+    /**
+     * @brief Streaming inference with OpenAI message format on a specific handle.
+     */
+    override fun runWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        if (!loaded || handle == 0L) {
+            val err = BackendResult.Err(
+                QuickAiError.NOT_INITIALIZED,
+                "NativeQuickDotAI has not been loaded yet"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        return try {
+            val errorCode = NativeCausalLm.runModelHandleWithMessagesStreamingNative(
+                handle = handle,
+                messages = messages.toTypedArray(),
+                addGenerationPrompt = true,
+                listener = object : NativeCausalLm.NativeStreamListener {
+                    override fun onDelta(text: String) {
+                        sink.onDelta(text)
+                    }
+                }
+            )
+            if (errorCode != 0) {
+                val err = QuickAiError.fromNativeCode(errorCode)
+                sink.onError(err, "runModelHandleWithMessagesStreaming failed (errorCode=$errorCode)")
+                BackendResult.Err(err, "runModelHandleWithMessagesStreaming failed (errorCode=$errorCode)")
+            } else {
+                sink.onDone()
+                BackendResult.Ok(Unit)
+            }
+        } catch (t: Throwable) {
+            sink.onError(QuickAiError.INFERENCE_FAILED, t.message)
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
+    override fun runMultimodalWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
+        if (!loaded || handle == 0L) {
+            return BackendResult.Err(
+                QuickAiError.NOT_INITIALIZED,
+                "NativeQuickDotAI has not been loaded yet"
+            )
+        }
+
+        val processor = imageProcessor
+        if (processor == null) {
+            return BackendResult.Err(
+                QuickAiError.UNSUPPORTED,
+                "Vision model not loaded"
+            )
+        }
+
+        // Extract image from messages (1 only, [text, image] order)
+        val allParts = messages.flatMap { it.parts }
+        val imageParts = allParts.filterIsInstance<PromptPart.ImageBytes>()
+
+        if (imageParts.isEmpty()) {
+            return BackendResult.Err(
+                QuickAiError.INVALID_PARAMETER,
+                "No image found. Expected parts: [Text, ImageBytes]"
+            )
+        }
+        if (imageParts.size > 1) {
+            return BackendResult.Err(
+                QuickAiError.INVALID_PARAMETER,
+                "Only 1 image is allowed. Found ${imageParts.size}"
+            )
+        }
+
+        val multimodalInput = prepareMultimodalInput(allParts, processor)
+        if (multimodalInput == null) {
+            return BackendResult.Err(
+                QuickAiError.INVALID_PARAMETER,
+                "Image preprocessing failed"
+            )
+        }
+
+        // Create text-only messages for C API
+        val textMessages = messages.map { msg ->
+            msg.copy(parts = msg.parts.filterIsInstance<PromptPart.Text>())
+        }
+
+        return try {
+            val accumulated = StringBuilder()
+            val errorCode = NativeCausalLm.runMultimodalHandleWithMessagesStreamingNative(
+                handle = handle,
+                messages = messages.toTypedArray(),
+                addGenerationPrompt = true,
+                pixelValues = multimodalInput.pixelValues,
+                numPatches = multimodalInput.numPatches,
+                originalHeight = multimodalInput.originalHeight,
+                originalWidth = multimodalInput.originalWidth,
+                listener = object : NativeCausalLm.NativeStreamListener {
+                    override fun onDelta(text: String) {
+                        accumulated.append(text)
+                    }
+                }
+            )
+            if (errorCode != 0) {
+                BackendResult.Err(QuickAiError.fromNativeCode(errorCode))
+            } else {
+                BackendResult.Ok(accumulated.toString())
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "runMultimodalWithMessages threw", t)
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
+    /**
+     * @brief Streaming multimodal inference with OpenAI message format on a specific handle.
+     */
+    override fun runMultimodalWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        if (!loaded || handle == 0L) {
+            val err = BackendResult.Err(
+                QuickAiError.NOT_INITIALIZED,
+                "NativeQuickDotAI has not been loaded yet"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        val processor = imageProcessor
+        if (processor == null) {
+            val err = BackendResult.Err(
+                QuickAiError.UNSUPPORTED,
+                "Vision model not loaded"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        // Extract image from messages
+        val allParts = messages.flatMap { it.parts }
+        val imageParts = allParts.filterIsInstance<PromptPart.ImageBytes>()
+
+        if (imageParts.isEmpty()) {
+            val err = BackendResult.Err(
+                QuickAiError.INVALID_PARAMETER,
+                "No image found. Expected parts: [Text, ImageBytes]"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+        if (imageParts.size > 1) {
+            val err = BackendResult.Err(
+                QuickAiError.INVALID_PARAMETER,
+                "Only 1 image is allowed. Found ${imageParts.size}"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        val multimodalInput = prepareMultimodalInput(allParts, processor)
+        if (multimodalInput == null) {
+            val err = BackendResult.Err(
+                QuickAiError.INVALID_PARAMETER,
+                "Image preprocessing failed"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        return try {
+            val errorCode = NativeCausalLm.runMultimodalHandleWithMessagesStreamingNative(
+                handle = handle,
+                messages = messages.toTypedArray(),
+                addGenerationPrompt = true,
+                pixelValues = multimodalInput.pixelValues,
+                numPatches = multimodalInput.numPatches,
+                originalHeight = multimodalInput.originalHeight,
+                originalWidth = multimodalInput.originalWidth,
+                listener = object : NativeCausalLm.NativeStreamListener {
+                    override fun onDelta(text: String) {
+                        sink.onDelta(text)
+                    }
+                }
+            )
+            if (errorCode != 0) {
+                val err = QuickAiError.fromNativeCode(errorCode)
+                sink.onError(err, "runMultimodalHandleWithMessagesStreaming failed (errorCode=$errorCode)")
+                BackendResult.Err(err, "runMultimodalHandleWithMessagesStreaming failed (errorCode=$errorCode)")
+            } else {
+                sink.onDone()
+                BackendResult.Ok(Unit)
+            }
+        } catch (t: Throwable) {
+            sink.onError(QuickAiError.INFERENCE_FAILED, t.message)
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
     override fun close() {
         activeSession?.close()
         activeSession = null
@@ -410,21 +635,28 @@ class NativeQuickDotAI(
         )
 
         return try {
-            val result = NativeCausalLm.runMultimodalHandleNative(
+            val accumulated = StringBuilder()
+            val errorCode = NativeCausalLm.runMultimodalHandleStreamingNative(
                 handle,
                 textPrompt,
                 multimodalInput.pixelValues,
                 multimodalInput.numPatches,
                 multimodalInput.originalHeight,
-                multimodalInput.originalWidth
+                multimodalInput.originalWidth,
+                object : NativeCausalLm.NativeStreamListener {
+                    override fun onDelta(text: String) {
+                        accumulated.append(text)
+                    }
+                }
             )
-            if (result.errorCode != 0) {
-                val err = QuickAiError.fromNativeCode(result.errorCode)
-                Log.e(TAG, "runMultimodal(): failed with errorCode=${result.errorCode}")
-                BackendResult.Err(err, "runMultimodalHandle failed (errorCode=${result.errorCode})")
+            if (errorCode != 0) {
+                val err = QuickAiError.fromNativeCode(errorCode)
+                Log.e(TAG, "runMultimodal(): failed with errorCode=$errorCode")
+                BackendResult.Err(err, "runMultimodalHandle failed (errorCode=$errorCode)")
             } else {
-                Log.i(TAG, "runMultimodal(): success, output length=${result.output?.length ?: 0}")
-                BackendResult.Ok(result.output.orEmpty())
+                val output = accumulated.toString()
+                Log.i(TAG, "runMultimodal(): success, output length=${output.length}")
+                BackendResult.Ok(output)
             }
         } catch (t: Throwable) {
             Log.e(TAG, "runMultimodal(): threw exception", t)

@@ -678,6 +678,126 @@ class LiteRTLm(
         }
     }
 
+    // ----- OpenAI messages API (handle-based) --------------------------------
+
+    override fun runWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
+        val c = conversation
+            ?: return BackendResult.Err(QuickAiError.NOT_INITIALIZED)
+
+        val prompt = messages.joinToString("\n") { msg ->
+            "${msg.role}: ${msg.parts.filterIsInstance<PromptPart.Text>().joinToString("") { it.text }}"
+        }
+
+        return try {
+            val message = c.sendMessage(prompt)
+            BackendResult.Ok(message.toString())
+        } catch (t: Throwable) {
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
+    override fun runMultimodalWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
+        val c = conversation
+            ?: return BackendResult.Err(QuickAiError.NOT_INITIALIZED)
+        if (!visionEnabled) {
+            return BackendResult.Err(QuickAiError.UNSUPPORTED, "Vision not enabled")
+        }
+
+        // Validate image count (1 only)
+        val imageCount = messages.sumOf { msg ->
+            msg.parts.count { it is PromptPart.ImageBytes || it is PromptPart.ImageFile }
+        }
+        if (imageCount == 0) {
+            return BackendResult.Err(QuickAiError.INVALID_PARAMETER, "No image found")
+        }
+        if (imageCount > 1) {
+            return BackendResult.Err(QuickAiError.INVALID_PARAMETER, "Only 1 image is allowed")
+        }
+
+        val contents = try {
+            toLiteRtContentsFromMessages(messages)
+        } catch (t: Throwable) {
+            return BackendResult.Err(QuickAiError.INVALID_PARAMETER, t.message)
+        }
+
+        return try {
+            val message = c.sendMessage(contents)
+            BackendResult.Ok(message.toString())
+        } catch (t: Throwable) {
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
+    /**
+     * @brief Streaming inference with OpenAI message format.
+     *
+     * Accumulates deltas into a single response, then emits it through [sink].
+     * LiteRT-LM does not currently support true token-by-token streaming for
+     * handle-based messages, so this is implemented as blocking + chunk.
+     */
+    override fun runWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        return when (val r = runWithMessages(messages)) {
+            is BackendResult.Ok -> {
+                if (r.value.isNotEmpty()) sink.onDelta(r.value)
+                sink.onDone()
+                BackendResult.Ok(Unit)
+            }
+            is BackendResult.Err -> {
+                sink.onError(r.error, r.message)
+                r
+            }
+        }
+    }
+
+    /**
+     * @brief Streaming multimodal inference with OpenAI message format.
+     *
+     * Accumulates deltas into a single response, then emits it through [sink].
+     */
+    override fun runMultimodalWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        return when (val r = runMultimodalWithMessages(messages)) {
+            is BackendResult.Ok -> {
+                if (r.value.isNotEmpty()) sink.onDelta(r.value)
+                sink.onDone()
+                BackendResult.Ok(Unit)
+            }
+            is BackendResult.Err -> {
+                sink.onError(r.error, r.message)
+                r
+            }
+        }
+    }
+
+    private fun toLiteRtContentsFromMessages(messages: List<QuickAiChatMessage>): Contents {
+        val mapped: List<Content> = messages.flatMap { msg ->
+            msg.parts.map { part ->
+                when (part) {
+                    is PromptPart.Text -> Content.Text(part.text)
+                    is PromptPart.ImageFile -> {
+                        val f = File(part.absolutePath)
+                        require(f.exists() && f.canRead()) {
+                            "PromptPart.ImageFile not readable: ${part.absolutePath}"
+                        }
+                        Content.ImageFile(part.absolutePath)
+                    }
+                    is PromptPart.ImageBytes -> {
+                        require(part.bytes.isNotEmpty()) {
+                            "PromptPart.ImageBytes has empty byte array"
+                        }
+                        Content.ImageBytes(part.bytes)
+                    }
+                }
+            }
+        }
+        return Contents.of(mapped)
+    }
+
     override fun cancel() {
         cancelRequested.set(true)
         Log.i(TAG, "cancel(): one-shot run cancel requested")

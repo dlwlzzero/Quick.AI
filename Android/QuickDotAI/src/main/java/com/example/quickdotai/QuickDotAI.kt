@@ -308,6 +308,71 @@ interface QuickDotAI {
             "chatRebuild is not supported by engine '$kind'."
         )
 
+    // ----- OpenAI messages API (handle-based) ------------------------------
+
+    /**
+     * @brief Blocking inference with OpenAI message format on a specific handle.
+     *
+     * @param messages List of chat messages with role (system/user/assistant) and content
+     * @return BackendResult containing the generated text or an error
+     */
+    fun runWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> =
+        BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runWithMessages is not supported by engine '$kind'."
+        )
+
+    /**
+     * @brief Multimodal blocking inference with OpenAI message format on a specific handle.
+     *
+     * @param messages List of chat messages. Image should be included as ImageBytes part.
+     *                 Only 1 image is allowed, in [Text, ImageBytes] order.
+     * @return BackendResult containing the generated text or an error
+     */
+    fun runMultimodalWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> =
+        BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runMultimodalWithMessages is not supported by engine '$kind'."
+        )
+
+    /**
+     * @brief Streaming inference with OpenAI message format on a specific handle.
+     *
+     * @param messages List of chat messages with role (system/user/assistant) and content
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult<Unit> on completion
+     */
+    fun runWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        val err = BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runWithMessagesStreaming is not supported by engine '$kind'."
+        )
+        sink.onError(err.error, err.message)
+        return err
+    }
+
+    /**
+     * @brief Streaming multimodal inference with OpenAI message format on a specific handle.
+     *
+     * @param messages List of chat messages. Image should be included as ImageBytes part.
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult<Unit> on completion
+     */
+    fun runMultimodalWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        val err = BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runMultimodalWithMessagesStreaming is not supported by engine '$kind'."
+        )
+        sink.onError(err.error, err.message)
+        return err
+    }
+
     /**
      * @brief Release all resources. Idempotent — safe to call more
      * than once.

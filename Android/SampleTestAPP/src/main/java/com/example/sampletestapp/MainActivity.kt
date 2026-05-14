@@ -174,7 +174,7 @@ class MainActivity : AppCompatActivity() {
     /* ───── UI state (preserved across light/dark theme rebuilds) ───── */
 
     private var darkMode = false
-    private var selectedTab: String = "run"             // run | chat | openai | metrics
+    private var selectedTab: String = "openai"          // chat | openai | metrics
     private var modelExpanded = true
     private var samplingExpanded = false
 
@@ -320,11 +320,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         scrollColumn.addView(when (selectedTab) {
-            "run"     -> buildRunTab(tokens)
             "chat"    -> buildChatTab(tokens)
             "openai"  -> buildOpenAiTab(tokens)
             "metrics" -> buildMetricsTab(tokens)
-            else      -> buildRunTab(tokens)
+            else      -> buildOpenAiTab(tokens)
         })
 
         if (selectedTab != "metrics") {
@@ -470,7 +469,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(4), dp(4), dp(4), dp(4))
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
-        val tabs = listOf("run" to "▶ Run", "chat" to "⌬ Chat",
+        val tabs = listOf("chat" to "⌬ Chat",
                           "openai" to "{ } OpenAI", "metrics" to "▤ Metrics")
         for ((idx, entry) in tabs.withIndex()) {
             val (key, label) = entry
@@ -2188,7 +2187,7 @@ class MainActivity : AppCompatActivity() {
         outputText = ""
         outputView.text = ""
         streaming = true
-        setStatus("Opening session and running OpenAI messages…")
+        setStatus("Running OpenAI messages (streaming)…")
         mainHandler.post { rebuildUi() }
 
         val req = buildLoadRequest()
@@ -2198,48 +2197,35 @@ class MainActivity : AppCompatActivity() {
                 streaming = false; setStatus("Model load failed.")
                 mainHandler.post { rebuildUi() }; return@execute
             }
-            val config: QuickAiChatSessionConfig? = null
-            if (e.chatSessionId == null) {
-                when (val openResult = e.openChatSession(config)) {
-                    is BackendResult.Err -> {
-                        streaming = false
-                        setStatus("Failed to open session: ${openResult.message}")
-                        mainHandler.post { rebuildUi() }; return@execute
-                    }
-                    is BackendResult.Ok -> {
-                        sessionIdText = openResult.value
-                        mainHandler.post { rebuildUi() }
-                    }
-                }
-            }
             val sink = object : StreamSink {
                 override fun onDelta(text: String) {
                     outputText += text
                     mainHandler.post { outputView.append(text) }
                 }
                 override fun onDone() {
-                    streaming = false; setStatus("OpenAI messages chat done.")
+                    streaming = false; setStatus("OpenAI messages done.")
                     mainHandler.post { rebuildUi() }
                 }
                 override fun onError(error: QuickAiError, message: String?) {
-                    streaming = false; setStatus("Chat error: [${error.name}] ${message ?: ""}")
+                    streaming = false; setStatus("OpenAI error: [${error.name}] ${message ?: ""}")
                     mainHandler.post { rebuildUi() }
                 }
             }
             try {
-                when (val r = e.chatRunStreaming(messages, sink)) {
+                when (val r = e.runWithMessagesStreaming(messages, sink)) {
                     is BackendResult.Ok -> {
                         streaming = false
-                        lastMetrics = r.value.metrics ?: lastMetrics
-                        setStatus("Done. (${r.value.metrics?.totalDurationMs?.toLong() ?: "?"} ms)")
+                        setStatus("Done.")
                         mainHandler.post { rebuildUi() }
                     }
                     is BackendResult.Err -> {
-                        streaming = false; mainHandler.post { rebuildUi() }
+                        streaming = false
+                        setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+                        mainHandler.post { rebuildUi() }
                     }
                 }
             } catch (t: Throwable) {
-                streaming = false; setStatus("Chat threw: ${t.message}")
+                streaming = false; setStatus("Threw: ${t.message}")
                 mainHandler.post { rebuildUi() }
             }
         }
@@ -2256,36 +2242,23 @@ class MainActivity : AppCompatActivity() {
             return
         }
         outputText = ""; outputView.text = ""
-        setStatus("Opening session and running OpenAI messages (blocking)…")
+        setStatus("Running OpenAI messages (blocking)…")
 
         val req = buildLoadRequest()
         engineExecutor.execute {
             val e = loadModelInternal(req)
             if (e == null) { setStatus("Model load failed."); return@execute }
-            val config: QuickAiChatSessionConfig? = null
-            if (e.chatSessionId == null) {
-                when (val openResult = e.openChatSession(config)) {
-                    is BackendResult.Err -> {
-                        setStatus("Failed to open session: ${openResult.message}"); return@execute
-                    }
-                    is BackendResult.Ok -> {
-                        sessionIdText = openResult.value
-                        mainHandler.post { rebuildUi() }
-                    }
-                }
-            }
             try {
-                when (val r = e.chatRun(messages)) {
+                when (val r = e.runWithMessages(messages)) {
                     is BackendResult.Ok -> {
-                        outputText = r.value.content
-                        lastMetrics = r.value.metrics ?: lastMetrics
-                        mainHandler.post { outputView.text = r.value.content }
-                        setStatus("Done. (${r.value.metrics?.totalDurationMs?.toLong() ?: "?"} ms)")
+                        outputText = r.value
+                        mainHandler.post { outputView.text = r.value }
+                        setStatus("Done.")
                     }
                     is BackendResult.Err ->
-                        setStatus("Chat failed: [${r.error.name}] ${r.message ?: ""}")
+                        setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
                 }
-            } catch (t: Throwable) { setStatus("Chat threw: ${t.message}") }
+            } catch (t: Throwable) { setStatus("Threw: ${t.message}") }
         }
     }
 

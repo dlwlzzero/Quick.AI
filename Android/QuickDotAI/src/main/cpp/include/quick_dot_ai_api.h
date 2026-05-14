@@ -122,21 +122,9 @@ typedef struct {
 
 WIN_EXPORT ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics);
 
-WIN_EXPORT ErrorCode runModel(const char *inputTextPrompt,
-                              const char **outputText);
-
-/**
- * @brief Run inference with chat template formatted messages
- * @param messages Array of chat messages with role and content
- * @param num_messages Number of messages in the array
- * @param add_generation_prompt Whether to append generation prompt at end
- * @param outputText Buffer to store output text (owned by the library)
- * @return ErrorCode
- */
-WIN_EXPORT ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
-                                          size_t num_messages,
-                                          bool add_generation_prompt,
-                                          const char **outputText);
+WIN_EXPORT ErrorCode saveQnnKvCache(const char *cache_path);
+WIN_EXPORT ErrorCode loadQnnKvCache(const char *cache_path);
+WIN_EXPORT ErrorCode resetQnnKvCache(void);
 
 /**
  * @brief Apply chat template to messages without running inference
@@ -164,7 +152,7 @@ WIN_EXPORT ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
  * A single handle may internally carry multiple sub-models (e.g. vision
  * encoder + LLM) when loaded from a top-level nntr_config.json that
  * specifies "architectures" and "model_dirs" arrays. The single-model
- * run API (runModelHandle / runModelHandleStreaming) drives models[0]
+ * run API (runModelHandleWithMessages / runModelHandleStreaming) drives models[0]
  * only; the multimodal API (runMultimodalHandle*) drives the full set.
  *
  * Typical usage:
@@ -172,7 +160,10 @@ WIN_EXPORT ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
  *   loadModelHandle(CAUSAL_LM_BACKEND_CPU, CAUSAL_LM_MODEL_QWEN3_0_6B,
  *                   CAUSAL_LM_QUANTIZATION_W4A32, NULL, &h);
  *   const char *out = NULL;
- *   runModelHandle(h, "Hello", &out);
+ *   CausalLMChatMessage msg;
+ *   msg.role = "user";
+ *   msg.content = "Hello";
+ *   runModelHandleWithMessages(h, &msg, 1, true, &out);
  *   // ... use out (owned by h, valid until the next run or destroy) ...
  *   destroyModelHandle(h);
  *============================================================================*/
@@ -207,23 +198,56 @@ WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
  * @brief Run inference on a specific handle.
  *
  * The returned outputText pointer is owned by the handle and remains valid
- * until the next runModelHandle call on the same handle or until the handle
+ * until the next runModelHandleWithMessages call on the same handle or until the handle
  * is destroyed. Different handles are safe to call concurrently from
  * different threads; the same handle is serialized by its own internal
  * mutex.
  *
  * Single-model API: drives models[0] only even when the handle was
- * populated with multiple sub-models. Use runMultimodalHandle for
+ * populated with multiple sub-models. Use runMultimodalHandleWithMessages for
  * compositions such as vision-encoder + LLM.
  *
  * @param handle          Handle returned by loadModelHandle
- * @param inputTextPrompt Input prompt
+ * @param messages        Array of chat messages with role and content
+ * @param num_messages    Number of messages in the array
+ * @param add_generation_prompt Whether to append generation prompt at end
  * @param outputText      Out-parameter that receives a pointer to the output
  * @return ErrorCode
  */
-WIN_EXPORT ErrorCode runModelHandle(CausalLmHandle handle,
-                                    const char *inputTextPrompt,
-                                    const char **outputText);
+WIN_EXPORT ErrorCode runModelHandleWithMessages(CausalLmHandle handle,
+                                                const CausalLMChatMessage *messages,
+                                                size_t num_messages,
+                                                bool add_generation_prompt,
+                                                const char **outputText);
+
+/**
+ * @brief Streaming inference with OpenAI message format on a specific handle.
+ *
+ * Format the messages array through the chat template, then drive
+ * generation token-by-token, invoking @p callback for each delta.
+ * Blocks on the invoking thread until generation finishes or an error
+ * occurs. Semantics are otherwise identical to runModelHandleStreaming.
+ *
+ * @param handle              Handle returned by loadModelHandle
+ * @param messages            Array of chat messages with role and content
+ * @param num_messages        Number of messages in the array
+ * @param add_generation_prompt Whether to append generation prompt at end
+ * @param callback            Token delta callback. Must be non-NULL.
+ * @param user_data           Opaque pointer forwarded to callback
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode runModelHandleWithMessagesStreaming(CausalLmHandle handle,
+                                                         const CausalLMChatMessage *messages,
+                                                         size_t num_messages,
+                                                         bool add_generation_prompt,
+                                                         CausalLmTokenCallback callback,
+                                                         void *user_data);
+
+WIN_EXPORT ErrorCode saveQnnKvCacheHandle(CausalLmHandle handle,
+                                           const char *cache_path);
+WIN_EXPORT ErrorCode loadQnnKvCacheHandle(CausalLmHandle handle,
+                                           const char *cache_path);
+WIN_EXPORT ErrorCode resetQnnKvCacheHandle(CausalLmHandle handle);
 
 /**
  * @brief Retrieve performance metrics of the last run for a given handle.
@@ -293,7 +317,7 @@ WIN_EXPORT ErrorCode unloadModelHandle(CausalLmHandle handle);
  * the full concatenated generation (or the partial output on a
  * cancelled run), so a subsequent getPerformanceMetricsHandle() call
  * returns valid metrics and the same handle can be reused for another
- * run — identical semantics to runModelHandle.
+ * run — identical semantics to runModelHandleWithMessages.
  *
  * Streaming is currently only supported on models whose underlying
  * C++ implementation derives from causallm::CausalLM (all the Qwen
@@ -349,10 +373,12 @@ WIN_EXPORT ErrorCode runMultimodalHandleStreaming(
     CausalLmTokenCallback callback, void *user_data);
 
 /**
- * @brief Blocking multimodal inference on a specific handle.
+ * @brief Blocking multimodal inference with OpenAI message format on a specific handle.
  *
  * @param handle         Handle returned by loadModelHandle
- * @param prompt         Text prompt (UTF-8, NUL-terminated)
+ * @param messages       Array of chat messages with role and content (text-only, image via pixelValues)
+ * @param num_messages   Number of messages in the array
+ * @param add_generation_prompt Whether to append generation prompt at end
  * @param pixelValues    Preprocessed image patches in CHW format
  * @param numPatches     Number of image patches
  * @param originalHeight Original image height before preprocessing
@@ -361,12 +387,44 @@ WIN_EXPORT ErrorCode runMultimodalHandleStreaming(
  * @return ErrorCode (CAUSAL_LM_ERROR_UNSUPPORTED until Vision Encoder
  * implemented)
  */
-WIN_EXPORT ErrorCode runMultimodalHandle(CausalLmHandle handle,
-                                         const char *prompt,
-                                         const float *pixelValues,
-                                         int numPatches, int originalHeight,
-                                         int originalWidth,
-                                         const char **outputText);
+WIN_EXPORT ErrorCode runMultimodalHandleWithMessages(CausalLmHandle handle,
+                                                     const CausalLMChatMessage *messages,
+                                                     size_t num_messages,
+                                                     bool add_generation_prompt,
+                                                     const float *pixelValues,
+                                                     int numPatches, int originalHeight,
+                                                     int originalWidth,
+                                                     const char **outputText);
+
+/**
+ * @brief Streaming multimodal inference with OpenAI message format on a specific handle.
+ *
+ * Format the messages array through the chat template, run the vision
+ * encoder if needed, then drive LLM generation token-by-token invoking
+ * @p callback for each delta. Blocks on the invoking thread until
+ * generation finishes or an error occurs.
+ *
+ * @param handle         Handle returned by loadModelHandle
+ * @param messages       Array of chat messages with role and content (text-only, image via pixelValues)
+ * @param num_messages   Number of messages in the array
+ * @param add_generation_prompt Whether to append generation prompt at end
+ * @param pixelValues    Preprocessed image patches in CHW format
+ * @param numPatches     Number of image patches
+ * @param originalHeight Original image height before preprocessing
+ * @param originalWidth  Original image width before preprocessing
+ * @param callback       Token delta callback. Must be non-NULL.
+ * @param user_data      Opaque pointer forwarded to callback
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode runMultimodalHandleWithMessagesStreaming(CausalLmHandle handle,
+                                                              const CausalLMChatMessage *messages,
+                                                              size_t num_messages,
+                                                              bool add_generation_prompt,
+                                                              const float *pixelValues,
+                                                              int numPatches, int originalHeight,
+                                                              int originalWidth,
+                                                              CausalLmTokenCallback callback,
+                                                              void *user_data);
 
 #ifdef __cplusplus
 }

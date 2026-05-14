@@ -63,14 +63,17 @@ internal class NativeChatSession(
 
         return try {
             val startNs = System.nanoTime()
-            val result = NativeCausalLm.runModelHandleNative(handle, prompt)
+            val accumulated = StringBuilder()
+            val errorCode = NativeCausalLm.runModelHandleStreamingNative(handle, prompt) { delta ->
+                accumulated.append(delta)
+            }
             lastRunDurationMs = (System.nanoTime() - startNs) / 1_000_000.0
 
-            if (result.errorCode != 0) {
-                Log.e(TAG, "run($sessionId): inference failed with errorCode=${result.errorCode}")
-                BackendResult.Err(QuickAiError.fromNativeCode(result.errorCode))
+            if (errorCode != 0) {
+                Log.e(TAG, "run($sessionId): inference failed with errorCode=$errorCode")
+                BackendResult.Err(QuickAiError.fromNativeCode(errorCode))
             } else {
-                val output = result.output.orEmpty()
+                val output = accumulated.toString()
                 Log.i(TAG, "run($sessionId): completed in ${lastRunDurationMs.toLong()} ms, output length=${output.length}")
                 BackendResult.Ok(
                     QuickAiChatResult(
