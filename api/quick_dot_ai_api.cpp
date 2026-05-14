@@ -69,10 +69,10 @@ using causallm::multimodal_pointer;
  * vision-encoder + LLM can live behind a single handle. The vectors are
  * kept parallel: models[i] ↔ architectures[i] ↔ model_dirs[i] ↔
  * initialization_duration_ms[i]. The single-model API paths
- * (runModelHandle / runModelHandleStreaming) operate on models[0] and
+ * (runModelHandleWithMessages / runModelHandleStreaming) operate on models[0] and
  * ignore the rest; the multimodal API drives the full set.
  *
- * Note: the legacy non-handle API (loadModel / runModel / ...) is
+ * Note: the legacy non-handle API (loadModel / ...) is
  * implemented on top of a single static "default" instance of this struct
  * so that existing callers (e.g. test_api) keep working unchanged.
  */
@@ -1384,7 +1384,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 }
 
 /**
- * @brief Core runner shared by runModel and runModelHandle.
+ * @brief Core runner shared by runModelHandleWithMessages.
  */
 static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
                                const char **outputText,
@@ -1421,7 +1421,7 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
   }
   catch (const std::exception &e)
   {
-    LOGE("Exception in runModel: %s", e.what());
+    LOGE("Exception in run_on_handle: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
@@ -1666,11 +1666,6 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
   return load_into_handle(get_default_handle(), compute, modeltype, quant_type, nullptr, model_base_path);
 }
 
-ErrorCode runModel(const char *inputTextPrompt, const char **outputText)
-{
-  return run_on_handle(get_default_handle(), inputTextPrompt, outputText);
-}
-
 ErrorCode saveQnnKvCache(const char *cache_path)
 {
   return save_qnn_kv_cache_on_handle(get_default_handle(), cache_path);
@@ -1745,16 +1740,6 @@ ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
   return CAUSAL_LM_ERROR_NONE;
 }
 
-ErrorCode runModelHandle(CausalLmHandle handle, const char *inputTextPrompt,
-                         const char **outputText)
-{
-  if (handle == nullptr)
-  {
-    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-  }
-  return run_on_handle(*handle, inputTextPrompt, outputText);
-}
-
 ErrorCode saveQnnKvCacheHandle(CausalLmHandle handle, const char *cache_path)
 {
   if (handle == nullptr)
@@ -1792,97 +1777,55 @@ ErrorCode getPerformanceMetricsHandle(CausalLmHandle handle,
   return metrics_on_handle(*handle, metrics);
 }
 
-ErrorCode runModelHandleStreaming(CausalLmHandle handle,
-                                  const char *inputTextPrompt,
-                                  CausalLmTokenCallback callback,
-                                  void *user_data)
+/*============================================================================
+ * Internal streaming helper
+ *============================================================================*/
+
+static ErrorCode
+run_model_streaming_on_handle(CausalLmModel &h,
+                              const std::string &raw_input,
+                              CausalLmTokenCallback callback,
+                              void *user_data,
+                              bool input_already_formatted)
 {
-  LOGD("[DEBUG] runModelHandleStreaming: START");
-  LOGD("[DEBUG]   handle: %p", (void *)handle);
-  LOGD("[DEBUG]   inputTextPrompt: %s",
-       inputTextPrompt ? inputTextPrompt : "(null)");
-  LOGD("[DEBUG]   callback: %p", (void *)callback);
-  LOGD("[DEBUG]   user_data: %p", user_data);
-
-  if (handle == nullptr || inputTextPrompt == nullptr || callback == nullptr)
-  {
-    LOGE("[DEBUG] runModelHandleStreaming: INVALID_PARAMETER");
-    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-  }
-
-  auto &h = *handle;
-  LOGD("[DEBUG] runModelHandleStreaming: Acquiring mutex lock...");
-  std::lock_guard<std::mutex> lock(h.mtx);
-  LOGD("[DEBUG] runModelHandleStreaming: Mutex lock acquired");
-
-  if (!h.initialized || h.models.empty() || !h.models[0])
-  {
-    LOGE("[DEBUG] runModelHandleStreaming: NOT_INITIALIZED "
-         "(initialized=%d, size=%zu)",
-         h.initialized, h.models.size());
-    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
-  }
-
   auto *m = h.models[0].get();
-  const std::string &architecture = h.architectures[0];
-  LOGD("[DEBUG] runModelHandleStreaming: Model is initialized, architecture=%s",
-       architecture.c_str());
 
-  // Set up streaming via Transformer interface (works for both CausalLM and
-  // QNN models)
-  LOGD("[DEBUG] runModelHandleStreaming: Initializing callback streamer...");
   CallbackStreamer streamer;
   callback_streamer_init(&streamer, callback, user_data);
-  LOGD("[DEBUG] runModelHandleStreaming: Callback streamer initialized");
-
-  // Safe upcast: CallbackStreamer embeds BaseStreamer as its first
-  // field (C-style inheritance), so &streamer.base yields a valid
-  // BaseStreamer pointer without reinterpret_cast.
-  LOGD("[DEBUG] runModelHandleStreaming: Setting streamer on model...");
   m->setStreamer(&streamer.base);
-  LOGD("[DEBUG] runModelHandleStreaming: Streamer set successfully");
 
-  // RAII detach: make sure the dangling stack pointer never survives
-  // the return of this function, no matter which exception path we
-  // exit through.
   struct Detach
   {
     causallm::Transformer *t;
-    ~Detach()
-    {
-      LOGD("[DEBUG] runModelHandleStreaming::Detach: Clearing streamer");
-      t->setStreamer(nullptr);
-    }
+    ~Detach() { t->setStreamer(nullptr); }
   } detach_guard{m};
 
   try
   {
-    LOGD("[DEBUG] runModelHandleStreaming: Preparing input text...");
-    const std::string raw_input(inputTextPrompt);
     std::string input = prepare_input_for_model(
-        h, 0, raw_input,
-        /*input_already_formatted=*/false);
+        h, 0, raw_input, input_already_formatted);
+
     LOGD("[DEBUG]   raw input length: %zu", raw_input.length());
     LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
-    LOGD("[DEBUG]   model input length: %zu", input.length());
-    LOGD("[DEBUG]   model input: %s", input.c_str());
+    if (input_already_formatted) {
+      LOGD("[DEBUG]   input_already_formatted=1, using pre-formatted input (length: %zu)",
+           input.length());
+    } else {
+      LOGD("[DEBUG]   input_already_formatted=0, applying chat template");
+      LOGD("[DEBUG]   model input length: %zu", input.length());
+      LOGD("[DEBUG]   model input: %s", input.c_str());
+    }
 
-    LOGD("[DEBUG] runModelHandleStreaming: Calling model->run()...");
 #if defined(_WIN32)
     m->run(std::wstring(input.begin(), input.end()), false, L"", L"",
            g_verbose);
 #else
     m->run(input, false, "", "", true);
 #endif
-    LOGD("[DEBUG] runModelHandleStreaming: model->run() completed");
 
-    LOGD("[DEBUG] runModelHandleStreaming: Getting output...");
     h.last_output = m->getOutput(0);
-    LOGD("[DEBUG]   output length: %zu", h.last_output.length());
-    LOGD("[DEBUG]   output: %s", h.last_output.c_str());
     update_handle_session_after_run(h, 0);
 
-    // Log performance metrics after successful run
     if (m->hasRun())
     {
       auto im = m->getPerformanceMetrics();
@@ -1899,13 +1842,11 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
       LOGD("[PERF]   peak_memory_kb: %.2f", im.peak_memory_kb);
       LOGD("[PERF]   initialization_duration_ms: %.2f", total_init);
 
-      // Calculate tokens per second for prefill
       if (im.prefill_duration_ms > 0)
       {
         double tokens_per_sec = (im.prefill_tokens * 1000.0) / im.prefill_duration_ms;
         LOGD("[PERF]   prefill_tokens_per_sec: %.2f", tokens_per_sec);
       }
-      // Calculate tokens per second for generation
       if (im.generation_duration_ms > 0)
       {
         double tokens_per_sec = (im.generation_tokens * 1000.0) / im.generation_duration_ms;
@@ -1915,17 +1856,50 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   }
   catch (const std::exception &e)
   {
-    LOGE("[DEBUG] runModelHandleStreaming: Exception caught: %s", e.what());
+    LOGE("[DEBUG] run_model_streaming_on_handle: Exception caught: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
   catch (...)
   {
-    LOGE("[DEBUG] runModelHandleStreaming: Unknown exception caught");
+    LOGE("[DEBUG] run_model_streaming_on_handle: Unknown exception caught");
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
-  LOGD("[DEBUG] runModelHandleStreaming: END (SUCCESS)");
   return CAUSAL_LM_ERROR_NONE;
+}
+
+ErrorCode runModelHandleStreaming(CausalLmHandle handle,
+                                  const char *inputTextPrompt,
+                                  CausalLmTokenCallback callback,
+                                  void *user_data)
+{
+  LOGD("[DEBUG] runModelHandleStreaming: START");
+  LOGD("[DEBUG]   handle: %p", (void *)handle);
+  LOGD("[DEBUG]   inputTextPrompt: %.50s%s",
+       inputTextPrompt ? inputTextPrompt : "(null)",
+       inputTextPrompt && strlen(inputTextPrompt) > 50 ? "..." : "");
+
+  if (handle == nullptr || inputTextPrompt == nullptr || callback == nullptr)
+  {
+    LOGE("[DEBUG] runModelHandleStreaming: INVALID_PARAMETER");
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  auto &h = *handle;
+  std::lock_guard<std::mutex> lock(h.mtx);
+
+  if (!h.initialized || h.models.empty() || !h.models[0])
+  {
+    LOGE("[DEBUG] runModelHandleStreaming: NOT_INITIALIZED");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  ErrorCode ec = run_model_streaming_on_handle(
+      h, std::string(inputTextPrompt), callback, user_data,
+      /*input_already_formatted=*/false);
+
+  LOGD("[DEBUG] runModelHandleStreaming: END (errorCode=%d)", ec);
+  return ec;
 }
 
 ErrorCode unloadModelHandle(CausalLmHandle handle)
@@ -1952,7 +1926,7 @@ ErrorCode destroyModelHandle(CausalLmHandle handle)
   }
   // Take the mutex to make sure no in-flight call on this handle is still
   // running, then release and delete. Any caller that still holds a pointer
-  // to the output buffer returned by runModelHandle is reading freed memory
+  // to the output buffer returned by runModelHandleWithMessages is reading freed memory
   // after this point — documented as "valid until destroy".
   {
     std::lock_guard<std::mutex> lock(handle->mtx);
@@ -2396,3 +2370,126 @@ ErrorCode runMultimodalHandleWithMessages(
   return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
 }
+
+/*============================================================================
+ * OpenAI messages streaming variants
+ *============================================================================*/
+
+extern "C" {
+
+ErrorCode runModelHandleWithMessagesStreaming(CausalLmHandle handle,
+                                               const CausalLMChatMessage *messages,
+                                               size_t num_messages,
+                                               bool add_generation_prompt,
+                                               CausalLmTokenCallback callback,
+                                               void *user_data)
+{
+  LOGD("[DEBUG] runModelHandleWithMessagesStreaming: START");
+  LOGD("[DEBUG]   handle: %p", (void *)handle);
+  LOGD("[DEBUG]   num_messages: %zu", num_messages);
+
+  if (handle == nullptr || messages == nullptr || num_messages == 0 || callback == nullptr)
+  {
+    LOGE("[DEBUG] runModelHandleWithMessagesStreaming: INVALID_PARAMETER");
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  auto &h = *handle;
+  std::lock_guard<std::mutex> lock(h.mtx);
+
+  if (!h.initialized || h.models.empty() || !h.models[0])
+  {
+    LOGE("[DEBUG] runModelHandleWithMessagesStreaming: NOT_INITIALIZED");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  try
+  {
+    LOGD("[DEBUG] runModelHandleWithMessagesStreaming: Formatting messages...");
+
+    const char *formattedInput = nullptr;
+    ErrorCode err = applyChatTemplate(messages, num_messages,
+                                      add_generation_prompt, &formattedInput);
+    if (err != CAUSAL_LM_ERROR_NONE)
+    {
+      return err;
+    }
+
+    LOGD("[DEBUG]   raw messages count: %zu", num_messages);
+    LOGD("[DEBUG]   formatted input length: %zu", strlen(formattedInput));
+    LOGD("[DEBUG]   formatted input: %s", formattedInput);
+
+    LOGD("[DEBUG] runModelHandleWithMessagesStreaming: Calling internal helper directly...");
+    return run_model_streaming_on_handle(
+        h, std::string(formattedInput), callback, user_data,
+        /*input_already_formatted=*/true);
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("[DEBUG] runModelHandleWithMessagesStreaming: Exception caught: %s", e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+  catch (...)
+  {
+    LOGE("[DEBUG] runModelHandleWithMessagesStreaming: Unknown exception caught");
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+}
+
+ErrorCode runMultimodalHandleWithMessagesStreaming(CausalLmHandle handle,
+                                                   const CausalLMChatMessage *messages,
+                                                   size_t num_messages,
+                                                   bool add_generation_prompt,
+                                                   const float *pixelValues,
+                                                   int numPatches,
+                                                   int originalHeight,
+                                                   int originalWidth,
+                                                   CausalLmTokenCallback callback,
+                                                   void *user_data)
+{
+  LOGD("[DEBUG] runMultimodalHandleWithMessagesStreaming: START");
+  LOGD("[DEBUG]   handle: %p", (void *)handle);
+  LOGD("[DEBUG]   num_messages: %zu", num_messages);
+
+  if (handle == nullptr || messages == nullptr || num_messages == 0 ||
+      pixelValues == nullptr || callback == nullptr)
+  {
+    LOGE("[DEBUG] runMultimodalHandleWithMessagesStreaming: INVALID_PARAMETER");
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  try
+  {
+    LOGD("[DEBUG] runMultimodalHandleWithMessagesStreaming: Formatting messages...");
+
+    const char *formattedInput = nullptr;
+    ErrorCode err = applyChatTemplate(messages, num_messages,
+                                      add_generation_prompt, &formattedInput);
+    if (err != CAUSAL_LM_ERROR_NONE)
+    {
+      return err;
+    }
+
+    LOGD("[DEBUG]   raw messages count: %zu", num_messages);
+    LOGD("[DEBUG]   formatted input length: %zu", strlen(formattedInput));
+    LOGD("[DEBUG]   formatted input preview: %.100s%s", formattedInput,
+         strlen(formattedInput) > 100 ? "..." : "");
+
+    LOGD("[DEBUG] runMultimodalHandleWithMessagesStreaming: Delegating to runMultimodalHandleStreaming...");
+    return runMultimodalHandleStreaming(handle, formattedInput, pixelValues,
+                                        numPatches, originalHeight, originalWidth,
+                                        callback, user_data);
+  }
+  catch (const std::exception &e)
+  {
+    LOGE("[DEBUG] runMultimodalHandleWithMessagesStreaming: Exception caught: %s", e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+  catch (...)
+  {
+    LOGE("[DEBUG] runMultimodalHandleWithMessagesStreaming: Unknown exception caught");
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+}
+
+} // extern "C"

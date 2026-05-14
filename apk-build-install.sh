@@ -9,7 +9,7 @@ set -e
 # ==========================================================
 # Configuration
 # ==========================================================
-NDK_ROOT="/home/junbong/progra/Android/Sdk/ndk/26.3.11579264"
+NDK_ROOT="/home/j2z0/Android/Sdk/ndk/27.0.12077973"
 APK_APPLICATION="SampleTestApp"
 
 # ==========================================================
@@ -28,10 +28,10 @@ echo "[2/6] Building project for Android (with QNN, clean build)..."
 ./build.sh --platform=android --enable-qnn --clean
 
 # ==========================================================
-# 3. Install Android Libraries
+# 3. Install Android Libraries for APK
 # ==========================================================
-echo "[3/6] Installing Android libraries..."
-./install_android.sh
+echo "[3/6] Installing Android libraries for APK..."
+./apk_install_android.sh
 
 # ==========================================================
 # 4. Deploy Prebuilt Libraries
