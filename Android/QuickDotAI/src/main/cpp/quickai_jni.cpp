@@ -20,6 +20,7 @@
  * background dispatcher).
  */
 
+#include <algorithm>
 #include <android/log.h>
 #include <cerrno>
 #include <cstddef>
@@ -411,13 +412,15 @@ bool convertQuickAiChatMessage(JNIEnv *env, jobject msgObj, std::string &outRole
     return false;
   }
 
-  // Call enum.name()
+  // Call enum.name() and convert to lowercase for OpenAI API compatibility
   jclass enumCls = env->GetObjectClass(roleEnum);
   jmethodID nameMid = env->GetMethodID(enumCls, "name", "()Ljava/lang/String;");
   jstring roleNameJ = (jstring)env->CallObjectMethod(roleEnum, nameMid);
   if (roleNameJ != nullptr) {
     const char *roleName = env->GetStringUTFChars(roleNameJ, nullptr);
     outRole = roleName ? roleName : "";
+    // Convert to lowercase: "SYSTEM" -> "system", "USER" -> "user", "ASSISTANT" -> "assistant"
+    std::transform(outRole.begin(), outRole.end(), outRole.begin(), ::tolower);
     env->ReleaseStringUTFChars(roleNameJ, roleName);
     env->DeleteLocalRef(roleNameJ);
   }

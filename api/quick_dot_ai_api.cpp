@@ -1449,6 +1449,15 @@ ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
     auto &h = get_default_handle();
     std::lock_guard<std::mutex> lock(h.mtx);
 
+    // Debug: print messages before convertMessages
+    LOGD("[DEBUG] applyChatTemplate: num_messages=%zu", num_messages);
+    for (size_t i = 0; i < num_messages; ++i) {
+      LOGD("[DEBUG] applyChatTemplate: messages[%zu] role='%s' content='%s'",
+           i,
+           messages[i].role ? messages[i].role : "(null)",
+           messages[i].content ? messages[i].content : "(null)");
+    }
+
     auto chat_messages = convertMessages(messages, num_messages);
     std::string arch =
       h.architectures.empty() ? std::string() : h.architectures[0];
