@@ -69,10 +69,10 @@ using causallm::multimodal_pointer;
  * vision-encoder + LLM can live behind a single handle. The vectors are
  * kept parallel: models[i] ↔ architectures[i] ↔ model_dirs[i] ↔
  * initialization_duration_ms[i]. The single-model API paths
- * (runModelHandle / runModelHandleStreaming) operate on models[0] and
+ * (runModelHandleWithMessages / runModelHandleStreaming) operate on models[0] and
  * ignore the rest; the multimodal API drives the full set.
  *
- * Note: the legacy non-handle API (loadModel / runModel / ...) is
+ * Note: the legacy non-handle API (loadModel / ...) is
  * implemented on top of a single static "default" instance of this struct
  * so that existing callers (e.g. test_api) keep working unchanged.
  */
@@ -1384,7 +1384,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 }
 
 /**
- * @brief Core runner shared by runModel and runModelHandle.
+ * @brief Core runner shared by runModelHandleWithMessages.
  */
 static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
                                const char **outputText,
@@ -1421,7 +1421,7 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
   }
   catch (const std::exception &e)
   {
-    LOGE("Exception in runModel: %s", e.what());
+    LOGE("Exception in run_on_handle: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
   }
 
@@ -1666,11 +1666,6 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
   return load_into_handle(get_default_handle(), compute, modeltype, quant_type, nullptr, model_base_path);
 }
 
-ErrorCode runModel(const char *inputTextPrompt, const char **outputText)
-{
-  return run_on_handle(get_default_handle(), inputTextPrompt, outputText);
-}
-
 ErrorCode saveQnnKvCache(const char *cache_path)
 {
   return save_qnn_kv_cache_on_handle(get_default_handle(), cache_path);
@@ -1743,16 +1738,6 @@ ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
   LOGD("[DEBUG] loadModelHandle:%d SUCCESS, handle set to %p", __LINE__,
        (void *)h);
   return CAUSAL_LM_ERROR_NONE;
-}
-
-ErrorCode runModelHandle(CausalLmHandle handle, const char *inputTextPrompt,
-                         const char **outputText)
-{
-  if (handle == nullptr)
-  {
-    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-  }
-  return run_on_handle(*handle, inputTextPrompt, outputText);
 }
 
 ErrorCode saveQnnKvCacheHandle(CausalLmHandle handle, const char *cache_path)
@@ -1952,7 +1937,7 @@ ErrorCode destroyModelHandle(CausalLmHandle handle)
   }
   // Take the mutex to make sure no in-flight call on this handle is still
   // running, then release and delete. Any caller that still holds a pointer
-  // to the output buffer returned by runModelHandle is reading freed memory
+  // to the output buffer returned by runModelHandleWithMessages is reading freed memory
   // after this point — documented as "valid until destroy".
   {
     std::lock_guard<std::mutex> lock(handle->mtx);

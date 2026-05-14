@@ -122,25 +122,9 @@ typedef struct {
 
 WIN_EXPORT ErrorCode getPerformanceMetrics(PerformanceMetrics *metrics);
 
-WIN_EXPORT ErrorCode runModel(const char *inputTextPrompt,
-                              const char **outputText);
-
 WIN_EXPORT ErrorCode saveQnnKvCache(const char *cache_path);
 WIN_EXPORT ErrorCode loadQnnKvCache(const char *cache_path);
 WIN_EXPORT ErrorCode resetQnnKvCache(void);
-
-/**
- * @brief Run inference with chat template formatted messages
- * @param messages Array of chat messages with role and content
- * @param num_messages Number of messages in the array
- * @param add_generation_prompt Whether to append generation prompt at end
- * @param outputText Buffer to store output text (owned by the library)
- * @return ErrorCode
- */
-WIN_EXPORT ErrorCode runModelWithMessages(const CausalLMChatMessage *messages,
-                                          size_t num_messages,
-                                          bool add_generation_prompt,
-                                          const char **outputText);
 
 /**
  * @brief Apply chat template to messages without running inference
@@ -168,7 +152,7 @@ WIN_EXPORT ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
  * A single handle may internally carry multiple sub-models (e.g. vision
  * encoder + LLM) when loaded from a top-level nntr_config.json that
  * specifies "architectures" and "model_dirs" arrays. The single-model
- * run API (runModelHandle / runModelHandleStreaming) drives models[0]
+ * run API (runModelHandleWithMessages / runModelHandleStreaming) drives models[0]
  * only; the multimodal API (runMultimodalHandle*) drives the full set.
  *
  * Typical usage:
@@ -176,7 +160,10 @@ WIN_EXPORT ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
  *   loadModelHandle(CAUSAL_LM_BACKEND_CPU, CAUSAL_LM_MODEL_QWEN3_0_6B,
  *                   CAUSAL_LM_QUANTIZATION_W4A32, NULL, &h);
  *   const char *out = NULL;
- *   runModelHandle(h, "Hello", &out);
+ *   CausalLMChatMessage msg;
+ *   msg.role = "user";
+ *   msg.content = "Hello";
+ *   runModelHandleWithMessages(h, &msg, 1, true, &out);
  *   // ... use out (owned by h, valid until the next run or destroy) ...
  *   destroyModelHandle(h);
  *============================================================================*/
@@ -211,7 +198,7 @@ WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
  * @brief Run inference on a specific handle.
  *
  * The returned outputText pointer is owned by the handle and remains valid
- * until the next runModelHandle call on the same handle or until the handle
+ * until the next runModelHandleWithMessages call on the same handle or until the handle
  * is destroyed. Different handles are safe to call concurrently from
  * different threads; the same handle is serialized by its own internal
  * mutex.
@@ -307,7 +294,7 @@ WIN_EXPORT ErrorCode unloadModelHandle(CausalLmHandle handle);
  * the full concatenated generation (or the partial output on a
  * cancelled run), so a subsequent getPerformanceMetricsHandle() call
  * returns valid metrics and the same handle can be reused for another
- * run — identical semantics to runModelHandle.
+ * run — identical semantics to runModelHandleWithMessages.
  *
  * Streaming is currently only supported on models whose underlying
  * C++ implementation derives from causallm::CausalLM (all the Qwen
