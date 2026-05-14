@@ -3,6 +3,7 @@ qnn_src = [
     meson.current_source_dir() / 'quick_dot_ai_qnn.cpp',
     meson.current_source_dir() / 'graph_parser.cpp',
     meson.current_source_dir() / 'generate_qnn_utils.cpp',
+    meson.current_source_dir() / 'qnn_kv_cache_manager.cpp',
 ]
 
 qnn_inc = include_directories('.')

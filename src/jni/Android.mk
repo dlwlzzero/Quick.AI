@@ -109,6 +109,7 @@ LOCAL_SRC_FILES += \
 	../models/qnn/quick_dot_ai_qnn.cpp \
 	../models/qnn/graph_parser.cpp \
 	../models/qnn/generate_qnn_utils.cpp \
+	../models/qnn/qnn_kv_cache_manager.cpp \
 	../models/gauss-3.8-qnn/gauss3_8_qnn.cpp \
 	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vision_encoder_qnn.cpp \
 	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
@@ -150,6 +151,7 @@ LOCAL_SRC_FILES += \
 	../models/qnn/quick_dot_ai_qnn.cpp \
 	../models/qnn/graph_parser.cpp \
 	../models/qnn/generate_qnn_utils.cpp \
+	../models/qnn/qnn_kv_cache_manager.cpp \
 	../models/gauss-3.8-qnn/gauss3_8_qnn.cpp \
 	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vision_encoder_qnn.cpp \
 	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
