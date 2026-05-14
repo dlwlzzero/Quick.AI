@@ -2246,4 +2246,68 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
   }
 }
 
+/*============================================================================
+ * OpenAI JSON streaming API implementation
+ *============================================================================*/
+
+ErrorCode runModelHandleWithJsonStreaming(CausalLmHandle handle,
+                                           const char *jsonRequest,
+                                           CausalLmTokenCallback callback,
+                                           void *user_data) {
+  LOGD("[DEBUG] runModelHandleWithJsonStreaming: START");
+  LOGD("[DEBUG]   handle: %p", (void *)handle);
+  LOGD("[DEBUG]   jsonRequest length: %zu",
+       jsonRequest ? strlen(jsonRequest) : 0);
+
+  if (handle == nullptr || jsonRequest == nullptr || callback == nullptr) {
+    LOGE("[DEBUG] runModelHandleWithJsonStreaming: INVALID_PARAMETER");
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  auto &h = *handle;
+  std::lock_guard<std::mutex> lock(h.mtx);
+
+  if (!h.initialized || h.models.empty() || !h.models[0]) {
+    LOGE("[DEBUG] runModelHandleWithJsonStreaming: NOT_INITIALIZED");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  try {
+    LOGD("[DEBUG] runModelHandleWithJsonStreaming: Parsing JSON request...");
+
+    // Parse JSON request
+    json request = json::parse(jsonRequest);
+    LOGD("[DEBUG]   JSON parsed successfully");
+
+    // Apply chat template using the existing g_chat_template
+    // The chat_template.apply() method handles messages, tools, functions, etc.
+    std::string formattedInput;
+    if (g_chat_template.has_value()) {
+      LOGD("[DEBUG] runModelHandleWithJsonStreaming: Applying chat template...");
+      formattedInput = g_chat_template->apply(request);
+      LOGD("[DEBUG]   Formatted input length: %zu", formattedInput.length());
+      LOGD("[DEBUG]   Formatted input preview: %.100s%s", formattedInput.c_str(),
+           formattedInput.length() > 100 ? "..." : "");
+    } else {
+      LOGE("[DEBUG] runModelHandleWithJsonStreaming: Chat template not available");
+      return CAUSAL_LM_ERROR_UNSUPPORTED;
+    }
+
+    LOGD("[DEBUG] runModelHandleWithJsonStreaming: Running inference...");
+    return run_model_streaming_on_handle(h, formattedInput, callback, user_data,
+                                         /*input_already_formatted=*/true);
+  } catch (const json::exception &e) {
+    LOGE("[DEBUG] runModelHandleWithJsonStreaming: JSON parse error: %s",
+         e.what());
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  } catch (const std::exception &e) {
+    LOGE("[DEBUG] runModelHandleWithJsonStreaming: Exception caught: %s",
+         e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  } catch (...) {
+    LOGE("[DEBUG] runModelHandleWithJsonStreaming: Unknown exception caught");
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+}
+
 } // extern "C"

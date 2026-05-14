@@ -614,3 +614,48 @@ Java_com_example_quickdotai_NativeCausalLm_runMultimodalHandleWithMessagesStream
 
   return static_cast<jint>(ec);
 }
+
+// ---------------------------------------------------------------------------
+// runModelHandleWithJsonStreaming
+//
+// Streaming inference with OpenAI JSON format on a specific handle.
+// Accepts a JSON string containing messages, tools, functions, etc.
+// ---------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_quickdotai_NativeCausalLm_runModelHandleWithJsonStreamingNative(
+  JNIEnv *env, jobject /*thiz*/, jlong handleJlong,
+  jstring jsonRequestJ,
+  jobject listenerObj) {
+
+  if (jsonRequestJ == nullptr || listenerObj == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Resolve listener method
+  jclass listenerCls = env->GetObjectClass(listenerObj);
+  if (listenerCls == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+  jmethodID onDelta =
+    env->GetMethodID(listenerCls, "onDelta", "(Ljava/lang/String;)V");
+  env->DeleteLocalRef(listenerCls);
+  if (onDelta == nullptr) {
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  const char *jsonRequest = env->GetStringUTFChars(jsonRequestJ, nullptr);
+  if (jsonRequest == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
+  StreamCtx ctx{env, listenerObj, onDelta};
+
+  ErrorCode ec = runModelHandleWithJsonStreaming(
+      handle, jsonRequest, &stream_trampoline, &ctx);
+
+  env->ReleaseStringUTFChars(jsonRequestJ, jsonRequest);
+
+  return static_cast<jint>(ec);
+}

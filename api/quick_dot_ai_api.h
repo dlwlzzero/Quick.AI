@@ -421,6 +421,44 @@ WIN_EXPORT ErrorCode runMultimodalHandleWithMessagesStreaming(
   int numPatches, int originalHeight, int originalWidth,
   CausalLmTokenCallback callback, void *user_data);
 
+/*============================================================================
+ * OpenAI JSON streaming API
+ *
+ * Accepts a JSON string in OpenAI format and processes it through the
+ * chat template. Supports messages, tools, functions, and all other
+ * fields recognized by minja chat template renderer.
+ *
+ * Example JSON input:
+ * {
+ *   "messages": [
+ *     {"role": "developer", "content": "..."},
+ *     {"role": "user", "content": "..."}
+ *   ],
+ *   "tools": [
+ *     {"type": "function", "function": {"name": "call", "description": "..."}}
+ *   ]
+ * }
+ *============================================================================*/
+
+/**
+ * @brief Streaming inference with OpenAI JSON format.
+ *
+ * Parses the JSON request and applies the chat template, then drives
+ * generation token-by-token invoking @p callback for each delta.
+ *
+ * @param handle       Handle returned by loadModelHandle
+ * @param jsonRequest  OpenAI format JSON string (UTF-8, NUL-terminated)
+ * @param callback     Token delta callback. Must be non-NULL.
+ * @param user_data    Opaque pointer forwarded to callback
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode runModelHandleWithJsonStreaming(
+    CausalLmHandle handle,
+    const char *jsonRequest,
+    CausalLmTokenCallback callback,
+    void *user_data
+);
+
 #ifdef __cplusplus
 }
 #endif

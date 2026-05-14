@@ -276,5 +276,35 @@ object NativeCausalLm {
         listener: NativeStreamListener
     ): Int
 
+    /**
+     * @brief Forwards to `runModelHandleWithJsonStreaming` in quick_dot_ai_api.h.
+     *
+     * Streaming inference with OpenAI JSON format on a specific handle.
+     * Accepts a JSON string containing messages, tools, functions, etc.
+     *
+     * Example JSON input:
+     * ```
+     * {
+     *   "messages": [
+     *     {"role": "developer", "content": "..."},
+     *     {"role": "user", "content": "..."}
+     *   ],
+     *   "tools": [
+     *     {"type": "function", "function": {"name": "call", "description": "..."}}
+     *   ]
+     * }
+     * ```
+     *
+     * @param handle       Handle returned by loadModelHandleNative
+     * @param jsonRequest  OpenAI format JSON string
+     * @param listener     Callback for streaming output
+     * @return An `ErrorCode` int; 0 on clean completion.
+     */
+    external fun runModelHandleWithJsonStreamingNative(
+        handle: Long,
+        jsonRequest: String,
+        listener: NativeStreamListener
+    ): Int
+
     private const val TAG = "NativeCausalLm"
 }

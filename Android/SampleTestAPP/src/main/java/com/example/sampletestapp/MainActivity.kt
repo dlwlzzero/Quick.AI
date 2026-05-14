@@ -2177,17 +2177,10 @@ class MainActivity : AppCompatActivity() {
     private fun onOpenAIMessagesRunClicked() {
         val jsonText = openAIMessagesField.text.toString().trim()
         if (jsonText.isBlank()) { setStatus("Messages JSON is empty."); return }
-        val messages = parseOpenAIMessages(jsonText)
-        if (messages == null) { setStatus("Failed to parse messages JSON. Check format."); return }
-        if (messages.isEmpty()) { setStatus("No messages found in JSON."); return }
-        if (messages.last().role != QuickAiChatRole.USER) {
-            setStatus("Last message must be role=\"user\" to trigger inference.")
-            return
-        }
         outputText = ""
         outputView.text = ""
         streaming = true
-        setStatus("Running OpenAI messages (streaming)…")
+        setStatus("Running OpenAI JSON (streaming)…")
         mainHandler.post { rebuildUi() }
 
         val req = buildLoadRequest()
@@ -2203,7 +2196,7 @@ class MainActivity : AppCompatActivity() {
                     mainHandler.post { outputView.append(text) }
                 }
                 override fun onDone() {
-                    streaming = false; setStatus("OpenAI messages done.")
+                    streaming = false; setStatus("OpenAI JSON done.")
                     mainHandler.post { rebuildUi() }
                 }
                 override fun onError(error: QuickAiError, message: String?) {
@@ -2212,7 +2205,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             try {
-                when (val r = e.runWithMessagesStreaming(messages, sink)) {
+                // Use runWithJsonStreaming to pass JSON directly to chat template
+                // This supports messages, tools, functions, and all OpenAI format fields
+                when (val r = e.runWithJsonStreaming(jsonText, sink)) {
                     is BackendResult.Ok -> {
                         streaming = false
                         setStatus("Done.")
