@@ -37,7 +37,7 @@ echo "[3/6] Installing Android libraries for APK..."
 # 4. Deploy Prebuilt Libraries
 # ==========================================================
 echo "[4/6] Copying prebuilt libraries to QuickDotAI project..."
-PREBUILT_DIR="./nntrainer/Applications/QuickAI/QuickDotAI/prebuilt_libs"
+PREBUILT_DIR="./Android/QuickDotAI/prebuilt_libs"
 
 # Ensure destination directory exists
 mkdir -p "${PREBUILT_DIR}"
@@ -50,7 +50,7 @@ echo "      Libraries copied to: ${PREBUILT_DIR}"
 # 5. Build and Install APK
 # ==========================================================
 echo "[5/6] Building and installing APK..."
-cd ./nntrainer/Applications/QuickAI/
+cd ./Android/
 ./gradlew ":${APK_APPLICATION}:installDebug"
 
 # ==========================================================
