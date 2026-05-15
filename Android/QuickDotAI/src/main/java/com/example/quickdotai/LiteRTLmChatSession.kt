@@ -37,6 +37,7 @@
 package com.example.quickdotai
 
 import android.util.Log
+import com.google.ai.edge.litertlm.Channel
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
@@ -131,11 +132,13 @@ internal class LiteRTLmChatSession(
             lastRunDurationMs = (System.nanoTime() - startNs) / 1_000_000.0
 
             val output = response.toString()
+            val reasoning = response.channels[THOUGHT_CHANNEL_NAME]?.takeIf { it.isNotBlank() }
             Log.i(TAG, "run($sessionId): completed in ${lastRunDurationMs.toLong()} ms")
 
             BackendResult.Ok(
                 QuickAiChatResult(
                     content = output,
+                    reasoning = reasoning,
                     metrics = PerformanceMetrics(totalDurationMs = lastRunDurationMs)
                 )
             )
@@ -183,6 +186,7 @@ internal class LiteRTLmChatSession(
 
         val latch = CountDownLatch(1)
         val accumulated = StringBuilder()
+        val reasoningAccumulated = StringBuilder()
         var terminalError: BackendResult.Err? = null
         val startNs = System.nanoTime()
 
@@ -199,6 +203,16 @@ internal class LiteRTLmChatSession(
                     if (delta.isNotEmpty()) {
                         accumulated.append(delta)
                         sink.onDelta(delta)
+                    }
+                    val reasoning = message.channels[THOUGHT_CHANNEL_NAME].orEmpty()
+                    val reasoningDelta = if (reasoning.startsWith(reasoningAccumulated.toString())) {
+                        reasoning.substring(reasoningAccumulated.length)
+                    } else {
+                        reasoning
+                    }
+                    if (reasoningDelta.isNotEmpty()) {
+                        reasoningAccumulated.append(reasoningDelta)
+                        sink.onReasoningDelta(reasoningDelta)
                     }
                 } catch (t: Throwable) {
                     Log.w(TAG, "runStreaming($sessionId): onMessage threw", t)
@@ -254,6 +268,7 @@ internal class LiteRTLmChatSession(
             BackendResult.Ok(
                 QuickAiChatResult(
                     content = output,
+                    reasoning = reasoningAccumulated.toString().takeIf { it.isNotEmpty() },
                     metrics = PerformanceMetrics(totalDurationMs = lastRunDurationMs)
                 )
             )
@@ -610,6 +625,9 @@ internal class LiteRTLmChatSession(
         private const val FALLBACK_TEMPERATURE = 1.0
         private const val FALLBACK_TOP_K = 40
         private const val FALLBACK_TOP_P = 0.95
+        private const val THOUGHT_CHANNEL_NAME = "thought"
+        private const val THOUGHT_CHANNEL_START = "<|channel>thought"
+        private const val THOUGHT_CHANNEL_END = "<channel|>"
 
         /**
          * Build a LiteRT-LM [Conversation] from a [QuickAiChatSessionConfig]
@@ -635,11 +653,13 @@ internal class LiteRTLmChatSession(
         ): Conversation {
             val sysInstruction = config?.systemInstruction?.takeIf { it.isNotBlank() }
             val samplerConfig = buildSamplerConfig(config?.sampling)
+            val channels = buildConversationChannels(config?.chatTemplateKwargs)
 
             // Skip ConversationConfig entirely when nothing is configured
             // so LiteRT-LM uses its own engine/model defaults.
             if (sysInstruction == null &&
                 samplerConfig == null &&
+                channels == null &&
                 initialMessages.isEmpty()
             ) {
                 return engine.createConversation()
@@ -650,15 +670,32 @@ internal class LiteRTLmChatSession(
                     sysInstruction?.let { Contents.of(it) },
                 initialMessages = initialMessages,
                 samplerConfig = samplerConfig,
+                channels = channels,
             )
             Log.i(
                 TAG,
                 "createConversationFromConfig: " +
                     "sysInstruction=${sysInstruction?.take(60)}, " +
                     "samplerConfig=$samplerConfig, " +
-                    "initialMessages=${initialMessages.size}"
+                    "initialMessages=${initialMessages.size}, " +
+                    "channels=${channels?.joinToString { it.channelName } ?: "none"}"
             )
             return engine.createConversation(convConfig)
+        }
+
+        private fun buildConversationChannels(
+            kwargs: QuickAiChatTemplateKwargs?
+        ): List<Channel>? {
+            if (kwargs?.enableThinking != true) {
+                return null
+            }
+            return listOf(
+                Channel(
+                    channelName = THOUGHT_CHANNEL_NAME,
+                    start = THOUGHT_CHANNEL_START,
+                    end = THOUGHT_CHANNEL_END,
+                )
+            )
         }
 
         /**

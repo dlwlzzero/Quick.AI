@@ -292,8 +292,7 @@ data class QuickAiChatSamplingConfig(
 /**
  * @brief Template keyword arguments forwarded to the chat template
  * renderer. [enableThinking] controls whether the model's "thinking"
- * prompt preamble is activated. The response schema is unchanged —
- * no separate reasoning field is introduced.
+ * prompt preamble is activated.
  */
 @Serializable
 data class QuickAiChatTemplateKwargs(
@@ -334,6 +333,7 @@ data class QuickAiChatMessage(
  */
 data class QuickAiChatResult(
     val content: String,
+    val reasoning: String? = null,
     val metrics: PerformanceMetrics? = null
 )
 
