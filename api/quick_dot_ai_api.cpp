@@ -96,7 +96,6 @@ static std::mutex g_registry_mutex;
 static bool g_use_chat_template = true;
 static bool g_verbose = false;
 static std::string g_last_output = "";
-static double g_initialization_duration_ms = 0.0;
 static std::optional<causallm::ChatTemplate> g_chat_template;
 static std::string g_formatted_template;
 static std::string g_chat_template_name = "default";
@@ -957,7 +956,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
         g_use_chat_template = top_nntr["use_chat_template"].get<bool>();
       }
 
-      LOGD("[DEBUG] load_into_handle: abs_model_dir = %d %d %d %d %d %d",
+      LOGD("[DEBUG] load_into_handle: abs_model_dir = %d %d %d %d %zu %zu",
            top_nntr.contains("architectures"),
            top_nntr["architectures"].is_array(),
            top_nntr.contains("model_dirs"), top_nntr["model_dirs"].is_array(),
@@ -1062,11 +1061,12 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
           if (causallm::ChatTemplate::Exists(sub_dir)) {
             try {
               g_chat_template = causallm::ChatTemplate::Load(sub_dir);
-              std::cout
-                << "[Info] Chat template loaded from " << sub_dir << std::endl;
+              std::cout << "[Info] Chat template loaded from " << sub_dir
+                        << std::endl;
             } catch (const std::exception &e) {
               std::cerr << "[Warning] Chat template load failed: " << e.what()
-                        << ". Falling back to hardcoded templates." << std::endl;
+                        << ". Falling back to hardcoded templates."
+                        << std::endl;
               g_chat_template.reset();
             }
           }
@@ -1081,7 +1081,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
                      finish_init - start_init)
                      .count();
         LOGD("[DEBUG] load_into_handle: MULTI-MODEL SUCCESS "
-             "(%zu models, %ld ms e2e)",
+             "(%zu models, %lld ms e2e)",
              h.models.size(), e2e);
         return CAUSAL_LM_ERROR_NONE;
       }
@@ -1115,12 +1115,15 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
         g_chat_template = causallm::ChatTemplate::Load(abs_model_dir);
         LOGD("[Info] Chat template loaded from %s", abs_model_dir.c_str());
       } catch (const std::exception &e) {
-        LOGE("[Warning] Chat template load failed: %s. Falling back to hardcoded templates.", e.what());
+        LOGE("[Warning] Chat template load failed: %s. Falling back to "
+             "hardcoded templates.",
+             e.what());
         g_chat_template.reset();
       }
     } else {
       g_chat_template.reset();
-      LOGE("[Warning] No chat template found in %s. Using hardcoded chat templates.",
+      LOGE("[Warning] No chat template found in %s. Using hardcoded chat "
+           "templates.",
            abs_model_dir.c_str());
     }
 
@@ -1208,7 +1211,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       static_cast<double>(init_duration.count()));
     h.initialized = true;
 
-    LOGD("[DEBUG] load_into_handle: SINGLE SUCCESS (init took %ld ms)",
+    LOGD("[DEBUG] load_into_handle: SINGLE SUCCESS (init took %lld ms)",
          init_duration.count());
   } catch (...) {
     // RTTI may not match across shared libraries — query the current
@@ -1352,23 +1355,50 @@ convertMessages(const CausalLMChatMessage *messages, size_t num_messages) {
 
 /**
  * @brief Apply chat template to messages with hardcoded fallback
+ *
+ * @param model_dir Optional model directory to load tokenizer_config.json
+ *        from if g_chat_template is not already loaded. This ensures
+ *        Gauss models (and any other model) use their tokenizer's
+ *        chat template when available.
  */
-static std::string
-apply_chat_template_messages(const std::string &architecture,
-                             const std::vector<ChatMessage> &messages,
-                             bool add_generation_prompt) {
+static std::string apply_chat_template_messages(
+  const std::string &architecture, const std::vector<ChatMessage> &messages,
+  bool add_generation_prompt, const std::string &model_dir = "") {
+  // If g_chat_template is not loaded but a model_dir is provided,
+  // try loading tokenizer_config.json from that directory at run time.
+  if (!g_chat_template && !model_dir.empty()) {
+    std::string tc_path = model_dir + "/tokenizer_config.json";
+    if (check_file_exists(tc_path)) {
+      try {
+        g_chat_template = causallm::ChatTemplate::Load(model_dir);
+        if (g_chat_template) {
+          LOGD("[Info] Chat template loaded on-demand from %s",
+               model_dir.c_str());
+        } else {
+          LOGE("[Warning] tokenizer_config.json found in %s but could not be "
+               "loaded.",
+               model_dir.c_str());
+        }
+      } catch (const std::exception &e) {
+        LOGE("[Warning] Failed to load chat template from %s: %s",
+             model_dir.c_str(), e.what());
+      }
+    } else {
+      LOGE("[Warning] tokenizer_config.json not found in %s",
+           model_dir.c_str());
+    }
+  }
+
   // Use Enhanced Chat Template if available
   if (g_chat_template) {
     nlohmann::json request;
     request["messages"] = nlohmann::json::array();
     for (const auto &msg : messages) {
-      request["messages"].push_back({
-        {"role", msg.role},
-        {"content", msg.content}
-      });
+      request["messages"].push_back(
+        {{"role", msg.role}, {"content", msg.content}});
     }
     request["add_generation_prompt"] = add_generation_prompt;
-    
+
     try {
       return g_chat_template->apply(request);
     } catch (const std::exception &e) {
@@ -1452,8 +1482,7 @@ ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
     // Debug: print messages before convertMessages
     LOGD("[DEBUG] applyChatTemplate: num_messages=%zu", num_messages);
     for (size_t i = 0; i < num_messages; ++i) {
-      LOGD("[DEBUG] applyChatTemplate: messages[%zu] role='%s' content='%s'",
-           i,
+      LOGD("[DEBUG] applyChatTemplate: messages[%zu] role='%s' content='%s'", i,
            messages[i].role ? messages[i].role : "(null)",
            messages[i].content ? messages[i].content : "(null)");
     }
@@ -1461,8 +1490,10 @@ ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
     auto chat_messages = convertMessages(messages, num_messages);
     std::string arch =
       h.architectures.empty() ? std::string() : h.architectures[0];
-    g_formatted_template =
-      apply_chat_template_messages(arch, chat_messages, add_generation_prompt);
+    std::string model_dir =
+      h.model_dirs.empty() ? std::string() : h.model_dirs[0];
+    std::string formattedInput = apply_chat_template_messages(
+      arch, chat_messages, add_generation_prompt, model_dir);
 
     *formattedText = g_formatted_template.c_str();
   } catch (const std::exception &e) {
@@ -1484,15 +1515,62 @@ ErrorCode runModelHandleWithMessages(CausalLmHandle handle,
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
-  const char *formattedInput = nullptr;
-  ErrorCode err = applyChatTemplate(messages, num_messages,
-                                    add_generation_prompt, &formattedInput);
-  if (err != CAUSAL_LM_ERROR_NONE) {
-    return err;
+  auto &h = *handle;
+  std::lock_guard<std::mutex> lock(h.mtx);
+
+  if (!h.initialized || h.models.empty() || !h.models[0]) {
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
-  return run_on_handle(*handle, formattedInput, outputText,
-                       /*input_already_formatted=*/true);
+  try {
+    // Enforce tokenizer_config.json for the messages-based API.
+    // All native models require a chat template to format messages.
+    std::string model_dir =
+      h.model_dirs.empty() ? std::string() : h.model_dirs[0];
+    if (model_dir.empty()) {
+      LOGE("[ERROR] runModelHandleWithMessages: model_dir is empty");
+      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+    }
+
+    std::string tc_path = model_dir + "/tokenizer_config.json";
+    if (!check_file_exists(tc_path)) {
+      LOGE("[ERROR] runModelHandleWithMessages: "
+           "tokenizer_config.json not found in %s.  "
+           "The messages-based API requires a chat template.",
+           model_dir.c_str());
+      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+    }
+
+    // Load chat template on-demand if not already cached.
+    if (!g_chat_template) {
+      try {
+        g_chat_template = causallm::ChatTemplate::Load(model_dir);
+        if (!g_chat_template) {
+          LOGE("[ERROR] runModelHandleWithMessages: "
+               "Failed to load chat template from %s",
+               model_dir.c_str());
+          return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+        }
+      } catch (const std::exception &e) {
+        LOGE("[ERROR] runModelHandleWithMessages: "
+             "Exception loading chat template from %s: %s",
+             model_dir.c_str(), e.what());
+        return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+      }
+    }
+
+    auto chat_messages = convertMessages(messages, num_messages);
+    std::string arch =
+      h.architectures.empty() ? std::string() : h.architectures[0];
+    std::string formattedInput = apply_chat_template_messages(
+      arch, chat_messages, add_generation_prompt, model_dir);
+
+    return run_on_handle(h, formattedInput.c_str(), outputText,
+                         /*input_already_formatted=*/true);
+  } catch (const std::exception &e) {
+    LOGE("Exception in runModelHandleWithMessages: %s", e.what());
+    return CAUSAL_LM_ERROR_UNKNOWN;
+  }
 }
 /*============================================================================
  * Legacy non-handle API implementation
@@ -1640,7 +1718,7 @@ static ErrorCode run_model_streaming_on_handle(CausalLmModel &h,
     m->run(std::wstring(input.begin(), input.end()), false, L"", L"",
            g_verbose);
 #else
-      m->run(input, false, "", "", true);
+    m->run(input, false, "", "", true);
 #endif
 
     h.last_output = m->getOutput(0);
@@ -1658,7 +1736,7 @@ static ErrorCode run_model_streaming_on_handle(CausalLmModel &h,
       LOGD("[PERF]   generation_tokens: %u", im.generation_tokens);
       LOGD("[PERF]   generation_duration_ms: %.2f", im.generation_duration_ms);
       LOGD("[PERF]   total_duration_ms: %.2f", im.total_duration_ms);
-      LOGD("[PERF]   peak_memory_kb: %.2f", im.peak_memory_kb);
+      LOGD("[PERF]   peak_memory_kb: %zu", im.peak_memory_kb);
       LOGD("[PERF]   initialization_duration_ms: %.2f", total_init);
 
       if (im.prefill_duration_ms > 0) {
@@ -2012,8 +2090,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   return execute_multimodal_llm(h, llm, image_embeds, input, callback,
                                 user_data);
 #else
-    LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
-    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
 }
 
@@ -2134,9 +2212,9 @@ ErrorCode runMultimodalHandleWithMessages(
   *outputText = h.last_output.c_str();
   return CAUSAL_LM_ERROR_NONE;
 #else
-    LOGE("[DEBUG] runMultimodalHandleWithMessages: built without ENABLE_QNN");
-    *outputText = nullptr;
-    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  LOGE("[DEBUG] runMultimodalHandleWithMessages: built without ENABLE_QNN");
+  *outputText = nullptr;
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
 }
 
@@ -2171,21 +2249,57 @@ ErrorCode runModelHandleWithMessagesStreaming(
   try {
     LOGD("[DEBUG] runModelHandleWithMessagesStreaming: Formatting messages...");
 
-    const char *formattedInput = nullptr;
-    ErrorCode err = applyChatTemplate(messages, num_messages,
-                                      add_generation_prompt, &formattedInput);
-    if (err != CAUSAL_LM_ERROR_NONE) {
-      return err;
+    // Enforce tokenizer_config.json for the messages-based API.
+    // All native models require a chat template to format messages.
+    std::string model_dir =
+      h.model_dirs.empty() ? std::string() : h.model_dirs[0];
+    if (model_dir.empty()) {
+      LOGE("[ERROR] runModelHandleWithMessagesStreaming: model_dir is empty");
+      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
     }
 
+    std::string tc_path = model_dir + "/tokenizer_config.json";
+    if (!check_file_exists(tc_path)) {
+      LOGE("[ERROR] runModelHandleWithMessagesStreaming: "
+           "tokenizer_config.json not found in %s.  "
+           "The messages-based API requires a chat template.",
+           model_dir.c_str());
+      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+    }
+
+    // Load chat template on-demand if not already cached.
+    if (!g_chat_template) {
+      try {
+        g_chat_template = causallm::ChatTemplate::Load(model_dir);
+        if (!g_chat_template) {
+          LOGE("[ERROR] runModelHandleWithMessagesStreaming: "
+               "Failed to load chat template from %s",
+               model_dir.c_str());
+          return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+        }
+      } catch (const std::exception &e) {
+        LOGE("[ERROR] runModelHandleWithMessagesStreaming: "
+             "Exception loading chat template from %s: %s",
+             model_dir.c_str(), e.what());
+        return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+      }
+    }
+
+    // Use the *actual* handle's architecture so Gauss-specific
+    // <|turn_start|> / <|turn_end|> markers are generated.
+    auto chat_messages = convertMessages(messages, num_messages);
+    std::string arch =
+      h.architectures.empty() ? std::string() : h.architectures[0];
+    std::string formattedInput = apply_chat_template_messages(
+      arch, chat_messages, add_generation_prompt, model_dir);
+
     LOGD("[DEBUG]   raw messages count: %zu", num_messages);
-    LOGD("[DEBUG]   formatted input length: %zu", strlen(formattedInput));
-    LOGD("[DEBUG]   formatted input: %s", formattedInput);
+    LOGD("[DEBUG]   formatted input length: %zu", formattedInput.length());
+    LOGD("[DEBUG]   formatted input: %s", formattedInput.c_str());
 
     LOGD("[DEBUG] runModelHandleWithMessagesStreaming: Calling internal helper "
          "directly...");
-    return run_model_streaming_on_handle(h, std::string(formattedInput),
-                                         callback, user_data,
+    return run_model_streaming_on_handle(h, formattedInput, callback, user_data,
                                          /*input_already_formatted=*/true);
   } catch (const std::exception &e) {
     LOGE("[DEBUG] runModelHandleWithMessagesStreaming: Exception caught: %s",
@@ -2251,9 +2365,9 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
  *============================================================================*/
 
 ErrorCode runModelHandleWithJsonStreaming(CausalLmHandle handle,
-                                           const char *jsonRequest,
-                                           CausalLmTokenCallback callback,
-                                           void *user_data) {
+                                          const char *jsonRequest,
+                                          CausalLmTokenCallback callback,
+                                          void *user_data) {
   LOGD("[DEBUG] runModelHandleWithJsonStreaming: START");
   LOGD("[DEBUG]   handle: %p", (void *)handle);
   LOGD("[DEBUG]   jsonRequest length: %zu",
@@ -2283,13 +2397,15 @@ ErrorCode runModelHandleWithJsonStreaming(CausalLmHandle handle,
     // The chat_template.apply() method handles messages, tools, functions, etc.
     std::string formattedInput;
     if (g_chat_template.has_value()) {
-      LOGD("[DEBUG] runModelHandleWithJsonStreaming: Applying chat template...");
+      LOGD(
+        "[DEBUG] runModelHandleWithJsonStreaming: Applying chat template...");
       formattedInput = g_chat_template->apply(request);
       LOGD("[DEBUG]   Formatted input length: %zu", formattedInput.length());
-      LOGD("[DEBUG]   Formatted input preview: %.100s%s", formattedInput.c_str(),
-           formattedInput.length() > 100 ? "..." : "");
+      LOGD("[DEBUG]   Formatted input preview: %.100s%s",
+           formattedInput.c_str(), formattedInput.length() > 100 ? "..." : "");
     } else {
-      LOGE("[DEBUG] runModelHandleWithJsonStreaming: Chat template not available");
+      LOGE(
+        "[DEBUG] runModelHandleWithJsonStreaming: Chat template not available");
       return CAUSAL_LM_ERROR_UNSUPPORTED;
     }
 
