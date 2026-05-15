@@ -39,6 +39,8 @@
 #include "qwen3_causallm.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
+#include "xgrammar_manager.h"
+#include "xgrammar_wrapper.h"
 #include <factory.h>
 #ifdef ENABLE_QNN
 #include "gauss3_6_qnn.h"
@@ -709,6 +711,35 @@ ErrorCode setOptions(Config config) {
   return CAUSAL_LM_ERROR_NONE;
 }
 
+ErrorCode loadToolset(const char *toolset_path,
+                      tokenizers::Tokenizer *tokenizer,
+                      unsigned int vocab_size) {
+  if (toolset_path == nullptr) {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+  if (tokenizer == nullptr) {
+    std::cerr << "Error: Tokenizer is null" << std::endl;
+    return CAUSAL_LM_ERROR_UNKNOWN;
+  }
+
+  LOGD("[LoadToolset] load toolset path: %s", toolset_path);
+
+  try {
+    // Load and pre-compile all tool grammars
+    bool success = causallm::XGrammarManager::Instance().loadToolset(
+      std::string(toolset_path), tokenizer, vocab_size);
+    LOGD("causallm::XGrammarManager::loadToolset() done");
+    if (!success) {
+      return CAUSAL_LM_ERROR_UNKNOWN;
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Exception in loadToolset: " << e.what() << std::endl;
+    return CAUSAL_LM_ERROR_UNKNOWN;
+  }
+
+  return CAUSAL_LM_ERROR_NONE;
+}
+
 ErrorCode registerModelArchitecture(const char *arch_name,
                                     ModelArchConfig config) {
   if (arch_name == nullptr)
@@ -1211,6 +1242,18 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       static_cast<double>(init_duration.count()));
     h.initialized = true;
 
+    // XGrammarManager Initalize
+    auto *tokenizer = h.models[0]->getTokenizer();
+    unsigned int vocab_size = h.models[0]->getVocabSize();
+    causallm::XGrammarManager::Instance().initialize(tokenizer, vocab_size);
+
+    // XGrammarManager Toolset Load
+    std::string default_toolset_path = abs_model_dir + "/Toolset.json";
+    bool toolset_file_exists = check_file_exists(default_toolset_path);
+    if (toolset_file_exists) {
+      loadToolset(default_toolset_path.c_str(), tokenizer, vocab_size);
+    }
+
     LOGD("[DEBUG] load_into_handle: SINGLE SUCCESS (init took %lld ms)",
          init_duration.count());
   } catch (...) {
@@ -1572,6 +1615,56 @@ ErrorCode runModelHandleWithMessages(CausalLmHandle handle,
     return CAUSAL_LM_ERROR_UNKNOWN;
   }
 }
+
+ErrorCode runModelHandleWithTool(CausalLmHandle handle,
+                                 const char *inputTextPrompt,
+                                 const char **outputText, const char *tool_name,
+                                 const char *tool_schema) {
+  if (handle == nullptr) {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+
+  auto &h = *handle;
+
+  causallm::XGrammar *grammar = nullptr;
+  // Step 1: Check if tool exists in XGrammarManager
+  if (causallm::XGrammarManager::Instance().hasTool(tool_name)) {
+    LOGD("[runModelWithToolHandle] Tool '%s' found in XGrammarManager, using "
+         "existing grammar",
+         tool_name);
+    grammar = causallm::XGrammarManager::Instance().getGrammar(tool_name);
+  } else {
+    // Step 2: Tool doesn't exist, create and register it
+    if (tool_schema == nullptr) {
+      LOGE("Error: Tool '%s' not found and no schema provided", tool_name);
+      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+    }
+
+    LOGD("[runModelWithToolHandle] Tool '%s' not found, creating new grammar",
+         tool_name);
+    bool registered = causallm::XGrammarManager::Instance().registerTool(
+      tool_name, tool_schema);
+
+    if (!registered) {
+      LOGE("Error: Failed to register tool '%s'", tool_name);
+      return CAUSAL_LM_ERROR_UNKNOWN;
+    }
+
+    grammar = causallm::XGrammarManager::Instance().getGrammar(tool_name);
+  }
+
+  if (grammar == nullptr) {
+    LOGE("Error: Failed to get grammar for tool '%s'", tool_name);
+    return CAUSAL_LM_ERROR_UNKNOWN;
+  }
+
+  // Run inference using the handle
+  h.models[0]->setXGrammar(grammar);
+  ErrorCode err = run_on_handle(*handle, inputTextPrompt, outputText);
+  h.models[0]->resetXGrammar();
+  return err;
+}
+
 /*============================================================================
  * Legacy non-handle API implementation
  *============================================================================*/
@@ -2217,7 +2310,7 @@ ErrorCode runMultimodalHandleWithMessages(
   return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
 }
-
+<<<<
 /*============================================================================
  * OpenAI messages streaming variants
  *============================================================================*/

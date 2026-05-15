@@ -11,6 +11,7 @@
 #include "gauss3_6_qnn.h"
 #include "android_memory_allocator.h"
 #include "generate_qnn_utils.h"
+#include <xgrammar/xgrammar_wrapper.h>
 
 #include <llm_util.hpp>
 #include <streamer.h>
@@ -345,19 +346,6 @@ void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
   context_size = cfg["context_size"].get<int>();
   pos_dim = cfg["pos_dim"].get<int>();
   head_dim = cfg["head_dim"].get<int>();
-
-  // Read generation_config parameters
-  padding_token = generation_cfg["padding_token"].get<int>();
-  eos_token = generation_cfg["eos_token_id"].get<int>();
-  temperature = generation_cfg["temperature"].get<float>();
-  top_k = generation_cfg["top_k"].get<int>();
-  top_p = generation_cfg["top_p"].get<float>();
-  repetition_penalty = generation_cfg["repetition_penalty"].get<float>();
-  logit_scale = generation_cfg["logit_scale"].get<float>();
-  logit_offset = generation_cfg["logit_offset"].get<int>();
-
-  // Read optional lora_path
-  lora_path = nntr_cfg.value("lora_path", "");
 }
 
 void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
@@ -546,24 +534,24 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
                    repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
-    if (token == eos_token) {
+    if (token == eos_token || token == padding_token) {
       append_generation_token_to_kv_cache(token);
       break;
-    } else {
-      std::string decoded= tokenizer->Decode({token});
-      LOGD("%d : %s",token, decoded.c_str());
-      // Stream the token if a streamer is attached
-      if (streamer_) {
-        if (streamer_put(streamer_, decoded.c_str()) != 0) {
-          // User requested cancellation via streamer
-          stop_requested_.store(true, std::memory_order_release);
-          break;
-        }
-      } else if (log_output) {
-        std::cout << decoded << std::flush;
-      }
-      input.push_back(token);
     }
+
+    std::string decoded= tokenizer->Decode({token});
+    LOGD("%d : %s",token, decoded.c_str());
+    // Stream the token if a streamer is attached
+    if (streamer_) {
+      if (streamer_put(streamer_, decoded.c_str()) != 0) {
+        // User requested cancellation via streamer
+        stop_requested_.store(true, std::memory_order_release);
+        break;
+      }
+    } else if (log_output) {
+      std::cout << decoded << std::flush;
+    }
+    input.push_back(token);
   }
 
   // Notify the streamer that generation is complete

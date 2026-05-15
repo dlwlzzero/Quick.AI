@@ -1,3 +1,6 @@
 [submodule "nntrainer"]
 	path = nntrainer
 	url = https://github.com/nntrainer/nntrainer.git
+[submodule "xgrammar"]
+	path = xgrammar
+	url = https://github.com/mlc-ai/xgrammar.git

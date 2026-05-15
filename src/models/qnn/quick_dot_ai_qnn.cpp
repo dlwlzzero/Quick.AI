@@ -10,6 +10,8 @@
 #include "android_memory_allocator.h"
 #include "engine.h"
 #include "graph_parser.h"
+#include "generate_qnn_utils.h"
+#include <xgrammar/xgrammar_wrapper.h>
 
 #if defined(_WIN32)
 #include <codecvt>
@@ -280,6 +282,44 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
     LOGD("---------------- embedding_file_name : %s",
          embedding_file_name.c_str());
   }
+
+  // Read generation_config parameters
+  padding_token = generation_cfg["padding_token"].get<int>();
+  eos_token = generation_cfg["eos_token_id"].get<int>();
+  temperature = generation_cfg["temperature"].get<float>();
+  top_k = generation_cfg["top_k"].get<int>();
+  top_p = generation_cfg["top_p"].get<float>();
+  repetition_penalty = generation_cfg["repetition_penalty"].get<float>();
+  logit_scale = generation_cfg["logit_scale"].get<float>();
+  logit_offset = generation_cfg["logit_offset"].get<int>();
+
+  // Read optional lora_path
+  lora_path = nntr_cfg.value("lora_path", "");
+}
+
+int causallm::Quick_Dot_AI_QNN::sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
+                                      float logit_scale, int logit_offset, float repetition_penalty,
+                                      float temperature, float top_p, int top_k) {
+  // Apply grammar mask if xgrammar_ is provided (from base class)
+  if (xgrammar_ != nullptr && xgrammar_->isGrammarEnabled()) {
+    xgrammar_->applyGrammarMask(pointer, vocab_size, logit_scale, logit_offset);
+  }
+
+  // Call the free function sample from generate_qnn_utils.cpp
+  int token = ::sample(pointer, length, tokens, number_of_tokens, logit_scale, logit_offset,
+                       repetition_penalty, temperature, top_p, top_k);
+  
+  if (token == eos_token || token == padding_token) {
+    return token;
+  }
+
+  // Accept token in grammar matcher if xgrammar_ is provided (from base class)
+  if (xgrammar_ != nullptr && xgrammar_->isGrammarEnabled()) {
+    xgrammar_->getGrammarMatcher()->AcceptToken(token);
+    // Update bitmask for next token
+    xgrammar_->getGrammarMatcher()->FillNextTokenBitmask(&xgrammar_->getBitmaskTensor());
+  }
+  return token;
 }
 
 void causallm::Quick_Dot_AI_QNN::constructModel() {

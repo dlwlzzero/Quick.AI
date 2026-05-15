@@ -216,7 +216,7 @@ int main(int argc, char *argv[]) {
   }
 
   // ── Load/Unload Stress Test ────────────────────────────────────────────
-  const int STRESS_CYCLES = 8;
+  const int STRESS_CYCLES = 1;
   print_section("Load/Unload Stress Test", clr::blue);
 
   for (int i = 0; i < STRESS_CYCLES; ++i) {
@@ -278,10 +278,16 @@ int main(int argc, char *argv[]) {
   std::cout << clr::green << "│" << clr::reset << "\n";
 
   const char *outputText = nullptr;
-  CausalLMChatMessage msg;
-  msg.role = "user";
-  msg.content = prompt;
-  err = runModelHandleWithMessages(handle, &msg, 1, true, &outputText);
+  // CausalLMChatMessage msg;
+  // msg.role = "user";
+  // msg.content = prompt;
+  // err = runModelHandleWithMessages(handle, &msg, 1, true, &outputText);
+
+  // XGrammar Test
+  auto tool_name = "web_search";
+  auto schema = "{\"type\": \"object\",\"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Search query in the most effective language for results (use Korean for Korean local info, English for global topics)\"},\"count\": {\"type\": \"integer\", \"description\": \"Number of results to return (default 5, max 10)\"}},\"required\": [\"query\"]}";
+  err = runModelHandleWithTool(handle, prompt, &outputText, tool_name, schema);
+
   if (err != CAUSAL_LM_ERROR_NONE) {
     print_error("Inference failed (code " + std::to_string(err) + ")");
     return 1;

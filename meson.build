@@ -115,6 +115,20 @@ endforeach
 # Add minja include path for chat template support
 causallm_inc_args += ['-I' + causallm_root / 'third_party' / 'minja' / 'include']
 
+# ── XGrammar ──────────────────────────────────────────────────
+causallm_inc_args += ['-I' + project_root / 'src' / 'xgrammar']
+# Add xgrammar library include paths
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / 'include']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'picojson']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'dlpack' / 'include']
+
+# ── XGrammar ──────────────────────────────────────────────────
+causallm_inc_args += ['-I' + project_root / 'src' / 'xgrammar']
+# Add xgrammar library include paths
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / 'include']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'picojson']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'dlpack' / 'include']
+
 # ── Tokenizer: platform-specific ────────────────────────────────────────
 if is_android
   tokenizer_path = causallm_root / 'lib' / 'libtokenizers_android_c.a'

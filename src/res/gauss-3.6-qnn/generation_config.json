@@ -3,7 +3,7 @@
   "top_k": 40,
   "top_p": 0.8,
   "temperature": 1.0,
-  "eos_token_id": 37,
+  "eos_token_id": 0,
   "bos_token_id": 37,
   "padding_token": 37,
   "repetition_penalty": 1.0,

@@ -79,6 +79,13 @@ public:
   void constructModel() override;
 
   /**
+   * @brief Sample token with XGrammar
+   */
+  int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
+             float logit_scale, int logit_offset, float repetition_penalty,
+             float temperature, float top_p, int top_k);
+
+  /**
    * @brief Attach (or detach) a BaseStreamer to intercept per-token output.
    *        Passing nullptr detaches any currently-attached streamer.
    */
@@ -141,6 +148,19 @@ protected:
 
   // config
   int vocab_size;
+
+  // generation_config
+  int padding_token;
+  int eos_token;
+  int top_k;
+  float top_p;
+  float temperature;
+  float repetition_penalty;
+  float logit_scale;
+  int logit_offset;
+
+  // LoRA path (optional)
+  std::string lora_path;
 
   // Model map, key: graph name, value: QNN model info
   std::map<std::string, QNNModelInfo> models;
