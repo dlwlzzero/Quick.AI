@@ -376,6 +376,42 @@ interface QuickDotAI {
     }
 
     /**
+     * @brief Streaming inference with OpenAI JSON format.
+     *
+     * Accepts a JSON string in OpenAI format and processes it through the
+     * chat template. Supports messages, tools, functions, and all other
+     * fields recognized by minja chat template renderer.
+     *
+     * Example JSON input:
+     * ```
+     * {
+     *   "messages": [
+     *     {"role": "developer", "content": "..."},
+     *     {"role": "user", "content": "..."}
+     *   ],
+     *   "tools": [
+     *     {"type": "function", "function": {"name": "call", "description": "..."}}
+     *   ]
+     * }
+     * ```
+     *
+     * @param jsonRequest OpenAI format JSON string
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult<Unit> on completion
+     */
+    fun runWithJsonStreaming(
+        jsonRequest: String,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        val err = BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runWithJsonStreaming is not supported by engine '$kind'."
+        )
+        sink.onError(err.error, err.message)
+        return err
+    }
+
+    /**
      * @brief Release all resources. Idempotent — safe to call more
      * than once.
      */

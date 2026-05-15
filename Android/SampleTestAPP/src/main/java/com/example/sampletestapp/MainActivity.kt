@@ -81,6 +81,9 @@ import com.example.quickdotai.StreamSink
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -155,6 +158,22 @@ private val DARK = M3Tokens(
     successContainer = 0xFF124F24.toInt(),
     codeBg = 0xFF06040F.toInt(),
     codeFg = 0xFFCFBCFF.toInt(),
+)
+
+/**
+ * Models that must use the messages-based API for OpenAI streaming.
+ *
+ * - Gauss models need messages-based API for proper Gauss
+ *   <|turn_start|>/ <|turn_end|> markers in incremental prompts.
+ * - LiteRT-LM (GEMMA4) only supports messages-based API.
+ */
+private val MESSAGES_API_MODELS = setOf(
+    ModelId.GAUSS3_6_QNN,
+    ModelId.GAUSS3_8_QNN,
+    ModelId.GAUSS3_8_VISION_QNN,
+    ModelId.GAUSS3_8,
+    ModelId.GAUSS3_6,
+    ModelId.GEMMA4,
 )
 
 class MainActivity : AppCompatActivity() {
@@ -2153,7 +2172,16 @@ class MainActivity : AppCompatActivity() {
     private fun parseOpenAIMessages(jsonString: String): List<QuickAiChatMessage>? {
         return try {
             val json = Json { ignoreUnknownKeys = true; isLenient = true }
-            val jsonArray = json.parseToJsonElement(jsonString).jsonArray
+            val element = json.parseToJsonElement(jsonString)
+            
+            // Support both top-level array and {"messages": [...]} object
+            val jsonArray = when {
+                element is JsonArray -> element
+                element is JsonObject && element.containsKey("messages") -> 
+                    element["messages"]!!.jsonArray
+                else -> return null
+            }
+            
             val messages = mutableListOf<QuickAiChatMessage>()
             for (element in jsonArray) {
                 val obj = element.jsonObject
@@ -2177,17 +2205,10 @@ class MainActivity : AppCompatActivity() {
     private fun onOpenAIMessagesRunClicked() {
         val jsonText = openAIMessagesField.text.toString().trim()
         if (jsonText.isBlank()) { setStatus("Messages JSON is empty."); return }
-        val messages = parseOpenAIMessages(jsonText)
-        if (messages == null) { setStatus("Failed to parse messages JSON. Check format."); return }
-        if (messages.isEmpty()) { setStatus("No messages found in JSON."); return }
-        if (messages.last().role != QuickAiChatRole.USER) {
-            setStatus("Last message must be role=\"user\" to trigger inference.")
-            return
-        }
         outputText = ""
         outputView.text = ""
         streaming = true
-        setStatus("Running OpenAI messages (streaming)…")
+        setStatus("Running OpenAI JSON (streaming)…")
         mainHandler.post { rebuildUi() }
 
         val req = buildLoadRequest()
@@ -2203,7 +2224,7 @@ class MainActivity : AppCompatActivity() {
                     mainHandler.post { outputView.append(text) }
                 }
                 override fun onDone() {
-                    streaming = false; setStatus("OpenAI messages done.")
+                    streaming = false; setStatus("OpenAI JSON done.")
                     mainHandler.post { rebuildUi() }
                 }
                 override fun onError(error: QuickAiError, message: String?) {
@@ -2212,16 +2233,44 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             try {
-                when (val r = e.runWithMessagesStreaming(messages, sink)) {
-                    is BackendResult.Ok -> {
+                // Route based on model type:
+                // - Gauss models need messages-based API for Gauss <|turn_start|>/
+                //   <|turn_end|> markers in incremental prompts.
+                // - LiteRT-LM (GEMMA4) only supports messages-based API.
+                // - All others use JSON streaming for full OpenAI format support.
+                if (selectedModel in MESSAGES_API_MODELS) {
+                    val messages = parseOpenAIMessages(jsonText)
+                    if (messages == null) {
                         streaming = false
-                        setStatus("Done.")
+                        setStatus("Failed to parse messages JSON for Messages API.")
                         mainHandler.post { rebuildUi() }
+                        return@execute
                     }
-                    is BackendResult.Err -> {
-                        streaming = false
-                        setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
-                        mainHandler.post { rebuildUi() }
+                    when (val r = e.runWithMessagesStreaming(messages, sink)) {
+                        is BackendResult.Ok -> {
+                            streaming = false
+                            setStatus("Done.")
+                            mainHandler.post { rebuildUi() }
+                        }
+                        is BackendResult.Err -> {
+                            streaming = false
+                            setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+                            mainHandler.post { rebuildUi() }
+                        }
+                    }
+                } else {
+                    // Use runWithJsonStreaming for full OpenAI format support
+                    when (val r = e.runWithJsonStreaming(jsonText, sink)) {
+                        is BackendResult.Ok -> {
+                            streaming = false
+                            setStatus("Done.")
+                            mainHandler.post { rebuildUi() }
+                        }
+                        is BackendResult.Err -> {
+                            streaming = false
+                            setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+                            mainHandler.post { rebuildUi() }
+                        }
                     }
                 }
             } catch (t: Throwable) {

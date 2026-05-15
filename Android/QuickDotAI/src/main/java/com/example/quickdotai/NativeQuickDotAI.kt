@@ -418,6 +418,67 @@ class NativeQuickDotAI(
         }
     }
 
+    /**
+     * @brief Streaming inference with OpenAI JSON format.
+     *
+     * Accepts a JSON string in OpenAI format and processes it through the
+     * chat template. Supports messages, tools, functions, and all other
+     * fields recognized by minja chat template renderer.
+     *
+     * Example JSON input:
+     * ```
+     * {
+     *   "messages": [
+     *     {"role": "developer", "content": "..."},
+     *     {"role": "user", "content": "..."}
+     *   ],
+     *   "tools": [
+     *     {"type": "function", "function": {"name": "call", "description": "..."}}
+     *   ]
+     * }
+     * ```
+     *
+     * @param jsonRequest OpenAI format JSON string
+     * @param sink StreamSink for receiving streaming output
+     * @return BackendResult<Unit>
+     */
+    override fun runWithJsonStreaming(
+        jsonRequest: String,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        if (!loaded || handle == 0L) {
+            val err = BackendResult.Err(
+                QuickAiError.NOT_INITIALIZED,
+                "NativeQuickDotAI has not been loaded yet"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        return try {
+            val errorCode = NativeCausalLm.runModelHandleWithJsonStreamingNative(
+                handle = handle,
+                jsonRequest = jsonRequest,
+                listener = object : NativeCausalLm.NativeStreamListener {
+                    override fun onDelta(text: String) {
+                        sink.onDelta(text)
+                    }
+                }
+            )
+            if (errorCode != 0) {
+                val err = QuickAiError.fromNativeCode(errorCode)
+                sink.onError(err, "runModelHandleWithJsonStreaming failed (errorCode=$errorCode)")
+                BackendResult.Err(err, "runModelHandleWithJsonStreaming failed (errorCode=$errorCode)")
+            } else {
+                sink.onDone()
+                BackendResult.Ok(Unit)
+            }
+        } catch (t: Throwable) {
+            sink.onError(QuickAiError.INFERENCE_FAILED, t.message)
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
     override fun runMultimodalWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
         if (!loaded || handle == 0L) {
             return BackendResult.Err(
