@@ -123,7 +123,7 @@ bool qnn_starts_with(const std::string &value, const std::string &prefix) {
 int find_tensor_index_or_minus_one(const TensorInfoList &tensor_infos,
                                    const std::string &tensor_name) {
   for (size_t idx = 0; idx < tensor_infos.size(); idx++) {
-    if (tensor_infos[idx].first == tensor_name) {
+    if (tensor_infos[idx].name == tensor_name) {
       return static_cast<int>(idx);
     }
   }
@@ -183,7 +183,7 @@ std::vector<QnnKvOutputBinding> build_kv_output_bindings(
     const std::string &graph_name, int kv_per_layer) {
   std::vector<QnnKvOutputBinding> bindings;
   for (size_t idx = 0; idx < outputs.size(); idx++) {
-    const auto &name = outputs[idx].first;
+    const auto &name = outputs[idx].name;
     if (!qnn_starts_with(name, "past_")) {
       continue;
     }

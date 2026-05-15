@@ -15,8 +15,8 @@ GraphParser::~GraphParser() {}
 int GraphParser::find_tensor_index(const TensorInfoList &tensor_infos,
                                    const std::string &tensor_name) {
   int index = 0;
-  for (const auto &[name, info] : tensor_infos) {
-    if (name == tensor_name) {
+  for (const auto &info : tensor_infos) {
+    if (info.name == tensor_name) {
       return index;
     }
     index++;
@@ -30,7 +30,7 @@ int GraphParser::find_tensor_index(const TensorInfoList &tensor_infos,
 const TensorInfo &
 GraphParser::get_tensor_info_or_throw(const TensorInfoList &tensor_infos,
                                       const std::string &tensor_name) {
-  return tensor_infos[find_tensor_index(tensor_infos, tensor_name)].second;
+  return tensor_infos[find_tensor_index(tensor_infos, tensor_name)];
 }
 
 int GraphParser::get_named_tensor_elements_or_throw(
@@ -73,13 +73,11 @@ GraphInfo GraphParser::extractGraphInfo(const json &graph_object) {
   auto graph_outputs = graph_info_json["graphOutputs"];
 
   for (const auto &element : graph_inputs) {
-    auto tensor_info = extractTensorInfo(element);
-    graph_info.raw_inputs.push_back({tensor_info.name, tensor_info});
+    graph_info.raw_inputs.push_back(extractTensorInfo(element));
   }
 
   for (const auto &element : graph_outputs) {
-    auto tensor_info = extractTensorInfo(element);
-    graph_info.raw_outputs.push_back({tensor_info.name, tensor_info});
+    graph_info.raw_outputs.push_back(extractTensorInfo(element));
   }
 
   return graph_info;

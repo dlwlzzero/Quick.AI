@@ -645,11 +645,11 @@ void Gemma4_E2B_QNN::initialize() {
          std::vector<int> &offsets, std::vector<int> &model_indices) {
         std::map<int, std::tuple<uint16_t *, float, int>> by_index;
         for (size_t idx = 0; idx < gi.raw_inputs.size(); ++idx) {
-          const auto &[name, info] = gi.raw_inputs[idx];
+          const auto &info = gi.raw_inputs[idx];
           const std::string prefix = "per_layer_inputs_";
-          if (name.rfind(prefix, 0) != 0)
+          if (info.name.rfind(prefix, 0) != 0)
             continue;
-          int n = std::stoi(name.substr(prefix.size()));
+          int n = std::stoi(info.name.substr(prefix.size()));
           by_index[n] = std::make_tuple(std::get<uint16_t *>(inputs[idx]),
                                         info.scale, info.offset);
         }
@@ -762,7 +762,7 @@ void Gemma4_E2B_QNN::initialize() {
           generation_graph_info.raw_inputs, name);
       int pre_idx =
           find_tensor_index_or_minus_one(prefill_graph_info.raw_inputs, name);
-      const auto &gen_info = generation_graph_info.raw_inputs[gen_idx].second;
+      const auto &gen_info = generation_graph_info.raw_inputs[gen_idx];
       int size = GraphParser::get_tensor_size(gen_info);
 
       // Layer-specific zero-point byte.
@@ -784,7 +784,7 @@ void Gemma4_E2B_QNN::initialize() {
       generation_kv_index_by_name[name] = kv_input_index;
 
       if (pre_idx >= 0) {
-        const auto &pre_info = prefill_graph_info.raw_inputs[pre_idx].second;
+        const auto &pre_info = prefill_graph_info.raw_inputs[pre_idx];
         const bool is_key = starts_with(name, "past_key_");
         const int pre_row_length =
             is_key ? pre_info.dimensions.back()
@@ -853,7 +853,7 @@ void Gemma4_E2B_QNN::initialize() {
       continue;
     if (b.layer_index > 5 && b.layer_index != 14)
       continue;
-    const auto &info = prefill_graph_info.raw_outputs[b.output_index].second;
+    const auto &info = prefill_graph_info.raw_outputs[b.output_index];
     std::cout << "L" << b.layer_index << "=[";
     for (size_t i = 0; i < info.dimensions.size(); ++i) {
       if (i)
@@ -868,7 +868,7 @@ void Gemma4_E2B_QNN::initialize() {
       continue;
     if (b.layer_index > 5 && b.layer_index != 14)
       continue;
-    const auto &info = prefill_graph_info.raw_outputs[b.output_index].second;
+    const auto &info = prefill_graph_info.raw_outputs[b.output_index];
     std::cout << "L" << b.layer_index << "=[";
     for (size_t i = 0; i < info.dimensions.size(); ++i) {
       if (i)
@@ -883,7 +883,7 @@ void Gemma4_E2B_QNN::initialize() {
       continue;
     if (b.layer_index > 5 && b.layer_index != 14)
       continue;
-    const auto &info = generation_graph_info.raw_outputs[b.output_index].second;
+    const auto &info = generation_graph_info.raw_outputs[b.output_index];
     std::cout << "L" << b.layer_index << "=[";
     for (size_t i = 0; i < info.dimensions.size(); ++i) {
       if (i)

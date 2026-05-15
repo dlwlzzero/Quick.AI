@@ -49,13 +49,13 @@ TensorInfo causallm::Gauss3_8_Vision_Encoder_QNN::get_input_info() {
   std::string graph_name = graphs_to_use[0];
   LOGD("graph name : %s", graph_name.c_str());
   auto &[model_info, model, model_input] = models[graph_name];
-  return model_info.raw_inputs[0].second;
+  return model_info.raw_inputs[0];
 }
 
 TensorInfo causallm::Gauss3_8_Vision_Encoder_QNN::get_output_info() {
   std::string graph_name = graphs_to_use[0];
   auto &[model_info, model, model_input] = models[graph_name];
-  return model_info.raw_outputs[0].second;
+  return model_info.raw_outputs[0];
 }
 
 void causallm::Gauss3_8_Vision_Encoder_QNN::run(const WSTR prompt,

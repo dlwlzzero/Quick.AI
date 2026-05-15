@@ -178,16 +178,16 @@ void causallm::Gauss3_6_QNN::initialize() {
   if (lora_path.empty()) {
     // Default: fill with 32768 (zero value for quantized uint16_t)
     for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = prefill_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         auto *lora_ptr = std::get<uint16_t *>(prefill_inputs[idx]);
         std::fill_n(lora_ptr, size / sizeof(uint16_t), 32768);
       }
     }
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = generation_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         auto *lora_ptr = std::get<uint16_t *>(generation_inputs[idx]);
         std::fill_n(lora_ptr, size / sizeof(uint16_t), 32768);
@@ -218,8 +218,8 @@ void causallm::Gauss3_6_QNN::initialize() {
 
     // Copy to prefill lora inputs (in model input order)
     for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = prefill_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         memcpy(std::get<uint16_t *>(prefill_inputs[idx]), data_ptr, size);
         data_ptr += size;
@@ -228,8 +228,8 @@ void causallm::Gauss3_6_QNN::initialize() {
     LOGD("----------------------- initialize() 6");
     // Copy to generation lora inputs (in model input order)
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = generation_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         memcpy(std::get<uint16_t *>(generation_inputs[idx]), data_ptr, size);
         data_ptr += size;
@@ -278,7 +278,7 @@ void causallm::Gauss3_6_QNN::initialize() {
       int prefill_input_index =
           find_tensor_index_or_minus_one(prefill_graph_info.raw_inputs, name);
       const auto &generation_info =
-          generation_graph_info.raw_inputs[generation_input_index].second;
+          generation_graph_info.raw_inputs[generation_input_index];
 
       int size = GraphParser::get_tensor_size(generation_info);
       if (generation_info.data_type != "QNN_DATATYPE_UFIXED_POINT_8") {
@@ -296,7 +296,7 @@ void causallm::Gauss3_6_QNN::initialize() {
 
       if (prefill_input_index >= 0) {
         const auto &prefill_info =
-            prefill_graph_info.raw_inputs[prefill_input_index].second;
+            prefill_graph_info.raw_inputs[prefill_input_index];
         const bool is_key = qnn_starts_with(name, "past_key_");
 
         this->prefill_kvs.push_back(

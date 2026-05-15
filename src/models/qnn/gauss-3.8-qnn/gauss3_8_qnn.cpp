@@ -173,8 +173,8 @@ void causallm::Gauss3_8_QNN::initialize() {
       [](const TensorInfoList &raw_inputs,
          std::vector<ml::train::TensorDim::IO_TensorType> &model_inputs) {
         for (size_t idx = 0; idx < raw_inputs.size(); idx++) {
-          const auto &[name, info] = raw_inputs[idx];
-          if (name.find("_lora_") == std::string::npos) {
+          const auto &info = raw_inputs[idx];
+          if (info.name.find("_lora_") == std::string::npos) {
             continue;
           }
           const int size = GraphParser::get_tensor_size(info);
@@ -212,11 +212,11 @@ void causallm::Gauss3_8_QNN::initialize() {
     std::unordered_map<std::string, std::pair<uint16_t *, int>>
         generation_lora_by_name;
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") == std::string::npos) {
+      const auto &info = generation_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") == std::string::npos) {
         continue;
       }
-      generation_lora_by_name[name] = {
+      generation_lora_by_name[info.name] = {
           std::get<uint16_t *>(generation_inputs[idx]),
           GraphParser::get_tensor_size(info)};
     }
@@ -245,11 +245,11 @@ void causallm::Gauss3_8_QNN::initialize() {
     };
 
     for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") == std::string::npos) {
+      const auto &info = prefill_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") == std::string::npos) {
         continue;
       }
-      copy_one_lora(name, std::get<uint16_t *>(prefill_inputs[idx]),
+      copy_one_lora(info.name, std::get<uint16_t *>(prefill_inputs[idx]),
                     GraphParser::get_tensor_size(info));
     }
 
@@ -343,7 +343,7 @@ void causallm::Gauss3_8_QNN::initialize() {
       const int prefill_input_index =
           find_tensor_index_or_minus_one(prefill_graph_info.raw_inputs, name);
       const auto &generation_info =
-          generation_graph_info.raw_inputs[generation_input_index].second;
+          generation_graph_info.raw_inputs[generation_input_index];
       const int size = GraphParser::get_tensor_size(generation_info);
       if (generation_info.data_type != "QNN_DATATYPE_UFIXED_POINT_8") {
         throw std::runtime_error("Unexpected generation KV dtype for " + name);
@@ -360,7 +360,7 @@ void causallm::Gauss3_8_QNN::initialize() {
 
       if (prefill_input_index >= 0) {
         const auto &prefill_info =
-            prefill_graph_info.raw_inputs[prefill_input_index].second;
+            prefill_graph_info.raw_inputs[prefill_input_index];
         const bool is_key = qnn_starts_with(name, "past_key_");
         prefill_kvs.push_back(
             std::get<uint8_t *>(prefill_inputs[prefill_input_index]));
