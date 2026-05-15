@@ -2310,7 +2310,7 @@ ErrorCode runMultimodalHandleWithMessages(
   return CAUSAL_LM_ERROR_UNSUPPORTED;
 #endif
 }
-<<<<
+
 /*============================================================================
  * OpenAI messages streaming variants
  *============================================================================*/

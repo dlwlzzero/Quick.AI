@@ -9,8 +9,8 @@
 #include "quick_dot_ai_qnn.h"
 #include "android_memory_allocator.h"
 #include "engine.h"
-#include "graph_parser.h"
 #include "generate_qnn_utils.h"
+#include "graph_parser.h"
 #include <xgrammar/xgrammar_wrapper.h>
 
 #if defined(_WIN32)
@@ -96,7 +96,7 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
 
   NNTR_THROW_IF(ct_engine.registerContext("libqnn_context.so", ""),
                 std::runtime_error)
-      << "Fail to register QNN Context";
+    << "Fail to register QNN Context";
 
   LOGD("qnn_engine registering done ");
 
@@ -113,8 +113,8 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
 
     NNTR_THROW_IF(graphs_info.find(graph_name) == graphs_info.end(),
                   std::runtime_error)
-        << graph_name << " does not exist in model binary config"
-        << binary_config_path << "!";
+      << graph_name << " does not exist in model binary config"
+      << binary_config_path << "!";
 
     auto &current_graphs_info = graphs_info[graph_name];
     std::vector<ml::train::TensorDim::IO_TensorType> model_inputs;
@@ -130,13 +130,14 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
           input_shape_string += std::to_string(input_shape[i]);
           input_size *= input_shape[i];
         }
-        current_model->addLayer(createLayer(
-            "embedding",
-            {withKey("name", tensor_name), withKey("in_dim", vocab_size),
-             withKey("input_shape", input_shape_string),
-             withKey("out_dim", input_shape.back())}));
+        current_model->addLayer(
+          createLayer("embedding", {withKey("name", tensor_name),
+                                    withKey("in_dim", vocab_size),
+                                    withKey("input_shape", input_shape_string),
+                                    withKey("out_dim", input_shape.back())}));
 
-        model_inputs.push_back((float *)tracked_allocate(sizeof(float) * input_size));
+        model_inputs.push_back(
+          (float *)tracked_allocate(sizeof(float) * input_size));
       } else {
         auto input_shape = tensor_object.dimensions;
         std::string input_shape_string = std::to_string(input_shape[0]);
@@ -145,11 +146,12 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
           input_shape_string += std::to_string(input_shape[i]);
         }
         current_model->addLayer(createLayer(
-            "input", {withKey("name", tensor_name),
-                      //  withKey("input_dtype",
-                      //  qnn_to_nntrainer_datatype(tensor_object.data_type)),
-                      withKey("input_shape", input_shape_string)}));
-        model_inputs.push_back(get_qnn_input_data(tensor_object, allocated_ptrs_));
+          "input", {withKey("name", tensor_name),
+                    //  withKey("input_dtype",
+                    //  qnn_to_nntrainer_datatype(tensor_object.data_type)),
+                    withKey("input_shape", input_shape_string)}));
+        model_inputs.push_back(
+          get_qnn_input_data(tensor_object, allocated_ptrs_));
       }
 
       if (!input_names.empty()) {
@@ -199,13 +201,13 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
     }
 
     LayerHandle qnn_layer = createLayer(
-        "qnn_graph",
-        {withKey("name", graph_name), withKey("path", model_file_name),
-         withKey("dim", out_dim), withKey("tensor_dtype", out_data_format),
-         withKey("tensor_type", out_tensor_format),
-         withKey("input_layers", input_names),
-         withKey("input_quant_param", in_quant),
-         withKey("output_quant_param", out_quant), withKey("engine", "qnn")});
+      "qnn_graph",
+      {withKey("name", graph_name), withKey("path", model_file_name),
+       withKey("dim", out_dim), withKey("tensor_dtype", out_data_format),
+       withKey("tensor_type", out_tensor_format),
+       withKey("input_layers", input_names),
+       withKey("input_quant_param", in_quant),
+       withKey("output_quant_param", out_quant), withKey("engine", "qnn")});
     current_model->addLayer(qnn_layer);
 
     current_model->setProperty({withKey("batch_size", 1), withKey("epochs", 1),
@@ -297,18 +299,22 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   lora_path = nntr_cfg.value("lora_path", "");
 }
 
-int causallm::Quick_Dot_AI_QNN::sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
-                                      float logit_scale, int logit_offset, float repetition_penalty,
-                                      float temperature, float top_p, int top_k) {
+int causallm::Quick_Dot_AI_QNN::sample(uint16_t *pointer, int length,
+                                       int *tokens, int number_of_tokens,
+                                       float logit_scale, int logit_offset,
+                                       float repetition_penalty,
+                                       float temperature, float top_p,
+                                       int top_k) {
   // Apply grammar mask if xgrammar_ is provided (from base class)
   if (xgrammar_ != nullptr && xgrammar_->isGrammarEnabled()) {
     xgrammar_->applyGrammarMask(pointer, vocab_size, logit_scale, logit_offset);
   }
 
   // Call the free function sample from generate_qnn_utils.cpp
-  int token = ::sample(pointer, length, tokens, number_of_tokens, logit_scale, logit_offset,
-                       repetition_penalty, temperature, top_p, top_k);
-  
+  int token =
+    ::sample(pointer, length, tokens, number_of_tokens, logit_scale,
+             logit_offset, repetition_penalty, temperature, top_p, top_k);
+
   if (token == eos_token || token == padding_token) {
     return token;
   }
@@ -317,9 +323,16 @@ int causallm::Quick_Dot_AI_QNN::sample(uint16_t *pointer, int length, int *token
   if (xgrammar_ != nullptr && xgrammar_->isGrammarEnabled()) {
     xgrammar_->getGrammarMatcher()->AcceptToken(token);
     // Update bitmask for next token
-    xgrammar_->getGrammarMatcher()->FillNextTokenBitmask(&xgrammar_->getBitmaskTensor());
+    xgrammar_->getGrammarMatcher()->FillNextTokenBitmask(
+      &xgrammar_->getBitmaskTensor());
   }
   return token;
+}
+
+void causallm::Quick_Dot_AI_QNN::resetXGrammar() {
+  if (xgrammar_ != nullptr) {
+    xgrammar_->resetGrammar();
+  }
 }
 
 void causallm::Quick_Dot_AI_QNN::constructModel() {
@@ -328,14 +341,14 @@ void causallm::Quick_Dot_AI_QNN::constructModel() {
 
 std::vector<LayerHandle>
 causallm::Quick_Dot_AI_QNN::createTransformerDecoderBlock(
-    const int layer_id, std::string input_name) {
+  const int layer_id, std::string input_name) {
   // Unimplemented.
   return std::vector<LayerHandle>();
 }
 
 std::vector<LayerHandle> causallm::Quick_Dot_AI_QNN::createAttention(
-    const int layer_id, int seq_len, int n_heads, int head_dim,
-    std::string query_name, std::string key_name, std::string value_name) {
+  const int layer_id, int seq_len, int n_heads, int head_dim,
+  std::string query_name, std::string key_name, std::string value_name) {
   // Unimplemented.
   return std::vector<LayerHandle>();
 }

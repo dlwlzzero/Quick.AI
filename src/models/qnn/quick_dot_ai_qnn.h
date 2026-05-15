@@ -25,7 +25,11 @@
 
 #include <atomic>
 #include <set>
-#include <stdexcept>
+
+// Forward declaration for XGrammar
+namespace causallm {
+class XGrammar;
+}
 
 namespace causallm {
 /**
@@ -45,8 +49,8 @@ struct QNNModelInfo {
 class Quick_Dot_AI_QNN : public Transformer {
 
 public:
-  Quick_Dot_AI_QNN(json &cfg, json &generation_cfg, json &nntr_cfg)
-      : Transformer(cfg, generation_cfg, nntr_cfg, ModelType::MODEL) {
+  Quick_Dot_AI_QNN(json &cfg, json &generation_cfg, json &nntr_cfg) :
+    Transformer(cfg, generation_cfg, nntr_cfg, ModelType::MODEL) {
     LOGD("--------------------------------- Quick_Dot_AI_QNN");
     setupParameters(cfg, generation_cfg, nntr_cfg);
   }
@@ -92,6 +96,16 @@ public:
   void setStreamer(::BaseStreamer *streamer) override { streamer_ = streamer; }
 
   /**
+   * @brief Attach an XGrammar instance for grammar-constrained generation.
+   */
+  void setXGrammar(XGrammar *grammar) override { xgrammar_ = grammar; }
+
+  /**
+   * @brief Reset the XGrammar matcher state after generation.
+   */
+  void resetXGrammar() override;
+
+  /**
    * @brief Request cancellation of the current run().
    *
    * Thread-safe: sets the stop flag atomically, causing the token
@@ -103,7 +117,8 @@ public:
     __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
                         "requestStop: setting stop_requested_ to true");
 #else
-    std::cout << "[DEBUG] requestStop: setting stop_requested_ to true" << std::endl;
+    std::cout << "[DEBUG] requestStop: setting stop_requested_ to true"
+              << std::endl;
 #endif
     stop_requested_.store(true, std::memory_order_release);
   }
@@ -112,13 +127,17 @@ public:
    * @brief Check if stop has been requested.
    * Thread-safe: can be called from any thread.
    */
-  bool isStopRequested() const { return stop_requested_.load(std::memory_order_acquire); }
+  bool isStopRequested() const {
+    return stop_requested_.load(std::memory_order_acquire);
+  }
 
   /**
    * @brief Clear the stop request flag.
    * Thread-safe: can be called from any thread.
    */
-  void clearStopRequest() { stop_requested_.store(false, std::memory_order_release); }
+  void clearStopRequest() {
+    stop_requested_.store(false, std::memory_order_release);
+  }
 
   std::vector<LayerHandle>
   createTransformerDecoderBlock(const int layer_id,
@@ -174,6 +193,9 @@ protected:
 
   // Streaming support
   ::BaseStreamer *streamer_ = nullptr;
+
+  // XGrammar instance for grammar-constrained generation (non-owning)
+  XGrammar *xgrammar_ = nullptr;
 
   /**
    * @brief Cooperative cancellation flag set by the attached streamer's
