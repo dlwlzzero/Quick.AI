@@ -647,6 +647,71 @@ destroyModelHandle(handle);
 
 ---
 
+### 2.6 XGrammar API - Structured Generation
+
+> **Prerequisite**: XGrammar is integrated for grammar-constrained text generation, ensuring 100% structural correctness of outputs. For detailed usage, see [How to Use XGrammar](../docs/how-to-use-xgrammar.md).
+
+#### runModelHandleWithTool()
+
+```c
+ErrorCode runModelHandleWithTool(CausalLmHandle handle,
+                                 const char *inputTextPrompt,
+                                 const char **outputText,
+                                 const char *tool_name,
+                                 const char *tool_schema);
+```
+
+Runs inference with grammar-constrained generation for structured output.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | `CausalLmHandle` | Model handle |
+| `inputTextPrompt` | `const char *` | Input prompt text |
+| `outputText` | `const char **` | Pointer to receive output text |
+| `tool_name` | `const char *` | Tool name (e.g., "alarm", "send_email") |
+| `tool_schema` | `const char *` | JSON schema string (NULL if pre-compiled) |
+
+**Returns**: `ErrorCode`
+
+> **Note**: If `tool_name` exists in pre-compiled `Toolset.json`, `tool_schema` can be NULL. Otherwise, provide a valid JSON schema for dynamic compilation.
+
+**Example (Pre-compiled tool)**:
+```cpp
+CausalLmHandle handle = nullptr;
+loadModelHandle(CAUSAL_LM_BACKEND_NPU, CAUSAL_LM_MODEL_GAUSS3_8_QNN,
+                CAUSAL_LM_QUANTIZATION_W4A32, nullptr, "/models", &handle);
+
+// Tool "alarm" is pre-compiled from Toolset.json
+const char *output = nullptr;
+ErrorCode err = runModelHandleWithTool(handle, "Set alarm for 7am", 
+                                        &output, "alarm", NULL);
+if (err == CAUSAL_LM_ERROR_NONE) {
+    printf("Output: %s\n", output);
+    // Output: {"action": "set", "time": "07:00", "message": "alarm for 7am"}
+}
+destroyModelHandle(handle);
+```
+
+**Example (Dynamic tool registration)**:
+```cpp
+// Define a new tool schema at runtime
+const char* search_schema = R"({
+    "type": "object",
+    "properties": {
+        "query": {"type": "string"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+    },
+    "required": ["query"]
+})";
+
+const char *output = nullptr;
+ErrorCode err = runModelHandleWithTool(handle, "Search for AI news",
+                                        &output, "search", search_schema);
+// Tool "search" is now registered and can be reused
+```
+
+---
+
 ## 3. Usage Guide
 
 ### 3.1 C/C++ Examples
