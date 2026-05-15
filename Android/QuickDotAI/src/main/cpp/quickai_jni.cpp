@@ -147,7 +147,8 @@ Java_com_example_quickdotai_NativeCausalLm_chdirNative(JNIEnv *env,
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
   JNIEnv *env, jobject /*thiz*/, jint backendOrdinal, jint modelOrdinal,
-  jint quantOrdinal, jstring nativeLibDirJ, jstring modelBasePathJ) {
+  jint quantOrdinal, jstring nativeLibDirJ, jstring modelBasePathJ,
+  jstring htpBackendConfigPathJ) {
   const char *native_lib_dir = nullptr;
   if (nativeLibDirJ != nullptr) {
     native_lib_dir = env->GetStringUTFChars(nativeLibDirJ, nullptr);
@@ -158,6 +159,26 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
     model_base_path = env->GetStringUTFChars(modelBasePathJ, nullptr);
   }
 
+  const char *htp_backend_config_path = nullptr;
+  if (htpBackendConfigPathJ != nullptr) {
+    htp_backend_config_path =
+      env->GetStringUTFChars(htpBackendConfigPathJ, nullptr);
+  }
+
+  // Change CWD to htp_backend_config_path's directory so QNNContext
+  // can locate htp_backend_ext_config.json there.
+  char original_cwd[PATH_MAX];
+  bool cwd_changed = false;
+  if (htp_backend_config_path != nullptr) {
+    if (getcwd(original_cwd, PATH_MAX) != nullptr) {
+      std::string cfg(htp_backend_config_path);
+      size_t pos = cfg.find_last_of('/');
+      if (pos != std::string::npos) {
+        cwd_changed = (chdir(cfg.substr(0, pos).c_str()) == 0);
+      }
+    }
+  }
+
   CausalLmHandle handle = nullptr;
   ErrorCode ec =
     loadModelHandle(static_cast<BackendType>(backendOrdinal),
@@ -165,11 +186,19 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
                     static_cast<ModelQuantizationType>(quantOrdinal),
                     native_lib_dir, model_base_path, &handle);
 
+  // Restore original CWD
+  if (cwd_changed) {
+    chdir(original_cwd);
+  }
+
   if (native_lib_dir != nullptr && nativeLibDirJ != nullptr) {
     env->ReleaseStringUTFChars(nativeLibDirJ, native_lib_dir);
   }
   if (model_base_path != nullptr && modelBasePathJ != nullptr) {
     env->ReleaseStringUTFChars(modelBasePathJ, model_base_path);
+  }
+  if (htp_backend_config_path != nullptr && htpBackendConfigPathJ != nullptr) {
+    env->ReleaseStringUTFChars(htpBackendConfigPathJ, htp_backend_config_path);
   }
 
   if (g_cache.loadResultCls == nullptr || g_cache.loadResultCtor == nullptr) {

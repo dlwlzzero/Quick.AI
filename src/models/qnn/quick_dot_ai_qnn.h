@@ -58,6 +58,7 @@ public:
   ~Quick_Dot_AI_QNN() override;
 
   void initialize() override;
+  void initialize(const std::string &native_lib_dir) override;
 
   void load_weight(const std::string &weight_path) override;
 

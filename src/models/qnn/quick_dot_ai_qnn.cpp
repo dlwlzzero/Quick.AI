@@ -11,6 +11,8 @@
 #include "engine.h"
 #include "generate_qnn_utils.h"
 #include "graph_parser.h"
+#include <climits>
+#include <unistd.h>
 #include <xgrammar/xgrammar_wrapper.h>
 
 #if defined(_WIN32)
@@ -86,6 +88,11 @@ causallm::Quick_Dot_AI_QNN::~Quick_Dot_AI_QNN() {
     model.model_handle.reset();
   }
   deallocate_all();
+}
+
+void causallm::Quick_Dot_AI_QNN::initialize(const std::string &native_lib_dir) {
+  native_lib_dir_ = native_lib_dir;
+  initialize();
 }
 
 void causallm::Quick_Dot_AI_QNN::initialize() {
@@ -286,14 +293,14 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   }
 
   // Read generation_config parameters
-  padding_token = generation_cfg["padding_token"].get<int>();
-  eos_token = generation_cfg["eos_token_id"].get<int>();
-  temperature = generation_cfg["temperature"].get<float>();
-  top_k = generation_cfg["top_k"].get<int>();
-  top_p = generation_cfg["top_p"].get<float>();
-  repetition_penalty = generation_cfg["repetition_penalty"].get<float>();
-  logit_scale = generation_cfg["logit_scale"].get<float>();
-  logit_offset = generation_cfg["logit_offset"].get<int>();
+  padding_token = generation_cfg.value("padding_token", 0);
+  eos_token = generation_cfg.value("eos_token_id", 0);
+  temperature = generation_cfg.value("temperature", 1.0f);
+  top_k = generation_cfg.value("top_k", 50);
+  top_p = generation_cfg.value("top_p", 1.0f);
+  repetition_penalty = generation_cfg.value("repetition_penalty", 1.0f);
+  logit_scale = generation_cfg.value("logit_scale", 1.0f);
+  logit_offset = generation_cfg.value("logit_offset", 0);
 
   // Read optional lora_path
   lora_path = nntr_cfg.value("lora_path", "");

@@ -150,7 +150,8 @@ object NativeCausalLm {
         modelOrdinal: Int,
         quantOrdinal: Int,
         nativeLibDir: String?,
-        modelBasePath: String?
+        modelBasePath: String?,
+        htpBackendConfigPath: String?
     ): LoadResult
 
     /**

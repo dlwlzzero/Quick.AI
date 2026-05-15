@@ -188,6 +188,8 @@ typedef struct CausalLmModel *CausalLmHandle;
  * @param quant_type      Quantization type
  * @param native_lib_dir  Native library directory path (from Android
  *                        ApplicationInfo.nativeLibraryDir). May be NULL.
+ * @param htp_backend_config_path Path to the HTP backend extension config
+ *                                JSON file. May be NULL.
  * @param out_handle      Out-parameter that receives the new handle on success
  * @return ErrorCode
  */
@@ -196,6 +198,17 @@ WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
                                      const char *native_lib_dir,
                                      const char *model_base_path,
                                      CausalLmHandle *out_handle);
+
+/**
+ * @brief Extended version of loadModelHandle with HTP backend config.
+ *
+ * @param htp_backend_config_path Path to the HTP backend extension config
+ *                                JSON file. May be NULL.
+ */
+WIN_EXPORT ErrorCode loadModelHandleExt(
+  BackendType compute, ModelType modeltype, ModelQuantizationType quant_type,
+  const char *native_lib_dir, const char *model_base_path,
+  const char *htp_backend_config_path, CausalLmHandle *out_handle);
 
 /**
  * @brief Run inference on a specific handle.

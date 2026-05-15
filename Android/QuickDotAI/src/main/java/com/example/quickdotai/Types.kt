@@ -168,6 +168,15 @@ data class LoadModelRequest(
      * Only honored by [NativeQuickDotAI]; [LiteRTLm] ignores it.
      */
     @SerialName("model_base_path") val modelBasePath: String? = null,
+
+    /**
+     * Path to the HTP backend extension config JSON file used by QNN
+     * models. When null, the native engine falls back to
+     * `<externalFilesDir>/htp_backend_ext_config.json`.
+     *
+     * Only honored by [NativeQuickDotAI]; [LiteRTLm] ignores it.
+     */
+    @SerialName("htp_backend_config_path") val htpBackendConfigPath: String? = null,
 ) {
     /**
      * Canonical key shared across the stack: one worker/handle per

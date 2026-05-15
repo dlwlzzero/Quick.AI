@@ -1023,6 +1023,8 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
           if (check_file_exists(sub_dir + "/generation_config.json")) {
             sub_gen =
               causallm::LoadJsonFile(sub_dir + "/generation_config.json");
+          } else {
+            sub_gen = json::object();
           }
 
           json sub_nntr = causallm::LoadJsonFile(sub_dir + "/nntr_config.json");

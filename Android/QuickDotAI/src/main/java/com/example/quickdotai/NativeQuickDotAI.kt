@@ -78,19 +78,29 @@ class NativeQuickDotAI(
             Log.i(TAG, "load(): modelBasePath=$modelBasePath")
         }
 
+        // HTP backend extension config path for QNN models.
+        // Falls back to the app's external files dir if not provided.
+        val htpBackendConfigPath = req.htpBackendConfigPath
+            ?: File(
+                appContext.getExternalFilesDir(null),
+                "htp_backend_ext_config.json"
+            ).absolutePath
+
         return try {
             Log.i(
                 TAG,
                 "load(): calling loadModelHandleNative(backend=${req.backend.ordinal}, " +
                     "model=$nativeModelOrdinal, quant=${req.quantization.ordinal}, " +
-                    "nativeLibDir=${req.nativeLibDir}, modelBasePath=$modelBasePath)"
+                    "nativeLibDir=${req.nativeLibDir}, modelBasePath=$modelBasePath, " +
+                    "htpBackendConfigPath=$htpBackendConfigPath)"
             )
             val result = NativeCausalLm.loadModelHandleNative(
                 backendOrdinal = mapBackend(req.backend),
                 modelOrdinal = nativeModelOrdinal,
                 quantOrdinal = mapQuant(req.quantization),
                 nativeLibDir = req.nativeLibDir,
-                modelBasePath = modelBasePath
+                modelBasePath = modelBasePath,
+                htpBackendConfigPath = htpBackendConfigPath
             )
             Log.i(
                 TAG,
