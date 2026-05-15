@@ -60,6 +60,8 @@ sealed class BackendResult<out T> {
  */
 interface StreamSink {
     fun onDelta(text: String)
+    fun onReasoningDelta(text: String) {
+    }
     fun onDone()
     fun onError(error: QuickAiError, message: String?)
 }
