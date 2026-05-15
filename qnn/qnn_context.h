@@ -52,7 +52,12 @@
 #endif
 #ifndef LOGD
 #include <cstdio>
-#define LOGD(...) do { fprintf(stderr, "[DEBUG][%s] ", LOG_TAG); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#define LOGD(...)                                                              \
+  do {                                                                         \
+    fprintf(stderr, "[DEBUG][%s] ", LOG_TAG);                                  \
+    fprintf(stderr, __VA_ARGS__);                                              \
+    fprintf(stderr, "\n");                                                     \
+  } while (0)
 #endif
 #endif
 
@@ -87,8 +92,8 @@ public:
     if ((qnn_data->m_isBackendInitialized &&
          nullptr != qnn_data->m_qnnFunctionPointers.qnnInterface.backendFree) &&
         QNN_BACKEND_NO_ERROR !=
-            qnn_data->m_qnnFunctionPointers.qnnInterface.backendFree(
-                qnn_data->m_backendHandle)) {
+          qnn_data->m_qnnFunctionPointers.qnnInterface.backendFree(
+            qnn_data->m_backendHandle)) {
       ml_loge("Could not terminate backed");
     }
     qnn_data->m_isBackendInitialized = false;
@@ -195,29 +200,29 @@ public:
     auto &index = std::get<IndexType<T>>(factory_map);
     auto &str_map = std::get<StrIndexType<T>>(index);
 
-    //LOGD("%s:%d", __FILE__, __LINE__);
+    // LOGD("%s:%d", __FILE__, __LINE__);
 
     std::string lower_key;
     lower_key.resize(key.size());
 
-    //LOGD("%s:%d", __FILE__, __LINE__);
+    // LOGD("%s:%d", __FILE__, __LINE__);
 
     std::transform(key.begin(), key.end(), lower_key.begin(),
                    [](unsigned char c) { return std::tolower(c); });
 
-//    LOGD("%s:%d", __FILE__, __LINE__);
+    //    LOGD("%s:%d", __FILE__, __LINE__);
 
     const auto &entry = str_map.find(lower_key);
 
     if (entry == str_map.end()) {
       std::stringstream ss;
       ss << "Key is not found for the object. Key: " << lower_key;
-  //    LOGD("%s:%d, key is not found", __FILE__, __LINE__);
+      //    LOGD("%s:%d, key is not found", __FILE__, __LINE__);
 
       throw exception::not_supported(ss.str().c_str());
     }
 
-    //LOGD("%s:%d", __FILE__, __LINE__);
+    // LOGD("%s:%d", __FILE__, __LINE__);
 
     // entry -> object of str_map -> unordered_map<std::string, FactoryType<T>>
     return entry->second(props);
@@ -225,13 +230,24 @@ public:
 
   std::string getName() override { return "qnn"; }
 
+  /**
+   * @brief   Set the default backend extension config path before singleton
+   * initialization. Must be called before QNNContext::Global() or any
+   * operation that triggers context creation.
+   */
+  static void setDefaultBackendExtConfigPath(const std::string &path);
+
+  void setBackendExtConfigPath(const std::string &path) {
+    m_backendExtConfigPath = path;
+  }
+
   void setMemAllocator(std::shared_ptr<QNNRpcManager> mem) {
     getContextData()->setMemAllocator(mem);
   }
 
   std::shared_ptr<QNNVar> getQnnData() {
     std::shared_ptr<QNNBackendVar> d =
-        std::static_pointer_cast<QNNBackendVar>(this->getContextData());
+      std::static_pointer_cast<QNNBackendVar>(this->getContextData());
     return d->getVar();
   }
 
@@ -257,7 +273,7 @@ private:
   template <typename T, typename... Args>
   struct isSupportedHelper<T, QNNContext::FactoryMap<Args...>> {
     static constexpr bool value =
-        (std::is_same_v<std::decay_t<T>, std::decay_t<Args>> || ...);
+      (std::is_same_v<std::decay_t<T>, std::decay_t<Args>> || ...);
   };
 
   /**
@@ -267,6 +283,8 @@ private:
   struct isSupported : isSupportedHelper<T, decltype(factory_map)> {};
 
   std::vector<std::string> m_opPackagePaths;
+
+  std::string m_backendExtConfigPath;
 
   bool m_isContextCreated;
 
@@ -312,8 +330,8 @@ private:
  * @copydoc const int QNNContext::registerFactory
  */
 extern template const int QNNContext::registerFactory<nntrainer::Layer>(
-    const FactoryType<nntrainer::Layer> factory, const std::string &key,
-    const int int_key);
+  const FactoryType<nntrainer::Layer> factory, const std::string &key,
+  const int int_key);
 
 } // namespace nntrainer
 

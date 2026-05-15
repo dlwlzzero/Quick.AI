@@ -1218,6 +1218,22 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
     if (native_lib_dir != nullptr)
       h.native_lib_dir = native_lib_dir;
 
+#ifdef ENABLE_QNN
+    if (architecture == "Gauss_3_6_QNN" || architecture == "Gauss_3_8_QNN" ||
+        architecture == "Gauss_3_8_VEncoder_QNN") {
+      std::string config_path = base_dir;
+      if (config_path.length() >= 7 &&
+          config_path.substr(config_path.length() - 7) == "/models") {
+        config_path = config_path.substr(0, config_path.length() - 7);
+      }
+      config_path += "/htp_backend_ext_config.json";
+      LOGD("[DEBUG] load_into_handle: setting QNN config path: %s",
+           config_path.c_str());
+      setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH", config_path.c_str(),
+             1);
+    }
+#endif
+
     LOGD("[DEBUG] load_into_handle: Calling model->initialize()...");
     if (native_lib_dir != nullptr && strlen(native_lib_dir) > 0) {
       setenv("ADSP_LIBRARY_PATH", native_lib_dir, 1);
