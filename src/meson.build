@@ -8,7 +8,7 @@
 causallm_auto_src = run_command('find',
   causallm_root / 'layers',
   causallm_root / 'models',
-  causallm_root / 'huggingface_tokenizer.cpp',
+  causallm_root / 'tokenizers',
   causallm_root / 'llm_util.cpp',
   causallm_root / 'chat_template.cpp',
   '-name', '*.cpp',
