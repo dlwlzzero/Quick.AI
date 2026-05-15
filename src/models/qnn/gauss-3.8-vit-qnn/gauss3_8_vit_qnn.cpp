@@ -384,7 +384,7 @@ void causallm::Gauss3_8_VIT_QNN::run(const WSTR prompt, bool do_sample,
                    repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
-    if (token == eos_token) {
+    if (token == eos_token || token == padding_token) {
       std::cout << "Finished generating, break..." << std::endl;
       break;
     } else {

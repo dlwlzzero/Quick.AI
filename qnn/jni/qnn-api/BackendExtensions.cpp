@@ -72,7 +72,7 @@ BackendExtensions::BackendExtensions(BackendExtensionsConfigs backendExtensionsC
   }
 
   if (!m_backendInterface->loadConfig(backendExtensionsConfig.configFilePath)) {
-    throw std::runtime_error("Unable to load backend extensions config.");
+    throw std::runtime_error("Unable to load backend extensions config. " + backendExtensionsConfig.configFilePath);
   }
 }
 

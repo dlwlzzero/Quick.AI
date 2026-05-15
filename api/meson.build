@@ -8,6 +8,11 @@ api_inc = include_directories('.')
 
 # Extension model headers
 quick_dot_ai_inc_args = [
+  '-I' + meson.current_source_dir() / '..' / 'xgrammar' / 'include',
+  '-I' + meson.current_source_dir() / '..' / 'xgrammar' / '3rdparty' / 'picojson',
+  '-I' + meson.current_source_dir() / '..' / 'xgrammar' / '3rdparty' / 'dlpack' / 'include',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'xgrammar',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models',
   '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'gauss-2.5',
 ]
 

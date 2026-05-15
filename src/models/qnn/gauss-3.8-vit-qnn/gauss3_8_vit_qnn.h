@@ -83,19 +83,6 @@ private:
   int context_size;
   int pos_dim;
   int head_dim;
-
-  // generation_config
-  int padding_token;
-  int eos_token;
-  int top_k;
-  float top_p;
-  float temperature;
-  float repetition_penalty;
-  float logit_scale;
-  int logit_offset;
-
-  // LoRA path (optional)
-  std::string lora_path;
 };
 
 } // namespace causallm

@@ -335,6 +335,22 @@ WIN_EXPORT ErrorCode runModelHandleStreaming(CausalLmHandle handle,
                                              CausalLmTokenCallback callback,
                                              void *user_data);
 
+/**
+ * @brief Run inference on a handle with a tool schema for constrained generation.
+ *
+ * @param handle          Handle returned by loadModelHandle
+ * @param inputTextPrompt Input prompt text
+ * @param outputText      Buffer to store output text (owned by the handle)
+ * @param tool_name       Name of the tool (used to cache the grammar)
+ * @param tool_schema     JSON schema for the tool output format
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode runModelHandleWithTool(CausalLmHandle handle,
+                                            const char *inputTextPrompt,
+                                            const char **outputText,
+                                            const char *tool_name,
+                                            const char *tool_schema);
+
 /*============================================================================
  * Multimodal API
  *
