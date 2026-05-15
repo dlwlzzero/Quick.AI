@@ -664,7 +664,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
                    logit_offset, repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
-    if (token == eos_token) {
+    if (token == eos_token || token == padding_token) {
       append_generation_token_to_kv_cache(token);
       break;
     }
@@ -927,7 +927,7 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(
     LOGD("next_token: %d", token);
 
     output.push_back(token);
-    if (token == eos_token) {
+    if (token == eos_token || token == padding_token) {
       break;
     }
 

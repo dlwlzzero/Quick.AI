@@ -278,10 +278,10 @@ int main(int argc, char *argv[]) {
   std::cout << clr::green << "│" << clr::reset << "\n";
 
   const char *outputText = nullptr;
-  CausalLMChatMessage msg;
-  msg.role = "user";
-  msg.content = prompt;
-  err = runModelHandleWithMessages(handle, &msg, 1, true, &outputText);
+  // CausalLMChatMessage msg;
+  // msg.role = "user";
+  // msg.content = prompt;
+  // err = runModelHandleWithMessages(handle, &msg, 1, true, &outputText);
 
   // XGrammar Test
   auto tool_name = "web_search";

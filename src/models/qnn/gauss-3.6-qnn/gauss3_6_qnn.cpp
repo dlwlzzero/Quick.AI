@@ -532,28 +532,26 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
                    input.data(), input.size(), logit_scale, logit_offset,
                    repetition_penalty, temperature, top_p, top_k);
-    if (token == eos_token || token == padding_token) {
-      break;
-    }
+
     output.push_back(token);
-    if (token == eos_token) {
+    if (token == eos_token || token == padding_token) {
       append_generation_token_to_kv_cache(token);
       break;
-    } else {
-      std::string decoded= tokenizer->Decode({token});
-      LOGD("%d : %s",token, decoded.c_str());
-      // Stream the token if a streamer is attached
-      if (streamer_) {
-        if (streamer_put(streamer_, decoded.c_str()) != 0) {
-          // User requested cancellation via streamer
-          stop_requested_.store(true, std::memory_order_release);
-          break;
-        }
-      } else if (log_output) {
-        std::cout << decoded << std::flush;
-      }
-      input.push_back(token);
     }
+
+    std::string decoded= tokenizer->Decode({token});
+    LOGD("%d : %s",token, decoded.c_str());
+    // Stream the token if a streamer is attached
+    if (streamer_) {
+      if (streamer_put(streamer_, decoded.c_str()) != 0) {
+        // User requested cancellation via streamer
+        stop_requested_.store(true, std::memory_order_release);
+        break;
+      }
+    } else if (log_output) {
+      std::cout << decoded << std::flush;
+    }
+    input.push_back(token);
   }
 
   // Notify the streamer that generation is complete

@@ -1535,7 +1535,8 @@ ErrorCode runModelHandleWithMessages(CausalLmHandle handle,
     return err;
   }
 
-  return runModel(formattedInput, outputText);
+  return run_on_handle(*handle, formattedInput, outputText,
+                       /*input_already_formatted=*/true);
 }
 
 ErrorCode runModelHandleWithTool(CausalLmHandle handle,
