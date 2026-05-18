@@ -41,6 +41,10 @@ public:
 
   void initialize_kv_cache();
 
+  void reset_prefill_kv_cache_inputs();
+
+  void sync_generation_kv_cache_to_prefill();
+
   void setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) override;
 
   void run(const WSTR prompt, bool do_sample = false,
@@ -55,9 +59,7 @@ public:
 
   bool supportsKvCachePersistence() const override { return true; }
   int getKvLen() const override { return kv_cache_.length(); }
-  void resetKvCache() override;
-  void saveKvCache(const std::string &cache_path) const override;
-  void loadKvCache(const std::string &cache_path) override;
+
   size_t embeddingBytesPerToken() const { return embedding_bytes_per_token; }
   std::pair<float, int> get_embedding_info();
 
@@ -88,6 +90,21 @@ private:
   uint16_t *generation_sample_u16 = nullptr;
 
   QnnKvCacheManager kv_cache_;
+
+  std::vector<uint8_t *> kvs;
+  std::vector<int> kv_sizes;
+  std::vector<int> kv_row_lengths;
+
+  std::vector<uint8_t *> prefill_kvs;
+  std::vector<int> prefill_kv_sizes;
+  std::vector<int> prefill_kv_row_lengths;
+  std::vector<int> prefill_to_generation_kv_indices;
+  std::vector<int> prefill_kv_is_key;
+
+  std::vector<QnnKvOutputBinding> prefill_output_kv_bindings;
+  std::vector<QnnKvOutputBinding> generation_output_kv_bindings;
+
+  int kv_len = 0;
 
   int generation_logits_output_index = -1;
   int prefill_attention_mask_elements = 0;

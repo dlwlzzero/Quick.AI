@@ -635,7 +635,6 @@ static void fix_paths(json &nntr_cfg, const std::string &sub_dir)
       "embedding_file_name",
       "ple_file_name",
   };
-  };
   for (const char *k : kKeys) {
     if (!nntr_cfg.contains(k) || !nntr_cfg[k].is_string())
       continue;

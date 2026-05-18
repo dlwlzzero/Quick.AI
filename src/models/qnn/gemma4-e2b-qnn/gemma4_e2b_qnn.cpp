@@ -1319,7 +1319,7 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
                                  generation_graph, &kv_columns);
     }
     kv_len += 1;
-    token = sample(
+    token = ::sample(
         std::get<uint16_t *>(outputs[generation_logits_output_index]),
         vocab_size, _input.data(), _input.size(), logit_scale, logit_offset,
         repetition_penalty, temperature, top_p, top_k, final_logit_softcapping);
