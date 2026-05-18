@@ -454,6 +454,8 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     kv_cache_.advance(1);
   };
 
+  auto prefill_start = std::chrono::high_resolution_clock::now();
+
   for (int c = 0; c < n_chunks; c++) {
     const int chunk_offset = c * context_size;
     int chunk_len = ((c + 1) * context_size < input_len)
@@ -519,6 +521,7 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
 
     kv_cache_.advance(chunk_len);
   }
+  auto prefill_end = std::chrono::high_resolution_clock::now();
 
   auto start = std::chrono::system_clock::now();
   int idx;
@@ -559,10 +562,20 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     streamer_end(streamer_);
   }
 
-  has_run_ = true;
-
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
+
+  performance_metrics.prefill_tokens = input_len;
+  performance_metrics.prefill_duration_ms =
+      std::chrono::duration<double, std::milli>(prefill_end - prefill_start).count();
+  performance_metrics.generation_tokens = (idx > prefill_len) ? (unsigned int)(idx - prefill_len) : 0U;
+  performance_metrics.generation_duration_ms =
+      std::chrono::duration<double, std::milli>(end - start).count();
+  performance_metrics.total_duration_ms =
+      performance_metrics.prefill_duration_ms + performance_metrics.generation_duration_ms;
+  performance_metrics.peak_memory_kb = 0; // TODO: implement memory tracking
+
+  has_run_ = true;
   if (log_output) {
   std::cout << std::endl;
   std::cout << std::endl;

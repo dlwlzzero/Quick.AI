@@ -1835,9 +1835,12 @@ class MainActivity : AppCompatActivity() {
                         PromptPart.ImageBytes(imgBytes),
                         PromptPart.Text(prompt),
                     )
-                    e.runMultimodalStreaming(parts, sink)
+                    e.runMultimodalHandleStreaming(parts, sink)
                 } else {
-                    e.runStreaming(prompt, sink)
+                    // Run tab removed - use Chat or OpenAI tab instead
+                    streaming = false
+                    setStatus("Run tab removed. Use Chat or OpenAI tab.")
+                    mainHandler.post { rebuildUi() }
                 }
             } catch (t: Throwable) {
                 streaming = false
@@ -1982,7 +1985,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val parts = buildChatParts(prompt, imgBytes)
                 try {
-                    when (val r = e.runMultimodalStreaming(parts, sink)) {
+                    when (val r = e.runMultimodalHandleStreaming(parts, sink)) {
                         is BackendResult.Ok -> {
                             streaming = false
                             when (val metrics = e.metrics()) {
@@ -2030,9 +2033,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             val parts = buildChatParts(prompt, imgBytes)
-            val messages = listOf(QuickAiChatMessage(role = QuickAiChatRole.USER, parts = parts))
+            // val messages = listOf(QuickAiChatMessage(role = QuickAiChatRole.USER, parts = parts))
             try {
-                when (val r = e.chatRunStreaming(messages, sink)) {
+                when (val r = e.runChatModelHandleStreaming(prompt, sink)) {
                     is BackendResult.Ok -> {
                         streaming = false
                         lastMetrics = r.value.metrics ?: lastMetrics
@@ -2070,7 +2073,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val parts = buildChatParts(prompt, imgBytes)
                 try {
-                    when (val r = e.runMultimodal(parts)) {
+                    when (val r = e.runMultimodalHandle(parts)) {
                         is BackendResult.Ok -> {
                             outputText = r.value
                             mainHandler.post { outputView.text = r.value }
@@ -2097,20 +2100,22 @@ class MainActivity : AppCompatActivity() {
             }
             val parts = buildChatParts(prompt, imgBytes)
             val messages = listOf(QuickAiChatMessage(role = QuickAiChatRole.USER, parts = parts))
-            try {
-                when (val r = e.chatRun(messages)) {
-                    is BackendResult.Ok -> {
-                        outputText = r.value.content
-                        lastMetrics = r.value.metrics ?: lastMetrics
-                        mainHandler.post { outputView.text = r.value.content }
-                        setStatus("Chat done. (${r.value.metrics?.totalDurationMs?.toLong() ?: "?"} ms)")
-                    }
-                    is BackendResult.Err ->
-                        setStatus("Chat failed: [${r.error.name}] ${r.message ?: ""}")
-                }
-            } catch (t: Throwable) {
-                setStatus("Chat threw: ${t.message}")
-            }
+            // Blocking API removed - use streaming API instead
+            setStatus("Blocking chat API removed. Use streaming API.")
+            // try {
+            //     when (val r = e.runChatModelHandle(messages)) {
+            //         is BackendResult.Ok -> {
+            //             outputText = r.value.content
+            //             lastMetrics = r.value.metrics ?: lastMetrics
+            //             mainHandler.post { outputView.text = r.value.content }
+            //             setStatus("Chat done. (${r.value.metrics?.totalDurationMs?.toLong() ?: "?"} ms)")
+            //         }
+            //         is BackendResult.Err ->
+            //             setStatus("Chat failed: [${r.error.name}] ${r.message ?: ""}")
+            //     }
+            // } catch (t: Throwable) {
+            //     setStatus("Chat threw: ${t.message}")
+            // }
         }
     }
 
@@ -2246,7 +2251,7 @@ class MainActivity : AppCompatActivity() {
                         mainHandler.post { rebuildUi() }
                         return@execute
                     }
-                    when (val r = e.runWithMessagesStreaming(messages, sink)) {
+                    when (val r = e.runModelHandleWithMessagesStreaming(messages, sink)) {
                         is BackendResult.Ok -> {
                             streaming = false
                             setStatus("Done.")
@@ -2260,7 +2265,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 } else {
                     // Use runWithJsonStreaming for full OpenAI format support
-                    when (val r = e.runWithJsonStreaming(jsonText, sink)) {
+                    when (val r = e.runModelHandleWithJsonStreaming(jsonText, sink)) {
                         is BackendResult.Ok -> {
                             streaming = false
                             setStatus("Done.")
@@ -2293,22 +2298,24 @@ class MainActivity : AppCompatActivity() {
         outputText = ""; outputView.text = ""
         setStatus("Running OpenAI messages (blocking)…")
 
-        val req = buildLoadRequest()
-        engineExecutor.execute {
-            val e = loadModelInternal(req)
-            if (e == null) { setStatus("Model load failed."); return@execute }
-            try {
-                when (val r = e.runWithMessages(messages)) {
-                    is BackendResult.Ok -> {
-                        outputText = r.value
-                        mainHandler.post { outputView.text = r.value }
-                        setStatus("Done.")
-                    }
-                    is BackendResult.Err ->
-                        setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
-                }
-            } catch (t: Throwable) { setStatus("Threw: ${t.message}") }
-        }
+        // Blocking API removed - use streaming API instead
+        setStatus("Blocking API removed. Use streaming API.")
+        // val req = buildLoadRequest()
+        // engineExecutor.execute {
+        //     val e = loadModelInternal(req)
+        //     if (e == null) { setStatus("Model load failed."); return@execute }
+        //     try {
+        //         when (val r = e.runModelHandleWithMessages(messages)) {
+        //             is BackendResult.Ok -> {
+        //                 outputText = r.value
+        //                 mainHandler.post { outputView.text = r.value }
+        //                 setStatus("Done.")
+        //             }
+        //             is BackendResult.Err ->
+        //                 setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+        //         }
+        //     } catch (t: Throwable) { setStatus("Threw: ${t.message}") }
+        // }
     }
 
     /* ───── Image picker handlers ───── */

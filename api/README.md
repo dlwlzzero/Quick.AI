@@ -5,8 +5,19 @@ Quick.AI is a C API library for on-device AI model execution. It supports LLM in
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 Supported Models](#11-supported-models)
+   - [1.2 Backend Types](#12-backend-types)
+   - [1.3 Quantization Types](#13-quantization-types)
 2. [API Reference](#2-api-reference)
+   - [2.1 Configuration and Initialization](#21-configuration-and-initialization)
+   - [2.2 Legacy Single Model API](#22-legacy-single-model-api)
+   - [2.3 Handle-based API - Model Management](#23-handle-based-api---model-management)
+   - [2.4 Handle-based API - Inference Execution](#24-handle-based-api---inference-execution)
+   - [2.5 Multimodal API](#25-multimodal-api)
+   - [2.6 XGrammar API - Structured Generation](#26-xgrammar-api---structured-generation)
 3. [Usage Guide](#3-usage-guide)
+   - [3.1 C/C++ Examples](#31-cc-examples)
+   - [3.2 Kotlin/Java (JNI) Usage Guide](#32-kotlinjava-jni-usage-guide)
 4. [Error Code Reference](#4-error-code-reference)
 
 ---
@@ -15,17 +26,20 @@ Quick.AI is a C API library for on-device AI model execution. It supports LLM in
 
 ### 1.1 Supported Models
 
-| Model Type | Model Name | Description |
-|------------|------------|-------------|
-| `CAUSAL_LM_MODEL_QWEN3_0_6B` | QWEN3-0.6B | Qwen3 0.6B model |
-| `CAUSAL_LM_MODEL_GAUSS2_5` | GAUSS2.5-1B | Gauss 2.5 1B model |
-| `CAUSAL_LM_MODEL_QWEN3_1_7B_Q40` | QWEN3-1.7B-Q40 | Qwen3 1.7B Q40 quantized model |
-| `CAUSAL_LM_MODEL_GAUSS3_6` | GAUSS3.6 | Gauss 3.6 model |
-| `CAUSAL_LM_MODEL_TINY_BERT` | TINY_BERT | Multilingual TinyBERT model |
-| `CAUSAL_LM_MODEL_GAUSS3_6_QNN` | GAUSS3.6-QNN | Gauss 3.6 QNN accelerated model (QNN required) |
-| `CAUSAL_LM_MODEL_GAUSS3_8_QNN` | GAUSS3.8-QNN | Gauss 3.8 QNN accelerated model (QNN required) |
-| `CAUSAL_LM_MODEL_GAUSS3_8_VE_QNN` | GAUSS3.8-VE-QNN | Gauss 3.8 Vision Encoder (QNN required) |
-| `CAUSAL_LM_MODEL_GAUSS3_8_VIT_QNN` | GAUSS3.8-VIT-QNN | Gauss 3.8 ViT model (QNN required) |
+| Enum Value | Integer | Model Name | Description |
+|------------|---------|------------|-------------|
+| `CAUSAL_LM_MODEL_QWEN3_0_6B` | 0 | Qwen3 0.6B | Qwen3 0.6B model |
+| `CAUSAL_LM_MODEL_GAUSS2_5` | 1 | Gauss 2.5 | Gauss 2.5 1B model |
+| `CAUSAL_LM_MODEL_GAUSS3_6_QNN` | 2 | Gauss 3.6 QNN | Gauss 3.6 QNN accelerated model (QNN required) |
+| `CAUSAL_LM_MODEL_GAUSS3_8_QNN` | 3 | Gauss 3.8 QNN | Gauss 3.8 QNN accelerated model (QNN required) |
+| `CAUSAL_LM_MODEL_QWEN3_1_7B_Q40` | 4 | Qwen3 1.7B Q40 | Qwen3 1.7B Q40 quantized model |
+| `CAUSAL_LM_MODEL_GAUSS3_8_VE_QNN` | 5 | Gauss 3.8 VE QNN | Gauss 3.8 Vision Encoder (QNN required) |
+| `CAUSAL_LM_MODEL_GAUSS3_8_VIT_QNN` | 6 | Gauss 3.8 ViT QNN | Gauss 3.8 ViT model (QNN required) |
+| `CAUSAL_LM_MODEL_GAUSS3_6` | 7 | Gauss 3.6 | Gauss 3.6 model (non-QNN) |
+| `CAUSAL_LM_MODEL_TINY_BERT` | 8 | TinyBERT | Multilingual TinyBERT model |
+| `CAUSAL_LM_MODEL_FUNCTION_GEMMA` | 9 | Function Gemma | Function calling Gemma model |
+| `CAUSAL_LM_MODEL_GAUSS3_8` | 10 | Gauss 3.8 | Gauss 3.8 model (non-QNN) |
+| `CAUSAL_LM_MODEL_GEMMA4_CPU` | 11 | Gemma4 CPU | Gemma 4 CPU model |
 
 > **Note**: Models with QNN suffix are only available when `ENABLE_QNN` build option is enabled.
 
@@ -53,6 +67,10 @@ Quick.AI is a C API library for on-device AI model execution. It supports LLM in
 
 ### 2.1 Configuration and Initialization
 
+| API | Description |
+|---|---|
+| [setOptions()](#setoptions) | Sets global configuration options (chat template, debug, verbose) |
+
 #### setOptions()
 
 ```c
@@ -78,44 +96,18 @@ Sets global options.
 
 ---
 
-#### registerModelArchitecture()
-
-```c
-ErrorCode registerModelArchitecture(const char *arch_name, ModelArchConfig config);
-```
-
-Registers a new model architecture.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `arch_name` | `const char *` | Architecture name |
-| `config` | `ModelArchConfig` | Architecture configuration |
-
-**Returns**: `ErrorCode`
-
----
-
-#### registerModel()
-
-```c
-ErrorCode registerModel(const char *model_name, const char *arch_name, ModelRuntimeConfig config);
-```
-
-Registers a new model.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `model_name` | `const char *` | Model name |
-| `arch_name` | `const char *` | Architecture name |
-| `config` | `ModelRuntimeConfig` | Runtime configuration |
-
-**Returns**: `ErrorCode`
-
----
-
 ### 2.2 Legacy Single Model API
 
 > **Note**: These APIs use a global single model instance. Use handle-based APIs to run multiple models simultaneously.
+
+| API | Description |
+|---|---|
+| [loadModel()](#loadmodel) | Loads a model into the global single instance |
+| [getPerformanceMetrics()](#getperformancemetrics) | Retrieves performance metrics from the last inference |
+| [applyChatTemplate()](#applychattemplate) | Applies chat template to chat messages without running inference |
+| [saveQnnKvCache()](#saveqnnkvcache) | Saves QNN KV cache to file |
+| [loadQnnKvCache()](#loadqnnkvcache) | Loads QNN KV cache from file |
+| [resetQnnKvCache()](#resetqnnkvcache) | Resets QNN KV cache |
 
 #### loadModel()
 
@@ -185,15 +177,13 @@ Applies chat template to chat messages.
 
 ---
 
-#### saveQnnKvCache() / loadQnnKvCache() / resetQnnKvCache()
+#### saveQnnKvCache()
 
 ```c
 ErrorCode saveQnnKvCache(const char *cache_path);
-ErrorCode loadQnnKvCache(const char *cache_path);
-ErrorCode resetQnnKvCache(void);
 ```
 
-Saves/loads/resets QNN KV cache.
+Saves QNN KV cache.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -205,9 +195,51 @@ Saves/loads/resets QNN KV cache.
 
 ---
 
+#### loadQnnKvCache()
+
+```c
+ErrorCode loadQnnKvCache(const char *cache_path);
+```
+
+Loads QNN KV cache.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `cache_path` | `const char *` | Cache file path |
+
+**Returns**: `ErrorCode`
+
+> **Note**: Only supported in QNN builds.
+
+---
+
+#### resetQnnKvCache()
+
+```c
+ErrorCode resetQnnKvCache(void);
+```
+
+Resets QNN KV cache.
+
+**Returns**: `ErrorCode`
+
+> **Note**: Only supported in QNN builds.
+
+---
+
 ### 2.3 Handle-based API - Model Management
 
 > **Tip**: Handle-based APIs allow loading multiple models simultaneously and running them in parallel. Each handle has independent state.
+
+| API | Description |
+|---|---|
+| [loadModelHandle()](#loadmodelhandle) | Loads a model and returns a handle |
+| [destroyModelHandle()](#destroymodelhandle) | Releases the handle and associated resources |
+| [unloadModelHandle()](#unloadmodelhandle) | Unloads the model from a handle (keeps handle struct) |
+| [getPerformanceMetricsHandle()](#getperformancemetricshandle) | Retrieves per-handle performance metrics |
+| [saveQnnKvCacheHandle()](#saveqnnkvcachehandle) | Saves QNN KV cache for a handle |
+| [loadQnnKvCacheHandle()](#loadqnnkvcachehandle) | Loads QNN KV cache for a handle |
+| [resetQnnKvCacheHandle()](#resetqnnkvcachehandle) | Resets QNN KV cache for a handle |
 
 #### loadModelHandle()
 
@@ -286,15 +318,13 @@ Retrieves per-handle performance metrics.
 
 ---
 
-#### KV Cache (Handle-based)
+#### saveQnnKvCacheHandle()
 
 ```c
 ErrorCode saveQnnKvCacheHandle(CausalLmHandle handle, const char *cache_path);
-ErrorCode loadQnnKvCacheHandle(CausalLmHandle handle, const char *cache_path);
-ErrorCode resetQnnKvCacheHandle(CausalLmHandle handle);
 ```
 
-Saves/loads/resets QNN KV cache for a handle.
+Saves QNN KV cache for a handle.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -305,9 +335,50 @@ Saves/loads/resets QNN KV cache for a handle.
 
 ---
 
-### 2.4 Handle-based API - Inference Execution (runModel)
+#### loadQnnKvCacheHandle()
+
+```c
+ErrorCode loadQnnKvCacheHandle(CausalLmHandle handle, const char *cache_path);
+```
+
+Loads QNN KV cache for a handle.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | `CausalLmHandle` | Model handle |
+| `cache_path` | `const char *` | Cache file path |
+
+**Returns**: `ErrorCode`
+
+---
+
+#### resetQnnKvCacheHandle()
+
+```c
+ErrorCode resetQnnKvCacheHandle(CausalLmHandle handle);
+```
+
+Resets QNN KV cache for a handle.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | `CausalLmHandle` | Model handle |
+
+**Returns**: `ErrorCode`
+
+---
+
+### 2.4 Handle-based API - Inference Execution
 
 > **Tip**: Inference functions are categorized into blocking and streaming modes.
+
+| API | Description |
+|---|---|
+| [runModelHandleWithMessages()](#runmodelhandlewithmessages) | Blocking inference with OpenAI message format |
+| [runModelHandleStreaming()](#runmodelhandlestreaming) | Streaming inference with raw text prompt |
+| [cancelModelHandle()](#cancelmodelhandle) | Cancels ongoing inference on a handle |
+| [runModelHandleWithMessagesStreaming()](#runmodelhandlewithmessagesstreaming) | Streaming inference with OpenAI message format |
+| [runModelHandleWithJsonStreaming()](#runmodelhandlewithjsonstreaming) | Streaming inference with OpenAI JSON format |
 
 #### Streaming API Details
 
@@ -321,7 +392,7 @@ typedef int (*CausalLmTokenCallback)(const char *delta, void *user_data);
 | Parameter | Description |
 |-----------|-------------|
 | `delta` | UTF-8 text generated at current token. Valid only during callback invocation; copy if needed |
-| `user_data` | User data pointer passed to `runModelHandleStreaming()` |
+| `user_data` | User data pointer passed to streaming functions |
 
 **Return Values**:
 - `0`: Continue generation
@@ -485,9 +556,50 @@ destroyModelHandle(handle);
 
 ---
 
+#### runModelHandleWithJsonStreaming()
+
+```c
+ErrorCode runModelHandleWithJsonStreaming(CausalLmHandle handle,
+                                          const char *jsonRequest,
+                                          CausalLmTokenCallback callback,
+                                          void *user_data);
+```
+
+Runs streaming inference with OpenAI JSON format. Parses the JSON request (including messages, tools, and functions) and applies the chat template, then drives generation token-by-token.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `handle` | `CausalLmHandle` | Model handle |
+| `jsonRequest` | `const char *` | OpenAI format JSON string (UTF-8, NUL-terminated) |
+| `callback` | `CausalLmTokenCallback` | Token callback function |
+| `user_data` | `void *` | User data to pass to callback |
+
+**Returns**: `ErrorCode`
+
+**Example JSON Input**:
+```json
+{
+  "messages": [
+    {"role": "developer", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"}
+  ],
+  "tools": [
+    {"type": "function", "function": {"name": "call", "description": "..."}}
+  ]
+}
+```
+
+---
+
 ### 2.5 Multimodal API
 
 > **Prerequisite**: Multimodal APIs are only supported in QNN builds. The handle must be loaded with Vision Encoder and LLM sub-models.
+
+| API | Description |
+|---|---|
+| [runMultimodalHandleStreaming()](#runmultimodalhandlestreaming) | Streaming multimodal (image+text) inference |
+| [runMultimodalHandleWithMessages()](#runmultimodalhandlewithmessages) | Blocking multimodal inference with OpenAI message format |
+| [runMultimodalHandleWithMessagesStreaming()](#runmultimodalhandlewithmessagesstreaming) | Streaming multimodal inference with OpenAI message format |
 
 #### runMultimodalHandleStreaming()
 
@@ -650,6 +762,10 @@ destroyModelHandle(handle);
 ### 2.6 XGrammar API - Structured Generation
 
 > **Prerequisite**: XGrammar is integrated for grammar-constrained text generation, ensuring 100% structural correctness of outputs. For detailed usage, see [How to Use XGrammar](../docs/how-to-use-xgrammar.md).
+
+| API | Description |
+|---|---|
+| [runModelHandleWithTool()](#runmodelhandlewithtool) | Runs inference with grammar-constrained generation for structured output (tools/functions) |
 
 #### runModelHandleWithTool()
 
@@ -1042,7 +1158,7 @@ class StreamingRunner(private val handle: Long) {
 | 3 | `CAUSAL_LM_ERROR_INFERENCE_FAILED` | Inference failed | Out of memory, internal error |
 | 4 | `CAUSAL_LM_ERROR_NOT_INITIALIZED` | Not initialized | Inference called before model load |
 | 5 | `CAUSAL_LM_ERROR_INFERENCE_NOT_RUN` | Inference not run | Metrics queried before inference |
-| 6 | `CAUSAL_LM_ERROR_UNSUPPORTED` | Unsupported | QNN feature used without QNN build |
+| 6 | `CAUSAL_LM_ERROR_UNSUPPORTED` | Unsupported | Feature not available on this build/handle |
 | 99 | `CAUSAL_LM_ERROR_UNKNOWN` | Unknown error | Exception thrown, internal error |
 
 ---

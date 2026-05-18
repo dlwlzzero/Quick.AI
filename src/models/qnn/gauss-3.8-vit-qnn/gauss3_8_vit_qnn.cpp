@@ -328,7 +328,9 @@ void causallm::Gauss3_8_VIT_QNN::run(const WSTR prompt, bool do_sample,
   auto &generation_model = models[generation_graph].model_handle;
 
   std::cout << "before prefill model run..." << std::endl;
+  auto prefill_start = std::chrono::high_resolution_clock::now();
   auto outputs = prefill_model->inference(1, prefill_inputs);
+  auto prefill_end = std::chrono::high_resolution_clock::now();
   auto token = _input.back();
   std::vector<int> output;
 
@@ -394,6 +396,18 @@ void causallm::Gauss3_8_VIT_QNN::run(const WSTR prompt, bool do_sample,
   }
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
+
+  performance_metrics.prefill_tokens = _len;
+  performance_metrics.prefill_duration_ms =
+      std::chrono::duration<double, std::milli>(prefill_end - prefill_start).count();
+  performance_metrics.generation_tokens = (idx > static_cast<int>(_len)) ? (unsigned int)(idx - static_cast<int>(_len)) : 0U;
+  performance_metrics.generation_duration_ms =
+      std::chrono::duration<double, std::milli>(end - start).count();
+  performance_metrics.total_duration_ms =
+      performance_metrics.prefill_duration_ms + performance_metrics.generation_duration_ms;
+  performance_metrics.peak_memory_kb = 0; // TODO: implement memory tracking
+  has_run_ = true;
+
   std::cout << std::endl;
   std::cout << std::endl;
   std::cout << "Generation exec_time : " << raw_exec_seconds.count()

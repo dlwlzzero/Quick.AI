@@ -141,73 +141,6 @@ class NativeQuickDotAI(
         }
     }
 
-    override fun run(prompt: String): BackendResult<String> {
-        if (!loaded || handle == 0L) {
-            return BackendResult.Err(QuickAiError.NOT_INITIALIZED)
-        }
-        val messages = listOf(
-            QuickAiChatMessage(role = QuickAiChatRole.USER, parts = listOf(PromptPart.Text(prompt)))
-        )
-        return runWithMessages(messages)
-    }
-
-    /**
-     * @brief Streaming override that forwards deltas from the native
-     * `runModelHandleStreaming` entry point into [sink].
-     *
-     * Threading: this method runs on the caller thread; the native
-     * callback is invoked synchronously on the same thread for every
-     * delta, so no JNI AttachCurrentThread is needed. Terminal events
-     * (onDone / onError) are synthesized from the native return value
-     * because the C API reports completion through its return code
-     * rather than through the streamer vtable.
-     */
-    override fun runStreaming(
-        prompt: String,
-        sink: StreamSink
-    ): BackendResult<Unit> {
-        if (!loaded || handle == 0L) {
-            Log.e(TAG, "runStreaming(): called before load()")
-            val err = BackendResult.Err(
-                QuickAiError.NOT_INITIALIZED,
-                "NativeQuickDotAI has not been loaded yet"
-            )
-            sink.onError(err.error, err.message)
-            return err
-        }
-
-        Log.i(TAG, "runStreaming(): prompt length=${prompt.length}")
-        return try {
-            val errorCode = NativeCausalLm.runModelHandleStreamingNative(
-                handle,
-                prompt
-            ) { delta ->
-                // Called on the caller thread (this one). Forward
-                // straight to the sink — the contract is that sink
-                // implementations are non-blocking.
-                sink.onDelta(delta)
-            }
-            if (errorCode != 0) {
-                val err = QuickAiError.fromNativeCode(errorCode)
-                Log.e(
-                    TAG,
-                    "runStreaming(): runModelHandleStreaming failed " +
-                        "errorCode=$errorCode (${err.name})"
-                )
-                sink.onError(err, "runModelHandleStreaming failed (errorCode=$errorCode)")
-                BackendResult.Err(err, "runModelHandleStreaming failed (errorCode=$errorCode)")
-            } else {
-                Log.i(TAG, "runStreaming(): native runner returned NONE, signalling onDone")
-                sink.onDone()
-                BackendResult.Ok(Unit)
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "runStreaming(): runModelHandleStreamingNative threw", t)
-            sink.onError(QuickAiError.INFERENCE_FAILED, t.message)
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
-    }
-
     override fun metrics(): BackendResult<PerformanceMetrics> {
         if (!loaded || handle == 0L) {
             return BackendResult.Err(QuickAiError.NOT_INITIALIZED)
@@ -302,19 +235,8 @@ class NativeQuickDotAI(
         return BackendResult.Ok(Unit)
     }
 
-    override fun chatRun(
-        messages: List<QuickAiChatMessage>
-    ): BackendResult<QuickAiChatResult> {
-        val session = activeSession
-            ?: return BackendResult.Err(
-                QuickAiError.BAD_REQUEST,
-                "No active chat session — call openChatSession() first"
-            )
-        return session.run(messages)
-    }
-
-    override fun chatRunStreaming(
-        messages: List<QuickAiChatMessage>,
+    override fun runChatModelHandleStreaming(
+        text: String,
         sink: StreamSink
     ): BackendResult<QuickAiChatResult> {
         val session = activeSession
@@ -326,7 +248,23 @@ class NativeQuickDotAI(
             sink.onError(err.error, err.message)
             return err
         }
-        return session.runStreaming(messages, sink)
+        return session.runStreaming(text, sink)
+    }
+
+    override fun runChatMultimodalHandleStreaming(
+        parts: List<PromptPart>,
+        sink: StreamSink
+    ): BackendResult<QuickAiChatResult> {
+        val session = activeSession
+        if (session == null) {
+            val err = BackendResult.Err(
+                QuickAiError.BAD_REQUEST,
+                "No active chat session — call openChatSession() first"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+        return session.runMultimodalStreaming(parts, sink)
     }
 
     override fun cancel() {
@@ -357,40 +295,7 @@ class NativeQuickDotAI(
 
     // --- OpenAI messages API (handle-based) --------------------------------
 
-    override fun runWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
-        if (!loaded || handle == 0L) {
-            return BackendResult.Err(
-                QuickAiError.NOT_INITIALIZED,
-                "NativeQuickDotAI has not been loaded yet"
-            )
-        }
-        return try {
-            val accumulated = StringBuilder()
-            val errorCode = NativeCausalLm.runModelHandleWithMessagesStreamingNative(
-                handle = handle,
-                messages = messages.toTypedArray(),
-                addGenerationPrompt = true,
-                listener = object : NativeCausalLm.NativeStreamListener {
-                    override fun onDelta(text: String) {
-                        accumulated.append(text)
-                    }
-                }
-            )
-            if (errorCode != 0) {
-                BackendResult.Err(QuickAiError.fromNativeCode(errorCode))
-            } else {
-                BackendResult.Ok(accumulated.toString())
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "runWithMessages threw", t)
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
-    }
-
-    /**
-     * @brief Streaming inference with OpenAI message format on a specific handle.
-     */
-    override fun runWithMessagesStreaming(
+    override fun runModelHandleWithMessagesStreaming(
         messages: List<QuickAiChatMessage>,
         sink: StreamSink
     ): BackendResult<Unit> {
@@ -452,7 +357,7 @@ class NativeQuickDotAI(
      * @param sink StreamSink for receiving streaming output
      * @return BackendResult<Unit>
      */
-    override fun runWithJsonStreaming(
+    override fun runModelHandleWithJsonStreaming(
         jsonRequest: String,
         sink: StreamSink
     ): BackendResult<Unit> {
@@ -489,83 +394,10 @@ class NativeQuickDotAI(
         }
     }
 
-    override fun runMultimodalWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
-        if (!loaded || handle == 0L) {
-            return BackendResult.Err(
-                QuickAiError.NOT_INITIALIZED,
-                "NativeQuickDotAI has not been loaded yet"
-            )
-        }
-
-        val processor = imageProcessor
-        if (processor == null) {
-            return BackendResult.Err(
-                QuickAiError.UNSUPPORTED,
-                "Vision model not loaded"
-            )
-        }
-
-        // Extract image from messages (1 only, [text, image] order)
-        val allParts = messages.flatMap { it.parts }
-        val imageParts = allParts.filterIsInstance<PromptPart.ImageBytes>()
-
-        if (imageParts.isEmpty()) {
-            return BackendResult.Err(
-                QuickAiError.INVALID_PARAMETER,
-                "No image found. Expected parts: [Text, ImageBytes]"
-            )
-        }
-        if (imageParts.size > 1) {
-            return BackendResult.Err(
-                QuickAiError.INVALID_PARAMETER,
-                "Only 1 image is allowed. Found ${imageParts.size}"
-            )
-        }
-
-        val multimodalInput = prepareMultimodalInput(allParts, processor)
-        if (multimodalInput == null) {
-            return BackendResult.Err(
-                QuickAiError.INVALID_PARAMETER,
-                "Image preprocessing failed"
-            )
-        }
-
-        // Create text-only messages for C API
-        val textMessages = messages.map { msg ->
-            msg.copy(parts = msg.parts.filterIsInstance<PromptPart.Text>())
-        }
-
-        return try {
-            val accumulated = StringBuilder()
-            val errorCode = NativeCausalLm.runMultimodalHandleWithMessagesStreamingNative(
-                handle = handle,
-                messages = messages.toTypedArray(),
-                addGenerationPrompt = true,
-                pixelValues = multimodalInput.pixelValues,
-                numPatches = multimodalInput.numPatches,
-                originalHeight = multimodalInput.originalHeight,
-                originalWidth = multimodalInput.originalWidth,
-                listener = object : NativeCausalLm.NativeStreamListener {
-                    override fun onDelta(text: String) {
-                        accumulated.append(text)
-                    }
-                }
-            )
-            if (errorCode != 0) {
-                BackendResult.Err(QuickAiError.fromNativeCode(errorCode))
-            } else {
-                BackendResult.Ok(accumulated.toString())
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "runMultimodalWithMessages threw", t)
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
-    }
-
     /**
      * @brief Streaming multimodal inference with OpenAI message format on a specific handle.
      */
-    override fun runMultimodalWithMessagesStreaming(
+    override fun runMultimodalHandleWithMessagesStreaming(
         messages: List<QuickAiChatMessage>,
         sink: StreamSink
     ): BackendResult<Unit> {
@@ -673,7 +505,7 @@ class NativeQuickDotAI(
      * @param parts List of PromptPart containing text and/or images
      * @return BackendResult with generated text on success
      */
-    override fun runMultimodal(parts: List<PromptPart>): BackendResult<String> {
+    override fun runMultimodalHandle(parts: List<PromptPart>): BackendResult<String> {
         if (!loaded || handle == 0L) {
             return BackendResult.Err(
                 QuickAiError.NOT_INITIALIZED,
@@ -746,7 +578,7 @@ class NativeQuickDotAI(
      * @param sink StreamSink to receive streaming output
      * @return BackendResult<Unit> on completion
      */
-    override fun runMultimodalStreaming(
+    override fun runMultimodalHandleStreaming(
         parts: List<PromptPart>,
         sink: StreamSink
     ): BackendResult<Unit> {

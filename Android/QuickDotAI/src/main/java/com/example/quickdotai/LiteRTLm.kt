@@ -190,165 +190,6 @@ class LiteRTLm(
         }
     }
 
-    override fun run(prompt: String): BackendResult<String> {
-        val c = conversation
-            ?: run {
-                Log.e(TAG, "run(): called before load() — conversation is null")
-                return BackendResult.Err(
-                    QuickAiError.NOT_INITIALIZED,
-                    "LiteRTLm has not been loaded yet"
-                )
-            }
-
-        Log.i(TAG, "run(): sending prompt of length ${prompt.length}")
-        return try {
-            val startNs = System.nanoTime()
-            // Blocking synchronous send; callers are expected to drive
-            // us from a background thread. Streaming is handled in
-            // runStreaming() via sendMessageAsync().
-            val message = c.sendMessage(prompt)
-            lastRunDurationMs = (System.nanoTime() - startNs) / 1_000_000.0
-            val output = message.toString()
-            Log.i(
-                TAG,
-                "run(): sendMessage returned in ${lastRunDurationMs.toLong()} ms, " +
-                    "output length=${output.length}"
-            )
-            BackendResult.Ok(output)
-        } catch (t: Throwable) {
-            Log.e(TAG, "run(): LiteRT-LM sendMessage failed", t)
-            BackendResult.Err(
-                QuickAiError.INFERENCE_FAILED,
-                t.message ?: "LiteRT-LM inference failed"
-            )
-        }
-    }
-
-    /**
-     * @brief Streaming override that drives LiteRT-LM's asynchronous
-     * `sendMessageAsync(prompt, MessageCallback)` and forwards each
-     * incremental `onMessage` to [sink] as a delta.
-     *
-     * The caller's thread blocks on a [CountDownLatch] until LiteRT-LM
-     * invokes either `onDone` or `onError`, so FIFO ordering across
-     * streaming and non-streaming jobs is preserved — we do not return
-     * to the caller while the model is still decoding tokens.
-     *
-     * LiteRT-LM's `onMessage(Message)` contract is not explicit about
-     * whether each Message is a delta or a running accumulation. We
-     * therefore keep a private StringBuilder of everything we've
-     * emitted so far and only forward the new suffix when the incoming
-     * message starts with it — otherwise (defensive fallback) we
-     * forward the raw text. This handles both shapes without
-     * double-emitting tokens.
-     */
-    override fun runStreaming(
-        prompt: String,
-        sink: StreamSink
-    ): BackendResult<Unit> {
-        val c = conversation
-            ?: run {
-                Log.e(TAG, "runStreaming(): called before load()")
-                val err = BackendResult.Err(
-                    QuickAiError.NOT_INITIALIZED,
-                    "LiteRTLm has not been loaded yet"
-                )
-                sink.onError(err.error, err.message)
-                return err
-            }
-
-        Log.i(TAG, "runStreaming(): prompt length=${prompt.length}")
-
-        cancelRequested.set(false)
-
-        val latch = CountDownLatch(1)
-        val accumulated = StringBuilder()
-        // Outcome is published from the callback thread and read on the
-        // caller thread after latch.await() returns.
-        var terminalError: BackendResult.Err? = null
-        val startNs = System.nanoTime()
-
-        val callback = object : MessageCallback {
-            override fun onMessage(message: Message) {
-                if (cancelRequested.get()) return
-                try {
-                    val full = message.toString()
-                    // Defensive delta extraction — if the callback emits
-                    // accumulated snapshots we forward only the suffix;
-                    // if it already emits per-token deltas, `full` will
-                    // not start with `accumulated` and we forward the raw
-                    // text and accumulate it.
-                    val delta = if (full.startsWith(accumulated.toString())) {
-                        full.substring(accumulated.length)
-                    } else {
-                        full
-                    }
-                    if (delta.isNotEmpty()) {
-                        accumulated.append(delta)
-                        sink.onDelta(delta)
-                    }
-                } catch (t: Throwable) {
-                    Log.w(TAG, "runStreaming(): onMessage threw", t)
-                }
-            }
-
-            override fun onDone() {
-                lastRunDurationMs = (System.nanoTime() - startNs) / 1_000_000.0
-                Log.i(
-                    TAG,
-                    "runStreaming(): onDone after ${lastRunDurationMs.toLong()} ms, " +
-                        "total chars=${accumulated.length}"
-                )
-                try {
-                    sink.onDone()
-                } finally {
-                    latch.countDown()
-                }
-            }
-
-            override fun onError(throwable: Throwable) {
-                Log.e(TAG, "runStreaming(): onError from LiteRT-LM", throwable)
-                val err = BackendResult.Err(
-                    QuickAiError.INFERENCE_FAILED,
-                    throwable.message ?: "LiteRT-LM streaming inference failed"
-                )
-                terminalError = err
-                try {
-                    sink.onError(err.error, err.message)
-                } finally {
-                    latch.countDown()
-                }
-            }
-        }
-
-        return try {
-            c.sendMessageAsync(prompt, callback)
-            // Wait up to 5 minutes — the same envelope the host
-            // QuickAIService uses for blocking runs. If the callback
-            // never fires we surface a timeout so the caller thread
-            // isn't parked forever.
-            val finished = latch.await(5, TimeUnit.MINUTES)
-            if (!finished) {
-                Log.e(TAG, "runStreaming(): timed out waiting for onDone/onError")
-                val err = BackendResult.Err(
-                    QuickAiError.INFERENCE_FAILED,
-                    "LiteRT-LM streaming timeout"
-                )
-                sink.onError(err.error, err.message)
-                return err
-            }
-            terminalError ?: BackendResult.Ok(Unit)
-        } catch (t: Throwable) {
-            Log.e(TAG, "runStreaming(): sendMessageAsync threw", t)
-            val err = BackendResult.Err(
-                QuickAiError.INFERENCE_FAILED,
-                t.message ?: "LiteRT-LM streaming inference failed"
-            )
-            sink.onError(err.error, err.message)
-            err
-        }
-    }
-
     /**
      * @brief Multimodal inference — blocking.
      *
@@ -359,7 +200,7 @@ class LiteRTLm(
      * [LoadModelRequest.visionBackend] get a clear UNSUPPORTED error
      * rather than a cryptic native crash.
      */
-    override fun runMultimodal(parts: List<PromptPart>): BackendResult<String> {
+    override fun runMultimodalHandle(parts: List<PromptPart>): BackendResult<String> {
         val c = conversation
             ?: run {
                 Log.e(TAG, "runMultimodal(): called before load() — conversation is null")
@@ -429,7 +270,7 @@ class LiteRTLm(
      * text-only path (see [runStreaming] for the rationale behind
      * the `accumulated` StringBuilder defensive handling).
      */
-    override fun runMultimodalStreaming(
+    override fun runMultimodalHandleStreaming(
         parts: List<PromptPart>,
         sink: StreamSink
     ): BackendResult<Unit> {
@@ -636,24 +477,8 @@ class LiteRTLm(
         return BackendResult.Ok(Unit)
     }
 
-    override fun chatRun(
-        messages: List<QuickAiChatMessage>
-    ): BackendResult<QuickAiChatResult> {
-        val session = activeSession
-            ?: return BackendResult.Err(
-                QuickAiError.BAD_REQUEST,
-                "No active chat session — call openChatSession() first"
-            )
-        return try {
-            session.run(messages)
-        } catch (t: Throwable) {
-            Log.e(TAG, "chatRun(): threw", t)
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
-    }
-
-    override fun chatRunStreaming(
-        messages: List<QuickAiChatMessage>,
+    override fun runChatModelHandleStreaming(
+        text: String,
         sink: StreamSink
     ): BackendResult<QuickAiChatResult> {
         val session = activeSession
@@ -666,9 +491,12 @@ class LiteRTLm(
             return err
         }
         return try {
+            val messages = listOf(
+                QuickAiChatMessage(role = QuickAiChatRole.USER, parts = listOf(PromptPart.Text(text)))
+            )
             session.runStreaming(messages, sink)
         } catch (t: Throwable) {
-            Log.e(TAG, "chatRunStreaming(): threw", t)
+            Log.e(TAG, "runChatModelHandleStreaming(): threw", t)
             val err = BackendResult.Err(
                 QuickAiError.INFERENCE_FAILED,
                 t.message ?: "chat streaming failed"
@@ -680,54 +508,6 @@ class LiteRTLm(
 
     // ----- OpenAI messages API (handle-based) --------------------------------
 
-    override fun runWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
-        val c = conversation
-            ?: return BackendResult.Err(QuickAiError.NOT_INITIALIZED)
-
-        val prompt = messages.joinToString("\n") { msg ->
-            "${msg.role}: ${msg.parts.filterIsInstance<PromptPart.Text>().joinToString("") { it.text }}"
-        }
-
-        return try {
-            val message = c.sendMessage(prompt)
-            BackendResult.Ok(message.toString())
-        } catch (t: Throwable) {
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
-    }
-
-    override fun runMultimodalWithMessages(messages: List<QuickAiChatMessage>): BackendResult<String> {
-        val c = conversation
-            ?: return BackendResult.Err(QuickAiError.NOT_INITIALIZED)
-        if (!visionEnabled) {
-            return BackendResult.Err(QuickAiError.UNSUPPORTED, "Vision not enabled")
-        }
-
-        // Validate image count (1 only)
-        val imageCount = messages.sumOf { msg ->
-            msg.parts.count { it is PromptPart.ImageBytes || it is PromptPart.ImageFile }
-        }
-        if (imageCount == 0) {
-            return BackendResult.Err(QuickAiError.INVALID_PARAMETER, "No image found")
-        }
-        if (imageCount > 1) {
-            return BackendResult.Err(QuickAiError.INVALID_PARAMETER, "Only 1 image is allowed")
-        }
-
-        val contents = try {
-            toLiteRtContentsFromMessages(messages)
-        } catch (t: Throwable) {
-            return BackendResult.Err(QuickAiError.INVALID_PARAMETER, t.message)
-        }
-
-        return try {
-            val message = c.sendMessage(contents)
-            BackendResult.Ok(message.toString())
-        } catch (t: Throwable) {
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
-    }
-
     /**
      * @brief Streaming inference with OpenAI message format.
      *
@@ -735,20 +515,31 @@ class LiteRTLm(
      * LiteRT-LM does not currently support true token-by-token streaming for
      * handle-based messages, so this is implemented as blocking + chunk.
      */
-    override fun runWithMessagesStreaming(
+    override fun runModelHandleWithMessagesStreaming(
         messages: List<QuickAiChatMessage>,
         sink: StreamSink
     ): BackendResult<Unit> {
-        return when (val r = runWithMessages(messages)) {
-            is BackendResult.Ok -> {
-                if (r.value.isNotEmpty()) sink.onDelta(r.value)
-                sink.onDone()
-                BackendResult.Ok(Unit)
+        val c = conversation
+            ?: run {
+                val err = BackendResult.Err(QuickAiError.NOT_INITIALIZED)
+                sink.onError(err.error, err.message)
+                return err
             }
-            is BackendResult.Err -> {
-                sink.onError(r.error, r.message)
-                r
-            }
+
+        val prompt = messages.joinToString("\n") { msg ->
+            "${msg.role}: ${msg.parts.filterIsInstance<PromptPart.Text>().joinToString("") { it.text }}"
+        }
+
+        return try {
+            val message = c.sendMessage(prompt)
+            val text = message.toString()
+            if (text.isNotEmpty()) sink.onDelta(text)
+            sink.onDone()
+            BackendResult.Ok(Unit)
+        } catch (t: Throwable) {
+            val err = BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+            sink.onError(err.error, err.message)
+            err
         }
     }
 
@@ -757,20 +548,55 @@ class LiteRTLm(
      *
      * Accumulates deltas into a single response, then emits it through [sink].
      */
-    override fun runMultimodalWithMessagesStreaming(
+    override fun runMultimodalHandleWithMessagesStreaming(
         messages: List<QuickAiChatMessage>,
         sink: StreamSink
     ): BackendResult<Unit> {
-        return when (val r = runMultimodalWithMessages(messages)) {
-            is BackendResult.Ok -> {
-                if (r.value.isNotEmpty()) sink.onDelta(r.value)
-                sink.onDone()
-                BackendResult.Ok(Unit)
+        val c = conversation
+            ?: run {
+                val err = BackendResult.Err(QuickAiError.NOT_INITIALIZED)
+                sink.onError(err.error, err.message)
+                return err
             }
-            is BackendResult.Err -> {
-                sink.onError(r.error, r.message)
-                r
-            }
+        if (!visionEnabled) {
+            val err = BackendResult.Err(QuickAiError.UNSUPPORTED, "Vision not enabled")
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        // Validate image count (1 only)
+        val imageCount = messages.sumOf { msg ->
+            msg.parts.count { it is PromptPart.ImageBytes || it is PromptPart.ImageFile }
+        }
+        if (imageCount == 0) {
+            val err = BackendResult.Err(QuickAiError.INVALID_PARAMETER, "No image found")
+            sink.onError(err.error, err.message)
+            return err
+        }
+        if (imageCount > 1) {
+            val err = BackendResult.Err(QuickAiError.INVALID_PARAMETER, "Only 1 image is allowed")
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        val contents = try {
+            toLiteRtContentsFromMessages(messages)
+        } catch (t: Throwable) {
+            val err = BackendResult.Err(QuickAiError.INVALID_PARAMETER, t.message)
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        return try {
+            val message = c.sendMessage(contents)
+            val text = message.toString()
+            if (text.isNotEmpty()) sink.onDelta(text)
+            sink.onDone()
+            BackendResult.Ok(Unit)
+        } catch (t: Throwable) {
+            val err = BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+            sink.onError(err.error, err.message)
+            err
         }
     }
 

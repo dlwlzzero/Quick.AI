@@ -7,10 +7,10 @@
 apps through a shared background service.
 
 ```
- ┌────────────────┐   ┌────────────────┐   ┌────────────────┐
- │  ClientApp #1  │   │  ClientApp #2  │   │  LauncherApp   │
- │ (arbitrary UI) │   │ (arbitrary UI) │   │  (starts svc)  │
- └───────┬────────┘   └───────┬────────┘   └───────┬────────┘
+ ┌────────────────┐    ┌────────────────┐   ┌────────────────┐
+ │  ClientApp #1  │    │  ClientApp #2  │   │  LauncherApp   │
+ │ (arbitrary UI) │    │ (arbitrary UI) │   │  (starts svc)  │
+ └───────┬────────┘    └───────┬────────┘   └───────┬────────┘
          │   HTTP/JSON         │   HTTP/JSON        │
          └─────────────┬───────┴────────────────────┘
                        ▼
@@ -103,23 +103,24 @@ Every native entry point is exposed verbatim. `model_id` is a service-side
 identifier assigned when a model is loaded; it replaces the native global
 state (see §3 on parallelism).
 
-| Method | Path                              | Native call                 | Notes |
-|--------|-----------------------------------|-----------------------------|-------|
-| POST   | `/v1/options`                     | `setOptions`                | global, affects all future loads |
-| POST   | `/v1/models`                      | `loadModelHandle`           | returns `{model_id}` |
-| POST   | `/v1/models/{id}/run`             | `runModelHandle`            | returns `{output}` |
-| POST   | `/v1/models/{id}/run_stream`      | `runModelHandle` (streaming)| NDJSON chunked stream — see §5.1 |
-| GET    | `/v1/models/{id}/metrics`         | `getPerformanceMetricsHandle` | returns `PerformanceMetrics` JSON |
-| DELETE | `/v1/models/{id}`                 | `destroyModelHandle`        | unloads / frees |
-| GET    | `/v1/models`                      | (service-only)              | lists loaded models |
-| POST   | `/v1/connect`                     | (service-only)              | explicit handshake (test) |
-| GET    | `/v1/health`                      | (service-only)              | liveness probe |
-| POST   | `/v1/models/{id}/chat/open`       | `openChatSession`           | returns `{session_id}` |
-| POST   | `/v1/models/{id}/chat/run`        | `chatSession.run`           | structured chat inference |
-| POST   | `/v1/models/{id}/chat/run_stream` | `chatSession.runStreaming`  | structured chat NDJSON stream |
-| POST   | `/v1/models/{id}/chat/cancel`     | `chatSession.cancel`        | cancel in-flight generation |
-| POST   | `/v1/models/{id}/chat/rebuild`    | `chatSession.rebuild`       | replace conversation history |
-| POST   | `/v1/models/{id}/chat/close`      | `chatSession.close`         | close session, free resources |
+| Method | Path                              | SDK API call                              | Notes |
+|--------|-----------------------------------|-------------------------------------------|-------|
+| POST   | `/v1/options`                     | `setOptions`                              | global, affects all future loads |
+| POST   | `/v1/models`                      | `loadModelHandle`                         | returns `{model_id}` |
+| POST   | `/v1/models/{id}/run_messages`    | `runModelHandleWithMessagesStreaming`     | NDJSON chunked stream — OpenAI message format |
+| POST   | `/v1/models/{id}/run_multimodal`  | `runMultimodalHandleWithMessagesStreaming`| NDJSON chunked stream — with image support |
+| POST   | `/v1/models/{id}/run_json`        | `runModelHandleWithJsonStreaming`         | NDJSON chunked stream — full OpenAI JSON |
+| GET    | `/v1/models/{id}/metrics`         | `getPerformanceMetricsHandle`             | returns `PerformanceMetrics` JSON |
+| DELETE | `/v1/models/{id}`                 | `destroyModelHandle`                      | unloads / frees |
+| GET    | `/v1/models`                      | (service-only)                            | lists loaded models |
+| POST   | `/v1/connect`                     | (service-only)                            | explicit handshake (test) |
+| GET    | `/v1/health`                      | (service-only)                            | liveness probe |
+| POST   | `/v1/models/{id}/chat/open`       | `openChatSession`                         | returns `{session_id}` |
+| POST   | `/v1/models/{id}/chat/run_stream` | `runChatModelHandleStreaming`             | raw text streaming |
+| POST   | `/v1/models/{id}/chat/run_multimodal` | `runChatMultimodalHandleStreaming`    | image + text streaming |
+| POST   | `/v1/models/{id}/chat/cancel`     | `chatSession.cancel`                      | cancel in-flight generation |
+| POST   | `/v1/models/{id}/chat/rebuild`    | `chatSession.rebuild`                     | replace conversation history |
+| POST   | `/v1/models/{id}/chat/close`      | `closeChatSession`                        | close session, free resources |
 
 Request / response bodies are JSON (kotlinx.serialization).
 
@@ -501,79 +502,87 @@ Cleartext localhost is enabled via `res/xml/network_security_config.xml`
 ## 8. File layout (post-implementation)
 
 ```
-Applications/QuickAI/
-├── Architecture.md                        (this file)
-├── prebuilt_libs/                         (checked-in .so artifacts)
-│   ├── libcausallm_api.so
-│   ├── libcausallm_core.so
-│   ├── libnntrainer.so
-│   ├── libccapi-nntrainer.so
-│   └── libc++_shared.so
-├── LauncherApp/
-│   └── src/main/
-│       ├── AndroidManifest.xml            (permissions + :remote service)
-│       ├── cpp/
-│       │   ├── CMakeLists.txt
-│       │   └── quickai_jni.cpp
-│       ├── res/xml/network_security_config.xml
-│       └── java/com/example/QuickAI/
-│           ├── LauncherApp.kt             (boots service)
-│           ├── QuickAIService.kt          (foreground + HttpServer)
-│           └── service/
-│               ├── HttpServer.kt
-│               ├── RequestDispatcher.kt
-│               ├── ModelRegistry.kt
-│               ├── ModelWorker.kt
-│               ├── Protocol.kt            (DTOs, enums, errors)
-│               ├── NativeCausalLm.kt      (JNI bindings)
-│               └── backend/
-│                   ├── Backend.kt
-│                   ├── NativeCausalLmBackend.kt
-│                   └── LiteRtLmBackend.kt
-└── clientapp/
-    └── src/main/java/com/example/clientapp/
-        ├── MainActivity.kt
-        └── api/
-            ├── QuickAiClient.kt
-            └── Models.kt
-
-Applications/CausalLM/api/
-├── causal_lm_api.h                        (+ handle-based declarations)
-└── causal_lm_api.cpp                      (+ handle-based implementations)
+Android/
+├── QuickDotAI/                              # AAR module (public API)
+│   └── src/main/java/com/example/quickdotai/
+│       ├── Types.kt                         # DTOs, enums, errors
+│       ├── QuickDotAI.kt                    # Main interface
+│       ├── NativeQuickDotAI.kt              # NNTrainer backend wrapper
+│       ├── LiteRTLm.kt                      # LiteRT-LM backend wrapper
+│       ├── NativeChatSession.kt             # NNTrainer chat session (dummy)
+│       ├── LiteRTLmChatSession.kt           # LiteRT-LM chat session
+│       ├── ImageStore.kt                    # SHA-256 image cache
+│       ├── LlavaNextImageProcessor.kt       # Vision preprocessing
+│       └── NativeCausalLm.kt              # JNI bindings
+│
+├── SampleTestAPP/                           # Sample app
+│   └── src/main/java/com/example/sampletestapp/
+│       └── MainActivity.kt
+│
+│   (The following service-layer components are planned but not yet implemented:)
+│
+│   LauncherApp/                             # Service launcher (planned)
+│   ├── src/main/
+│   │   ├── AndroidManifest.xml
+│   │   ├── cpp/
+│   │   │   ├── CMakeLists.txt
+│   │   │   └── quickai_jni.cpp
+│   │   ├── res/xml/network_security_config.xml
+│   │   └── java/com/example/QuickAI/
+│   │       ├── LauncherApp.kt
+│   │       ├── QuickAIService.kt
+│   │       └── service/
+│   │           ├── HttpServer.kt
+│   │           ├── RequestDispatcher.kt
+│   │           ├── ModelRegistry.kt
+│   │           ├── ModelWorker.kt
+│   │           ├── Protocol.kt
+│   │           └── backend/
+│   │               ├── Backend.kt
+│   │               ├── NativeCausalLmBackend.kt
+│   │               └── LiteRtLmBackend.kt
+│   │
+│   clientapp/                               # REST client (planned)
+│   └── src/main/java/com/example/clientapp/
+│       ├── MainActivity.kt
+│       └── api/
+│           ├── QuickAiClient.kt
+│           └── Models.kt
 ```
+
+api/                                          # C API (completed)
+├── quick_dot_ai_api.h
+└── quick_dot_ai_api.cpp
 
 ## 9. Implementation phases
 
-1. **C API — handle-based variants** (`causal_lm_api.h/.cpp`).
-2. **Kotlin protocol + DTOs** (`Protocol.kt`).
-3. **JNI shim** (`quickai_jni.cpp`, `CMakeLists.txt`, `NativeCausalLm.kt`).
-4. **Backends** (`Backend.kt`, `NativeCausalLmBackend.kt`, `LiteRtLmBackend.kt`).
-5. **Concurrency core** (`ModelWorker.kt`, `ModelRegistry.kt`).
-6. **REST layer** (`HttpServer.kt`, `RequestDispatcher.kt`).
-7. **Service lifecycle** (`QuickAIService.kt`, notification, foreground).
-8. **Launcher UI** (`LauncherApp.kt` — status + start/stop button).
-9. **Manifests + permissions + network_security_config**.
-10. **Gradle wiring** (NanoHTTPD, serialization, externalNativeBuild).
-11. **ClientApp REST client + test UI**.
-12. **LiteRT-LM artifact integration** via
-    `com.google.ai.edge.litertlm:litertlm-android` (done).
+| # | Phase | Status | Notes |
+|---|-------|--------|-------|
+| 1 | **C API — handle-based variants** | ✅ Done | `quick_dot_ai_api.h/.cpp` — full handle-based API with streaming, multimodal, and XGrammar support |
+| 2 | **Kotlin protocol + DTOs** | ✅ Done | `Types.kt` — data classes, enums, `QuickAiError`, `PerformanceMetrics` |
+| 3 | **JNI shim** | ✅ Done | `NativeCausalLm.kt` — JNI bindings for handle-based C API |
+| 4 | **Backends** | ✅ Done | `NativeQuickDotAI.kt`, `LiteRTLm.kt` — dual backend implementation |
+| 5 | **Chat session API** | ✅ Done | `LiteRTLmChatSession.kt`, `NativeChatSession.kt`, `ImageStore.kt` |
+| 6 | **REST layer** | ⏳ Planned | `HttpServer.kt`, `RequestDispatcher.kt` — NanoHTTPD-based REST server (not yet implemented) |
+| 7 | **Service lifecycle** | ⏳ Planned | `QuickAIService.kt` — foreground service with notification (not yet implemented) |
+| 8 | **Launcher UI** | ⏳ Planned | `LauncherApp.kt` — service bootstrap UI (not yet implemented) |
+| 9 | **Manifests + permissions** | ⏳ Planned | `AndroidManifest.xml`, `network_security_config.xml` (not yet implemented) |
+| 10 | **Gradle wiring** | ✅ Done | Module `build.gradle.kts`, CMake integration for JNI |
+| 11 | **ClientApp REST client** | ⏳ Planned | `QuickAiClient.kt`, test UI (not yet implemented) |
+| 12 | **LiteRT-LM artifact integration** | ✅ Done | `com.google.ai.edge.litertlm:litertlm-android` via Maven |
+
+**Legend:** ✅ Done / ⏳ Planned / ❌ Not started
 
 ## 10. Open items
 
-- **Model assets** (`./models/qwen3-0.6b-w4a32/...`,
-  `/sdcard/Download/gemma4.litertlm`, …) must be present on the device. The
-  native backend resolves paths relative to its working directory, and the
-  LiteRT-LM backend takes the path verbatim from `LoadModelRequest.model_path`.
-  A future `GET /v1/models/available` endpoint can advertise which assets
-  are installed.
-- **LiteRT-LM NPU backend** currently falls back to CPU because it needs a
-  `Context` to locate `applicationInfo.nativeLibraryDir`. Plumbing a
-  `Context` into `LiteRtLmBackend` via `ModelRegistry` is a small follow-up.
-- **Streaming output** — done. `POST /v1/models/{id}/run_stream` now emits
-  NDJSON chunks over HTTP chunked transfer encoding, driven by LiteRT-LM's
-  `Conversation.sendMessageAsync(prompt, MessageCallback)` on the service
-  side. See §5.1 for the full design. Non-streaming backends fall back to a
-  single-chunk default implementation in `Backend.runStreaming`.
+| Item | Status | Description |
+|------|--------|-------------|
+| **Model assets** | 🔴 Open | Model files (`./models/qwen3-0.6b-w4a32/...`, `/sdcard/Download/gemma4.litertlm`, …) must be present on the device. The native backend resolves paths relative to its working directory, and the LiteRT-LM backend takes the path verbatim from `LoadModelRequest.model_path`. A future `GET /v1/models/available` endpoint can advertise which assets are installed. |
+| **LiteRT-LM NPU backend** | 🔴 Open | Currently falls back to CPU because it needs a `Context` to locate `applicationInfo.nativeLibraryDir`. Plumbing a `Context` into `LiteRtLmBackend` via `ModelRegistry` is a small follow-up. |
+| **Streaming output** | ✅ Resolved | `POST /v1/models/{id}/run_stream` now emits NDJSON chunks over HTTP chunked transfer encoding, driven by LiteRT-LM's `Conversation.sendMessageAsync(prompt, MessageCallback)` on the service side. See §5.1 for the full design. Non-streaming backends fall back to a single-chunk default implementation in `Backend.runStreaming`. |
+| **REST service layer** | 🟡 In progress | NanoHTTPD-based HTTP server, request dispatcher, and model registry are designed but not yet implemented. See §6-7 for architecture details. |
+
+**Legend:** ✅ Resolved / 🟡 In progress / 🔴 Open
 
 ## 11. Structured Chat Session API
 
