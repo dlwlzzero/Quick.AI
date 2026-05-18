@@ -335,6 +335,9 @@ static std::string apply_chat_template(const std::string &architecture,
     // <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
     return "<start_of_turn>user\n" + input +
            "<end_of_turn>\n<start_of_turn>model\n";
+  } else if (architecture == "Gemma4ForCausalLM" ||
+             architecture == "Gemma4_E2B_QNN") {
+    return "<|turn>user\n" + input + "<turn|>\n<|turn>model\n";
   } else if (architecture == "Gauss_3_6_QNN" ||
              architecture == "Gauss_3_8_QNN") {
     return "<|begin_of_text|><|turn_start|>System\n<|turn_end|>\n<|turn_start|>"
@@ -1556,6 +1559,18 @@ static std::string apply_chat_template_messages(
     if (add_generation_prompt) {
       result += "<start_of_turn>model\n";
     }
+  } else if (architecture == "Gemma4ForCausalLM" ||
+             architecture == "Gemma4_E2B_QNN") {
+    for (const auto &msg : messages) {
+      std::string role = msg.role;
+      if (role == "assistant") {
+        role = "model";
+      }
+      result += "<|turn>" + role + "\n" + msg.content + "<turn|>\n";
+    }
+    if (add_generation_prompt) {
+      result += "<|turn>model\n";
+    }
   } else if (is_gauss_architecture(architecture)) {
     result = "<|begin_of_text|>";
     for (const auto &msg : messages) {
@@ -1645,42 +1660,9 @@ ErrorCode runModelHandleWithMessages(CausalLmHandle handle,
         return CAUSAL_LM_ERROR_NOT_INITIALIZED;
       }
 
-      // Enforce tokenizer_config.json for the messages-based API.
-      // All native models require a chat template to format messages.
       std::string model_dir = h.model_dirs.size() > model_index
                                 ? h.model_dirs[model_index]
                                 : std::string();
-      if (model_dir.empty()) {
-        LOGE("[ERROR] runModelHandleWithMessages: model_dir is empty");
-        return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-      }
-
-      std::string tc_path = model_dir + "/tokenizer_config.json";
-      if (!check_file_exists(tc_path)) {
-        LOGE("[ERROR] runModelHandleWithMessages: "
-             "tokenizer_config.json not found in %s.  "
-             "The messages-based API requires a chat template.",
-             model_dir.c_str());
-        return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-      }
-
-      // Load chat template on-demand if not already cached.
-      if (!g_chat_template) {
-        try {
-          g_chat_template = causallm::ChatTemplate::Load(model_dir);
-          if (!g_chat_template) {
-            LOGE("[ERROR] runModelHandleWithMessages: "
-                 "Failed to load chat template from %s",
-                 model_dir.c_str());
-            return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-          }
-        } catch (const std::exception &e) {
-          LOGE("[ERROR] runModelHandleWithMessages: "
-               "Exception loading chat template from %s: %s",
-               model_dir.c_str(), e.what());
-          return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-        }
-      }
 
       auto chat_messages = convertMessages(messages, num_messages);
       std::string arch = h.architectures.size() > model_index
@@ -2446,42 +2428,9 @@ ErrorCode runModelHandleWithMessagesStreaming(
   try {
     LOGD("[DEBUG] runModelHandleWithMessagesStreaming: Formatting messages...");
 
-    // Enforce tokenizer_config.json for the messages-based API.
-    // All native models require a chat template to format messages.
     std::string model_dir = h.model_dirs.size() > model_index
                               ? h.model_dirs[model_index]
                               : std::string();
-    if (model_dir.empty()) {
-      LOGE("[ERROR] runModelHandleWithMessagesStreaming: model_dir is empty");
-      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-    }
-
-    std::string tc_path = model_dir + "/tokenizer_config.json";
-    if (!check_file_exists(tc_path)) {
-      LOGE("[ERROR] runModelHandleWithMessagesStreaming: "
-           "tokenizer_config.json not found in %s.  "
-           "The messages-based API requires a chat template.",
-           model_dir.c_str());
-      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-    }
-
-    // Load chat template on-demand if not already cached.
-    if (!g_chat_template) {
-      try {
-        g_chat_template = causallm::ChatTemplate::Load(model_dir);
-        if (!g_chat_template) {
-          LOGE("[ERROR] runModelHandleWithMessagesStreaming: "
-               "Failed to load chat template from %s",
-               model_dir.c_str());
-          return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-        }
-      } catch (const std::exception &e) {
-        LOGE("[ERROR] runModelHandleWithMessagesStreaming: "
-             "Exception loading chat template from %s: %s",
-             model_dir.c_str(), e.what());
-        return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-      }
-    }
 
     // Use the *actual* handle's architecture so Gauss-specific
     // <|turn_start|> / <|turn_end|> markers are generated.
