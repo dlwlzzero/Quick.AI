@@ -1,297 +1,120 @@
-git# ChatTemplate
+# Chat Templates 💬
 
-`ChatTemplate` adapts OpenAI-style chat inputs into the model-specific prompt
-strings expected by Quick.AI runners. It is intended to behave like Hugging Face
-`tokenizer.apply_chat_template()` while keeping the public C API unchanged.
+Quick.AI uses chat templates to convert OpenAI-style chat requests into the
+model-specific prompt strings expected by nntrainer/LiteRT-LM style models.
+The behavior is intentionally close to Hugging Face
+`tokenizer.apply_chat_template()`.
 
-The current integration is limited to the native runner path in `main.cpp`.
-When `nntr_config.json` contains `chat_input`, the runner applies a chat
-template before tokenization and generation.
+## 🔎 Template Discovery
 
-## Template discovery
-
-For a model directory passed to `quick_dot_ai_run`, Quick.AI looks for a chat
-template in this order:
+For a model directory, Quick.AI looks for a template in this order:
 
 1. `<model_path>/chat_template.jinja`
 2. `<model_path>/tokenizer_config.json`, field `chat_template`
-3. Built-in Function Gemma template, only for `Gemma3ForCausalLM` with
-   `chat_input`
+3. Built-in fallback formatting for selected architectures
 
-`tokenizer_config.json.chat_template` can be either a string template or an
-object of named templates. When named templates are used, `tool_use` is selected
-automatically if tools are present; otherwise `default` is preferred.
+`tokenizer_config.json.chat_template` may be a string, an object of named
+templates, or an array converted into named templates. When named templates are
+available, `tool_use` is selected for requests containing tools; otherwise
+`default` is preferred.
 
 Special tokens are loaded from `tokenizer_config.json` and
 `special_tokens_map.json` when present.
 
-## Runner usage
+## 🧱 Native API Integration
 
-Add `chat_input` to `nntr_config.json`:
+Chat templates are used by these C API paths:
 
-```json
-{
-  "chat_input": {
-    "messages": [
-      { "role": "system", "content": "You are concise." },
-      { "role": "user", "content": "Hello" },
-      { "role": "assistant", "content": "Hi." },
-      { "role": "user", "content": "Repeat that." }
-    ]
-  }
-}
-```
+| API | Input |
+|---|---|
+| `applyChatTemplate()` | `CausalLMChatMessage[]` |
+| `runModelHandleWithMessages()` | `CausalLMChatMessage[]` |
+| `runModelHandleWithMessagesStreaming()` | `CausalLMChatMessage[]` |
+| `runModelHandleWithJsonStreaming()` | OpenAI-style JSON string |
 
-Run the model as usual:
+For JSON streaming, the loaded model must provide a usable chat template. If no
+template is available, `runModelHandleWithJsonStreaming()` returns
+`CAUSAL_LM_ERROR_UNSUPPORTED`.
 
-```bash
-./build/quick_dot_ai_run ./res/qwen3/qwen3-4b/
-```
-
-If a prompt is passed as the second CLI argument, it is used as a raw prompt and
-`chat_input` is not applied:
-
-```bash
-./build/quick_dot_ai_run ./res/qwen3/qwen3-4b/ "raw prompt"
-```
-
-## Request format
-
-`ChatTemplate::apply()` accepts either:
-
-- an array of OpenAI-style messages
-- an object containing a `messages` array
-
-Supported message roles:
-
-- `system`
-- `developer`
-- `user`
-- `assistant`
-- `tool`
-
-Message `content` can be a string. Text-only content parts are also accepted:
+## 📦 OpenAI JSON Shape
 
 ```json
 {
-  "role": "user",
-  "content": [
-    { "type": "text", "text": "Hello" },
-    { "type": "text", "text": " again" }
-  ]
-}
-```
-
-Non-text content parts are rejected for now.
-
-## Generation prompt behavior
-
-By default, `ChatTemplate` appends the assistant generation prompt unless the
-last message is already an assistant message.
-
-The request can override this behavior with:
-
-```json
-{
-  "add_generation_prompt": false,
   "messages": [
-    { "role": "user", "content": "Hello" }
-  ]
-}
-```
-
-`continue_final_message` is recognized but not supported by the runner yet. It
-currently returns an error instead of silently producing a possibly incorrect
-prompt.
-
-## Tool and function calling
-
-Tools are normalized before they are passed to the template. The preferred input
-is the current OpenAI `tools` format:
-
-```json
-{
+    { "role": "developer", "content": "You can call tools." },
+    { "role": "user", "content": "Call mom." }
+  ],
   "tools": [
     {
       "type": "function",
       "function": {
-        "name": "get_current_temperature",
-        "description": "Gets the current temperature for a given location.",
+        "name": "call",
+        "description": "Make a phone call.",
         "parameters": {
           "type": "object",
           "properties": {
-            "location": {
-              "type": "string",
-              "description": "The city name"
-            }
+            "name": { "type": "string" }
           },
-          "required": ["location"]
+          "required": ["name"]
         }
       }
     }
-  ],
-  "messages": [
-    { "role": "developer", "content": "You can call functions." },
-    { "role": "user", "content": "Weather in Seoul?" }
   ]
 }
 ```
 
-Raw function schemas are also accepted and converted into OpenAI tool objects:
+Legacy OpenAI `functions` is accepted as an alias for raw function schemas.
 
-```json
-{
-  "tools": [
-    {
-      "name": "get_current_temperature",
-      "description": "Gets the current temperature for a given location.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "location": { "type": "string" }
-        },
-        "required": ["location"]
-      }
-    }
-  ],
-  "messages": [
-    { "role": "developer", "content": "You can call functions." },
-    { "role": "user", "content": "Weather in Seoul?" }
-  ]
-}
+## 🧑‍💻 C Usage
+
+```c
+CausalLMChatMessage messages[] = {
+  {.role = "system", .content = "You are concise."},
+  {.role = "user", .content = "Hello!"}
+};
+
+const char *formatted = NULL;
+ErrorCode err = applyChatTemplate(messages, 2, true, &formatted);
 ```
 
-Legacy OpenAI `functions` is accepted as an alias for raw function schemas:
+For streaming:
 
-```json
-{
-  "functions": [
-    {
-      "name": "get_current_temperature",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "location": { "type": "string" }
-        }
-      }
-    }
-  ],
-  "messages": [
-    { "role": "developer", "content": "You can call functions." },
-    { "role": "user", "content": "Weather in Seoul?" }
-  ]
-}
+```c
+runModelHandleWithMessagesStreaming(handle, messages, 2, true,
+                                    callback, user_data);
 ```
 
-## Multi-turn tool calls
+## 📱 Android Usage
 
-Assistant tool calls and tool responses can be represented with OpenAI-style
-`tool_calls` and `tool_call_id`.
-
-```json
-{
-  "tools": [
-    {
-      "type": "function",
-      "function": {
-        "name": "get_current_temperature",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "location": { "type": "string" }
-          },
-          "required": ["location"]
-        }
-      }
-    }
-  ],
-  "messages": [
-    { "role": "developer", "content": "You can call functions." },
-    { "role": "user", "content": "Weather in Seoul?" },
-    {
-      "role": "assistant",
-      "tool_calls": [
-        {
-          "id": "call_1",
-          "type": "function",
-          "function": {
-            "name": "get_current_temperature",
-            "arguments": { "location": "Seoul" }
-          }
-        }
-      ]
-    },
-    {
-      "role": "tool",
-      "tool_call_id": "call_1",
-      "content": "12 C"
-    },
-    { "role": "user", "content": "Summarize it." }
-  ]
-}
+```kotlin
+engine.runModelHandleWithMessagesStreaming(
+    listOf(
+        QuickAiChatMessage(
+            role = QuickAiChatRole.USER,
+            parts = listOf(PromptPart.Text("Hello!"))
+        )
+    ),
+    sink
+)
 ```
 
-If a `tool` message does not include `name`, `ChatTemplate` resolves it from the
-preceding assistant `tool_calls` entry with the same `tool_call_id`.
+For full OpenAI JSON:
 
-Legacy assistant `function_call` is converted into a single `tool_calls` entry.
-
-## C++ usage
-
-Use `ChatTemplate::Load()` for model-provided templates:
-
-```cpp
-#include "chat_template.h"
-
-quick_dot_ai::ChatTemplate chat_template =
-  quick_dot_ai::ChatTemplate::Load(model_path);
-
-std::string prompt = chat_template.apply(nntr_cfg["chat_input"]);
+```kotlin
+engine.runModelHandleWithJsonStreaming(jsonRequest, sink)
 ```
 
-Use the built-in Function Gemma template when no model template exists:
+## ⚠️ Notes
 
-```cpp
-quick_dot_ai::ChatTemplate chat_template =
-  quick_dot_ai::ChatTemplate::LoadBuiltin(
-    quick_dot_ai::ChatTemplate::Builtin::FunctionGemma);
+- `developer` role handling depends on the template and renderer options.
+- `tool` and function-call message formatting depends on the model template.
+- Native message APIs use text-only `role/content` pairs; Android
+  `QuickAiChatMessage` can also carry image parts for multimodal methods.
+- Template files should live next to the model config files used by
+  `loadModelHandle()`.
 
-std::string prompt = chat_template.apply(chat_input);
-```
+## 📎 Related Docs
 
-Optional rendering controls are available through `ChatTemplate::Options`:
-
-```cpp
-quick_dot_ai::ChatTemplate::Options options;
-options.generation_prompt =
-  quick_dot_ai::ChatTemplate::Options::GenerationPromptMode::Never;
-options.developer_role_policy =
-  quick_dot_ai::ChatTemplate::Options::DeveloperRolePolicy::MergeIntoSystem;
-
-std::string prompt = chat_template.apply(chat_input, options);
-```
-
-## Developer role handling
-
-File-based Hugging Face templates default to merging `developer` messages into
-`system` messages, because many templates do not know the `developer` role.
-
-The built-in Function Gemma template preserves `developer`, matching the
-existing Function Gemma prompt format.
-
-This can be overridden with `ChatTemplate::Options::developer_role_policy`.
-
-## Current limitations
-
-- Integration is currently in `main.cpp`; the C API is unchanged.
-- Only text chat content is supported.
-- `continue_final_message` is not supported yet.
-- Images, audio, and other multimodal content parts are rejected.
-- Tool execution is out of scope; `ChatTemplate` only formats prompts.
-
-## Implementation files
-
-- `chat_template.h`: public C++ interface
-- `chat_template.cpp`: template loading, request normalization, rendering
-- `main.cpp`: native runner integration
-- `third_party/minja/`: vendored Jinja-compatible chat template renderer
+- [JSON Streaming API](runWithJsonStreaming_API.md)
+- [C API Reference](../api/README.md)
+- [QuickDotAI AAR API](../Android/QuickDotAI/README.md)

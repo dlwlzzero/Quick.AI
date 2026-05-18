@@ -1,10 +1,15 @@
-# QuickDotAI AAR — API
+# QuickDotAI AAR API 📱
 
-On-device LLM inference. `NativeQuickDotAI` routes non-Gemma models
-through JNI to `libcausallm_api.so`; `LiteRTLm` routes Gemma-family
-models through LiteRT-LM and also supports image input.
+`QuickDotAI` is the Android-facing API for Quick.AI. It provides one Kotlin
+interface over two engine implementations:
 
-## Dependency
+- `NativeQuickDotAI`: JNI path for nntrainer / QNN models, backed by
+  `libquickai_jni.so` and the native `quick_dot_ai_api.h` entry points.
+- `LiteRTLm`: LiteRT-LM path for Gemma-family `.litertlm` models.
+
+The current Gradle build includes `:QuickDotAI` and `:SampleTestAPP`.
+
+## 📦 Dependency
 
 ```kotlin
 dependencies {
@@ -12,22 +17,24 @@ dependencies {
 }
 ```
 
-## API surface (`com.example.quickdotai`)
+Only `arm64-v8a` prebuilt native libraries are currently supported.
+
+## 🧭 API Surface
+
+Package: `com.example.quickdotai`
 
 ```kotlin
 interface QuickDotAI {
-    val kind: String                       // "native" or "litert-lm"
+    val kind: String
     val architecture: String?
-    val chatSessionId: String?             // null if no session active
+    val chatSessionId: String?
 
-    // Lifecycle
     fun load(req: LoadModelRequest): BackendResult<Unit>
     fun unload(): BackendResult<Unit>
     fun metrics(): BackendResult<PerformanceMetrics>
-    fun close()
     fun cancel()
+    fun close()
 
-    // Handle-based OpenAI messages API (OpenAI Tab)
     fun runModelHandleWithMessagesStreaming(
         messages: List<QuickAiChatMessage>,
         sink: StreamSink
@@ -43,17 +50,13 @@ interface QuickDotAI {
         sink: StreamSink
     ): BackendResult<Unit>
 
-    // Handle-based multimodal parts API (internal/chat image)
-    fun runMultimodalHandle(
-        parts: List<PromptPart>
-    ): BackendResult<String>
+    fun runMultimodalHandle(parts: List<PromptPart>): BackendResult<String>
 
     fun runMultimodalHandleStreaming(
         parts: List<PromptPart>,
         sink: StreamSink
     ): BackendResult<Unit>
 
-    // Chat session API (Chat Tab)
     fun openChatSession(
         config: QuickAiChatSessionConfig? = null
     ): BackendResult<String>
@@ -70,86 +73,141 @@ interface QuickDotAI {
         sink: StreamSink
     ): BackendResult<QuickAiChatResult>
 
-    fun chatRebuild(
-        messages: List<QuickAiChatMessage>
-    ): BackendResult<Unit>
-
+    fun chatRebuild(messages: List<QuickAiChatMessage>): BackendResult<Unit>
     fun chatCancel()
 }
 ```
 
-## Tab/Model Usage Matrix
+Removed APIs: `run()`, `runStreaming()`, `runWithMessages()`,
+`runWithMessagesStreaming()`, `chatRun()`, and `chatRunStreaming()`.
 
-### OpenAI Tab — Handle-based Messages
+## 🤖 Engine Selection
 
 ```kotlin
-// Text-only models (GAUSS3_8_QNN, GAUSS3_6_QNN, QWEN3, etc.)
+val engine: QuickDotAI = when (req.model) {
+    ModelId.GEMMA4 -> LiteRTLm(applicationContext)
+    else -> NativeQuickDotAI(applicationContext)
+}
+```
+
+`GEMMA4` is Kotlin-only and never crosses the JNI boundary. Other `ModelId`
+values map to native enum ordinals in `quick_dot_ai_api.h`.
+
+## 💬 OpenAI Message Streaming
+
+```kotlin
 val messages = listOf(
-    QuickAiChatMessage(role = QuickAiChatRole.SYSTEM, 
-        parts = listOf(PromptPart.Text("You are a helpful assistant."))),
-    QuickAiChatMessage(role = QuickAiChatRole.USER, 
-        parts = listOf(PromptPart.Text("Hello!")))
+    QuickAiChatMessage(
+        role = QuickAiChatRole.SYSTEM,
+        parts = listOf(PromptPart.Text("You are concise."))
+    ),
+    QuickAiChatMessage(
+        role = QuickAiChatRole.USER,
+        parts = listOf(PromptPart.Text("Hello!"))
+    )
 )
+
 engine.runModelHandleWithMessagesStreaming(messages, sink)
+```
 
-// Vision models with image (GEMMA4, GAUSS3_8_VISION_QNN)
-val imageBytes = loadImageBytes("/sdcard/photo.jpg")
-val messages = listOf(
-    QuickAiChatMessage(role = QuickAiChatRole.USER, parts = listOf(
-        PromptPart.Text("Describe this image."),
-        PromptPart.ImageBytes(imageBytes)
-    ))
-)
-engine.runMultimodalHandleWithMessagesStreaming(messages, sink)
+For a full OpenAI JSON request, including `tools` or legacy `functions`:
 
-// Full OpenAI JSON (tools, functions, etc.)
+```kotlin
 val jsonRequest = """
 {
   "messages": [
-    {"role": "developer", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
+    {"role": "developer", "content": "You can call tools."},
+    {"role": "user", "content": "Call mom"}
   ],
   "tools": [
-    {"type": "function", "function": {"name": "get_weather", "description": "..."}}
+    {"type": "function", "function": {"name": "call", "description": "..."}}
   ]
 }
 """.trimIndent()
+
 engine.runModelHandleWithJsonStreaming(jsonRequest, sink)
 ```
 
-### Chat Tab — Session-based
+## 🖼️ Multimodal Usage
+
+LiteRT-LM multimodal usage requires `LoadModelRequest.visionBackend`.
+Native multimodal usage requires a native model handle whose config loads the
+expected vision encoder + LLM sub-models.
 
 ```kotlin
-// Open chat session
-engine.openChatSession()
-
-// Text-only chat
-text = "Hello!"
-engine.runChatModelHandleStreaming(text, sink)
-
-// Chat with image
-val parts = listOf(
-    PromptPart.ImageBytes(imageBytes),
-    PromptPart.Text("Describe this image.")
+engine.load(
+    LoadModelRequest(
+        model = ModelId.GEMMA4,
+        backend = BackendType.GPU,
+        visionBackend = BackendType.GPU,
+        modelPath = "/sdcard/models/gemma-4-E2B-it.litertlm"
+    )
 )
-engine.runChatMultimodalHandleStreaming(parts, sink)
 
-// Close session
+engine.runMultimodalHandleWithMessagesStreaming(
+    listOf(
+        QuickAiChatMessage(
+            role = QuickAiChatRole.USER,
+            parts = listOf(
+                PromptPart.ImageFile("/sdcard/photo.jpg"),
+                PromptPart.Text("Describe this picture.")
+            )
+        )
+    ),
+    sink
+)
+```
+
+## 🧵 Chat Sessions
+
+Chat sessions keep backend-managed conversation state.
+
+```kotlin
+val sessionId = engine.openChatSession().let { result ->
+    (result as BackendResult.Ok).value
+}
+
+engine.runChatModelHandleStreaming("Hello!", sink)
+engine.chatRebuild(emptyList())
 engine.closeChatSession()
 ```
 
-## Data Types
+Only one chat session may be active per engine instance.
+
+## 🧱 Core Types
 
 ```kotlin
 data class LoadModelRequest(
     val backend: BackendType = BackendType.GPU,
     val model: ModelId,
     val quantization: QuantizationType = QuantizationType.W4A32,
-    val modelPath: String? = null,         // required for GEMMA4
-    val visionBackend: BackendType? = null, // non-null enables multimodal
+    val modelPath: String? = null,
+    val visionBackend: BackendType? = null,
     val cacheDir: String? = null,
-    val nativeLibDir: File? = null,        // for QNN .so loading
+    val maxNumTokens: Int? = null,
+    val nativeLibDir: String? = null,
+    val modelBasePath: String? = null,
+    val htpBackendConfigPath: String? = null,
 )
+
+enum class BackendType { CPU, GPU, NPU }
+
+enum class ModelId {
+    QWEN3_0_6B,
+    GEMMA4,
+    GAUSS3_6_QNN,
+    GAUSS3_8_QNN,
+    QWEN3_1_7B_Q40,
+    GAUSS3_8_VISION_QNN,
+    GAUSS3_8,
+    GAUSS3_6,
+    TINY_BERT,
+    FUNCTION_GEMMA,
+    GEMMA4_CPU,
+    GEMMA4_E2B_QNN
+}
+
+enum class QuantizationType { UNKNOWN, W4A32, W16A16, W8A16, W32A32 }
 
 sealed class PromptPart {
     data class Text(val text: String) : PromptPart()
@@ -162,69 +220,26 @@ data class QuickAiChatMessage(
     val parts: List<PromptPart>
 )
 
-enum class QuickAiChatRole {
-    SYSTEM, USER, ASSISTANT
-}
-
-sealed class BackendResult<out T> {
-    data class Ok<T>(val value: T) : BackendResult<T>()
-    data class Err(val error: QuickAiError, val message: String? = null) : BackendResult<Nothing>()
-}
+enum class QuickAiChatRole { SYSTEM, USER, ASSISTANT }
 
 interface StreamSink {
     fun onDelta(text: String)
+    fun onReasoningDelta(text: String) {}
     fun onDone()
     fun onError(error: QuickAiError, message: String?)
 }
-
-enum class BackendType      { CPU, GPU, NPU }
-enum class ModelId          { QWEN3_0_6B, GAUSS2_5, GAUSS3_6, GAUSS3_8, GEMMA4, GEMMA4_CPU, GAUSS3_6_QNN, GAUSS3_8_QNN, GAUSS3_8_VISION_QNN }
-enum class QuantizationType { UNKNOWN, W4A32, W16A16, W8A16, W32A32 }
-enum class QuickAiError {
-    NONE, INVALID_PARAMETER, MODEL_LOAD_FAILED, INFERENCE_FAILED,
-    NOT_INITIALIZED, INFERENCE_NOT_RUN, UNKNOWN,
-    QUEUE_FULL, MODEL_NOT_FOUND, UNSUPPORTED, BAD_REQUEST
-}
-
-data class PerformanceMetrics(
-    val prefillTokens: Int, val prefillDurationMs: Double,
-    val generationTokens: Int, val generationDurationMs: Double,
-    val totalDurationMs: Double, val initializationDurationMs: Double,
-    val peakMemoryKb: Long,
-)
 ```
 
-## Minimal example
+See `Types.kt` for the full DTO set, including `QuickAiChatSessionConfig`,
+sampling options, error codes, and metrics.
 
-```kotlin
-val engine: QuickDotAI = when (req.model) {
-    ModelId.GEMMA4 -> LiteRTLm(applicationContext)
-    else           -> NativeQuickDotAI(applicationContext)
-}
+## ✅ Rules
 
-engine.load(LoadModelRequest(
-    model = ModelId.GEMMA4,
-    backend = BackendType.GPU,
-    visionBackend = BackendType.GPU,     // enables images
-    modelPath = "/sdcard/.../gemma-4-E2B-it.litertlm",
-))
-
-// OpenAI-style messages with image
-val messages = listOf(
-    QuickAiChatMessage(role = QuickAiChatRole.USER, parts = listOf(
-        PromptPart.ImageFile("/sdcard/photo.jpg"),
-        PromptPart.Text("Describe this picture."),
-    ))
-)
-engine.runMultimodalHandleWithMessagesStreaming(messages, sink)
-
-engine.close()
-```
-
-## Rules
-
-- Call `load()` exactly once before any inference.
-- A single instance is **not thread-safe** — drive it from one worker thread.
-- `runMultimodalHandle*` on a text-only engine (or `NativeQuickDotAI` without visionBackend) returns `QuickAiError.UNSUPPORTED`.
-- `arm64-v8a` only.
-- **Removed APIs** (no longer available): `run()`, `runStreaming()`, `runWithMessages()`, `runWithMessagesStreaming()`, `chatRun()`, `chatRunStreaming()`. Use the new Handle/Chat streaming APIs instead.
+- Call `load()` before any inference call.
+- Drive each `QuickDotAI` instance from one worker thread.
+- Call `close()` when finished; it closes any active chat session.
+- Pass `nativeLibDir` for native/QNN models when the host app can provide
+  `applicationInfo.nativeLibraryDir`.
+- Pass `modelBasePath` for native models when model files live outside the
+  native default path.
+- Pass `modelPath` for `LiteRTLm` / `GEMMA4` models.

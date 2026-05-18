@@ -1,4 +1,4 @@
-# Install QNN and Hexagon SDK
+# Install QNN and Hexagon SDK ⚙️
 :last update 2025-03-25:
 
 There are various ways to install qnn.
@@ -68,4 +68,3 @@ $ sudo chmod 777 /local/mnt/workspace/Qualcomm/
 ```
 sudo apt install libncurses5
 ```
-

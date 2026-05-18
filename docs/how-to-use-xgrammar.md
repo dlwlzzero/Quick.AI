@@ -1,4 +1,4 @@
-# How to Use XGrammar for Structured Generation
+# How to Use XGrammar for Structured Generation 🧩
 
 This document explains how to use XGrammar in Quick.AI for grammar-constrained text generation, ensuring 100% structural correctness of the output.
 

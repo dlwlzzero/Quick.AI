@@ -1,11 +1,19 @@
-# gemma4_qc
+# gemma4_qc 🧪
 
 Quantization-ready reimplementation of the Gemma4 text decoder. All arithmetic ops are wrapped as `nn.Module` for quantizer insertion, with optional Conv2d-based (SHA) projections for NPU compilation.
 
 ## Install
 
+From the Quick.AI repository root:
+
 ```bash
-pip install -e gemma4-modeling/
+pip install -e gemma_python/
+```
+
+Or from inside this directory:
+
+```bash
+pip install -e .
 ```
 
 ## Quick Start

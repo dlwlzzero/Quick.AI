@@ -1,4 +1,4 @@
-# Quick.AI QNN Context 가이드
+# Quick.AI QNN Context 가이드 ⚙️
 
 > **Quick.AI 프로젝트 문서** | nntrainer 서브모듈 기반 QNN 백엔드 확장 가이드
 >
@@ -174,7 +174,7 @@ void MyContext::initialize() noexcept {
 }
 ```
 
-> **참고**: `QNNContext::initialize()`에서는 `QNNLinear`, `WeightLayer`, `TensorLayer`, `QNNGraph` 네 가지 레이어를 등록합니다. (`qnn_context.cpp:40-58` 참조)
+> **참고**: `QNNContext::initialize()`에서는 `QNNLinear`, `WeightLayer`, `TensorLayer`, `QNNGraph` 네 가지 레이어를 등록합니다. (`qnn_context.cpp`의 `registerFactory` 호출부 참조)
 
 #### `init()` - 백엔드 세부 초기화
 

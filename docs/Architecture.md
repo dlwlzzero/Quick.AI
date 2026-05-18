@@ -1,36 +1,36 @@
-# Quick.AI Architecture
+# Quick.AI Native Architecture 🏛️
 
-> This document was moved from the root `README.md` to keep the README concise for new users. See [README.md](../README.md) for the project overview.
+Quick.AI extends nntrainer's CausalLM application with custom model
+implementations, QNN support, XGrammar structured generation, and a deployable
+C API.
 
-## Plugin System Architecture
+## 🧱 Native Layers
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  nntrainer (submodule)                                       │
-│  ├── main.cpp + Factory singleton                            │
-│  │     ├── Qwen3ForCausalLM      (built-in)                  │
-│  │     ├── GptOssForCausalLM     (built-in)                  │
-│  │     └── ...                                               │
-│  │                                                           │
-│  quick-dot-ai (this repo)                                    │
-│  ├── quick_dot_ai            (standalone executable)         │
-│  │     └── Gauss2_5ForCausalLM ◄── statically linked (always │
-│  │                                 available, no LD_PRELOAD) │
-│  └── libquick_dot_ai.so          (plugin for LD_PRELOAD)     │
-│        __attribute__((constructor)) runs before main()       │
-│        → Factory::Instance().registerModel(...)              │
-└──────────────────────────────────────────────────────────────┘
+```text
+nntrainer/Applications/CausalLM
+  ├── main.cpp, Factory, tokenizer, ChatTemplate
+  └── base CausalLM/Transformer implementations
+
+Quick.AI
+  ├── src/models/               # self-registering model implementations
+  ├── qnn/                      # Android QNN context and SDK wrappers
+  ├── src/xgrammar/             # XGrammar manager/wrapper
+  └── api/quick_dot_ai_api.*    # handle-based deployment API
 ```
 
-Custom models use `__attribute__((constructor))` to register with the `Factory` singleton **before `main()` starts**. The standalone executable (`quick_dot_ai`) statically links the custom models via `link_whole`, so they are always available without `LD_PRELOAD`. A shared library is also built for plugin mode with the original `nntr_causallm`.
+The native build produces these main artifacts:
 
-This means:
+| Artifact | Built from | Purpose |
+|---|---|---|
+| `builddir_*/src/quick_dot_ai` | nntrainer `main.cpp` + Quick.AI static model archive | Standalone runner |
+| `builddir_*/src/libquick_dot_ai.so` | Quick.AI model extension objects | `LD_PRELOAD` plugin mode |
+| `builddir_*/api/libquick_dot_ai_api.so` | `api/quick_dot_ai_api.cpp` + model deps | Public C API for apps/JNI |
+| `builddir_android/qnn/libqnn_context.so` | `qnn/` | QNN context plugin, Android QNN builds |
 
-- nntrainer's `main.cpp` is used as-is — never copied or modified
-- When nntrainer updates, nothing in this repo breaks
-- Multiple custom models can be added independently
+## 🧩 Self-Registration
 
-## Self-Registration Mechanism
+Model implementations register themselves with nntrainer's CausalLM factory
+before `main()` or API load-time execution:
 
 ```cpp
 __attribute__((constructor)) static void register_my_models() {
@@ -44,16 +44,49 @@ __attribute__((constructor)) static void register_my_models() {
 }
 ```
 
-The `__attribute__((constructor))` ensures the registration function runs before `main()`, so the model is available immediately at program start.
+This keeps Quick.AI model additions outside the nntrainer submodule and makes
+model implementations independently addable under `src/models/`.
 
-## Build Artifacts
+## 🧠 C API Runtime
 
-| Target | Output | Purpose |
-|--------|--------|---------|
-| `src/quick_dot_ai` | Standalone executable | Built-in custom models, no plugin needed |
-| `src/libquick_dot_ai.so` | Shared library | `LD_PRELOAD` plugin for original `nntr_causallm` |
+The public API is `api/quick_dot_ai_api.h`.
 
-## Related Documentation
+- Legacy single-model functions still exist for compatibility.
+- New work should use `CausalLmHandle`.
+- Each handle owns its model instances, output buffer, metrics, and mutex.
+- Different handles can be loaded independently.
+- Streaming APIs are synchronous calls that emit token deltas through a callback.
 
-- [How to Create a Custom Model](../README.md#how-to-create-a-custom-model) — Step-by-step plugin authoring guide
-- [Android Architecture](../Android/Architecture.md) — Android service and AAR architecture
+Important entry points:
+
+| API | Purpose |
+|---|---|
+| `loadModelHandle()` | Load one model handle |
+| `runModelHandleStreaming()` | Stream a raw prompt |
+| `runModelHandleWithMessagesStreaming()` | Stream OpenAI-style messages |
+| `runModelHandleWithJsonStreaming()` | Stream full OpenAI JSON requests |
+| `runModelHandleWithTool()` | Run XGrammar-constrained structured generation |
+| `runMultimodalHandle*()` | Run image + text paths when supported by the handle |
+| `cancelModelHandle()` | Request cooperative cancellation |
+
+## 🧰 Build System
+
+The root `build.sh` prepares nntrainer, tokenizer assets, Android cross files,
+and Meson options. `src/` is always built. `api/`, `api-app/`, and `qnn/` are
+enabled by build flags:
+
+```bash
+./build.sh
+./build.sh --platform=android --enable-qnn
+./build.sh --target=src,api
+```
+
+Meson options live in `meson_options.txt`.
+
+## 📎 Related Docs
+
+- [Main README](../README.md)
+- [C API Reference](../api/README.md)
+- [Chat Templates](ChatTemplate.md)
+- [XGrammar Usage](how-to-use-xgrammar.md)
+- [QNN Context Guide](../qnn/README.md)
