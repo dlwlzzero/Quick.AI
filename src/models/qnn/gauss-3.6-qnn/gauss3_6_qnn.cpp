@@ -11,10 +11,9 @@
 #include "gauss3_6_qnn.h"
 #include "android_memory_allocator.h"
 #include "generate_qnn_utils.h"
-#include <xgrammar/xgrammar_wrapper.h>
 
+#include "api/streamer.h"
 #include <llm_util.hpp>
-#include <streamer.h>
 #include <model.h>
 
 #include <app_context.h>
@@ -50,7 +49,6 @@ __attribute__((constructor)) static void register_custom_models() {
       });
 }
 
-
 void causallm::Gauss3_6_QNN::initialize() {
   // Call base class initialize first - this populates models map with
   // model_inputs
@@ -61,23 +59,28 @@ void causallm::Gauss3_6_QNN::initialize() {
   std::string prefill_graph = graphs_to_use[0];
   std::string generation_graph = graphs_to_use[1];
 
-  LOGD("----------------------- initialize() %s, %s", prefill_graph.c_str(), generation_graph.c_str());
+  LOGD("----------------------- initialize() %s, %s", prefill_graph.c_str(),
+       generation_graph.c_str());
   // Get references to graph_info and model_inputs
   auto &prefill_graph_info = models[prefill_graph].graph_info;
   auto &generation_graph_info = models[generation_graph].graph_info;
   auto &prefill_inputs = models[prefill_graph].model_inputs;
   auto &generation_inputs = models[generation_graph].model_inputs;
-  LOGD("----------------------- initialize() prefill_inputs : %lu", prefill_inputs.size());
+  LOGD("----------------------- initialize() prefill_inputs : %lu",
+       prefill_inputs.size());
 
-  prefill_attention_mask_elements = GraphParser::get_named_tensor_elements_or_throw(
-      prefill_graph_info.raw_inputs, "attention_mask");
-  prefill_sliding_attention_mask_elements = GraphParser::get_named_tensor_elements_or_throw(
-      prefill_graph_info.raw_inputs, "sliding_attention_mask");
-  generation_attention_mask_elements = GraphParser::get_named_tensor_elements_or_throw(
-      generation_graph_info.raw_inputs, "attention_mask");
+  prefill_attention_mask_elements =
+      GraphParser::get_named_tensor_elements_or_throw(
+          prefill_graph_info.raw_inputs, "attention_mask");
+  prefill_sliding_attention_mask_elements =
+      GraphParser::get_named_tensor_elements_or_throw(
+          prefill_graph_info.raw_inputs, "sliding_attention_mask");
+  generation_attention_mask_elements =
+      GraphParser::get_named_tensor_elements_or_throw(
+          generation_graph_info.raw_inputs, "attention_mask");
   generation_sliding_attention_mask_elements =
-      GraphParser::get_named_tensor_elements_or_throw(generation_graph_info.raw_inputs,
-                                         "sliding_attention_mask");
+      GraphParser::get_named_tensor_elements_or_throw(
+          generation_graph_info.raw_inputs, "sliding_attention_mask");
   generation_full_kv_past_length = generation_attention_mask_elements - 1;
   generation_sliding_kv_past_length =
       generation_sliding_attention_mask_elements - 1;
@@ -85,44 +88,46 @@ void causallm::Gauss3_6_QNN::initialize() {
       std::max(max_seq_len, generation_attention_mask_elements);
 
   // Find input indices by name
-  int prefill_input_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "inputs_embeds");
-  int generation_input_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "inputs_embeds");
-  LOGD("----------------------- prefill_inputs_idx : %d generation_input_idx :%d ", prefill_input_idx, generation_input_idx);
+  int prefill_input_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "inputs_embeds");
+  int generation_input_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "inputs_embeds");
+  LOGD("----------------------- prefill_inputs_idx : %d generation_input_idx "
+       ":%d ",
+       prefill_input_idx, generation_input_idx);
   // Save pointers to input samples
   input_sample = std::get<float *>(prefill_inputs[prefill_input_idx]);
-  generation_sample = std::get<float *>(generation_inputs[generation_input_idx]);
+  generation_sample =
+      std::get<float *>(generation_inputs[generation_input_idx]);
 
   // Find and save pointers to other input tensors by name
   // Attention masks
-  int prefill_attn_mask_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "attention_mask");
+  int prefill_attn_mask_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "attention_mask");
   int prefill_sliding_attn_mask_idx = GraphParser::find_tensor_index(
       prefill_graph_info.raw_inputs, "sliding_attention_mask");
-  int generation_attn_mask_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "attention_mask");
+  int generation_attn_mask_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "attention_mask");
   int generation_sliding_attn_mask_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "sliding_attention_mask");
 
-  attention_mask =
-      std::get<uint16_t *>(prefill_inputs[prefill_attn_mask_idx]);
+  attention_mask = std::get<uint16_t *>(prefill_inputs[prefill_attn_mask_idx]);
   sliding_attention_mask =
       std::get<uint16_t *>(prefill_inputs[prefill_sliding_attn_mask_idx]);
   generation_attention_mask =
       std::get<uint16_t *>(generation_inputs[generation_attn_mask_idx]);
-  generation_sliding_attention_mask = std::get<uint16_t *>(
-      generation_inputs[generation_sliding_attn_mask_idx]);
+  generation_sliding_attention_mask =
+      std::get<uint16_t *>(generation_inputs[generation_sliding_attn_mask_idx]);
 
   // Position IDs
-  int prefill_pos_cos_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_cos");
-  int prefill_pos_sin_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_sin");
-  int generation_pos_cos_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_cos");
-  int generation_pos_sin_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_sin");
+  int prefill_pos_cos_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "position_ids_cos");
+  int prefill_pos_sin_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "position_ids_sin");
+  int generation_pos_cos_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "position_ids_cos");
+  int generation_pos_sin_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "position_ids_sin");
 
   prefill_position_ids_cos =
       std::get<uint16_t *>(prefill_inputs[prefill_pos_cos_idx]);
@@ -135,10 +140,10 @@ void causallm::Gauss3_6_QNN::initialize() {
   LOGD("----------------------- initialize() 1");
 
   // SWA Position IDs
-  int prefill_swa_pos_cos_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_cos");
-  int prefill_swa_pos_sin_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_sin");
+  int prefill_swa_pos_cos_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "swa_position_ids_cos");
+  int prefill_swa_pos_sin_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "swa_position_ids_sin");
   int generation_swa_pos_cos_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "swa_position_ids_cos");
   int generation_swa_pos_sin_idx = GraphParser::find_tensor_index(
@@ -169,26 +174,26 @@ void causallm::Gauss3_6_QNN::initialize() {
   allocated_ptrs_.insert(swa_position_ids_cos);
   allocated_ptrs_.insert(swa_position_ids_sin);
   LOGD("----------------------- initialize() 4");
-    // Initialize LoRA tensors
+  // Initialize LoRA tensors
   if (lora_path.empty()) {
     // Default: fill with 32768 (zero value for quantized uint16_t)
     for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = prefill_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         auto *lora_ptr = std::get<uint16_t *>(prefill_inputs[idx]);
         std::fill_n(lora_ptr, size / sizeof(uint16_t), 32768);
       }
     }
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = generation_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         auto *lora_ptr = std::get<uint16_t *>(generation_inputs[idx]);
         std::fill_n(lora_ptr, size / sizeof(uint16_t), 32768);
       }
     }
-  LOGD("----------------------- initialize() 5");
+    LOGD("----------------------- initialize() 5");
   } else {
     // Load from lora_path file
     int fd = open(lora_path.c_str(), O_RDONLY);
@@ -213,24 +218,24 @@ void causallm::Gauss3_6_QNN::initialize() {
 
     // Copy to prefill lora inputs (in model input order)
     for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = prefill_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         memcpy(std::get<uint16_t *>(prefill_inputs[idx]), data_ptr, size);
         data_ptr += size;
       }
     }
-  LOGD("----------------------- initialize() 6");
+    LOGD("----------------------- initialize() 6");
     // Copy to generation lora inputs (in model input order)
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = generation_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         memcpy(std::get<uint16_t *>(generation_inputs[idx]), data_ptr, size);
         data_ptr += size;
       }
     }
-  LOGD("----------------------- initialize() 7");
+    LOGD("----------------------- initialize() 7");
     munmap(mapped, file_size);
     close(fd);
 
@@ -239,17 +244,26 @@ void causallm::Gauss3_6_QNN::initialize() {
 
   // Initialize generation KV cache as the canonical history. Prefill keeps its
   // own input buffers because gauss3.6 prefill and generation KV shapes differ.
-  this->kv_cache_.clear();
+  this->kvs.clear();
+  this->kv_sizes.clear();
+  this->kv_row_lengths.clear();
+  this->prefill_kvs.clear();
+  this->prefill_kv_sizes.clear();
+  this->prefill_kv_row_lengths.clear();
+  this->prefill_to_generation_kv_indices.clear();
+  this->prefill_kv_is_key.clear();
+  this->prefill_output_kv_bindings.clear();
+  this->generation_output_kv_bindings.clear();
   LOGD("----------------------- initialize() 8");
+
+  std::unordered_map<std::string, int> generation_kv_index_by_name;
 
   for (int layer = 0; layer < num_hidden_layers; layer++) {
     const std::string key_h0_name =
         "past_key_" + std::to_string(layer) + "_h0_in";
-    const auto &generation_key_h0_info =
-        GraphParser::get_tensor_info_or_throw(generation_graph_info.raw_inputs,
-                                              key_h0_name);
-    this->kv_cache_.addLayerRowLength(
-        generation_key_h0_info.dimensions.back());
+    const auto &generation_key_h0_info = GraphParser::get_tensor_info_or_throw(
+        generation_graph_info.raw_inputs, key_h0_name);
+    this->kv_row_lengths.push_back(generation_key_h0_info.dimensions.back());
 
     const std::vector<std::string> kv_names = {
         key_h0_name,
@@ -259,13 +273,12 @@ void causallm::Gauss3_6_QNN::initialize() {
     };
 
     for (const auto &name : kv_names) {
-      int generation_input_index =
-          GraphParser::find_tensor_index(generation_graph_info.raw_inputs,
-                                         name);
+      int generation_input_index = GraphParser::find_tensor_index(
+          generation_graph_info.raw_inputs, name);
       int prefill_input_index =
           find_tensor_index_or_minus_one(prefill_graph_info.raw_inputs, name);
       const auto &generation_info =
-          generation_graph_info.raw_inputs[generation_input_index].second;
+          generation_graph_info.raw_inputs[generation_input_index];
 
       int size = GraphParser::get_tensor_size(generation_info);
       if (generation_info.data_type != "QNN_DATATYPE_UFIXED_POINT_8") {
@@ -276,56 +289,83 @@ void causallm::Gauss3_6_QNN::initialize() {
           std::get<uint8_t *>(generation_inputs[generation_input_index]);
       std::memset(current_kv, 128, size);
 
-      const bool is_key = qnn_starts_with(name, "past_key_");
-      int kv_input_index = this->kv_cache_.addGenerationCache(
-          name, current_kv, size,
-          get_kv_row_length(generation_info, is_key, name), is_key);
+      int kv_input_index = static_cast<int>(this->kvs.size());
+      this->kvs.push_back(current_kv);
+      this->kv_sizes.push_back(size);
+      generation_kv_index_by_name[name] = kv_input_index;
 
       if (prefill_input_index >= 0) {
         const auto &prefill_info =
-            prefill_graph_info.raw_inputs[prefill_input_index].second;
+            prefill_graph_info.raw_inputs[prefill_input_index];
+        const bool is_key = qnn_starts_with(name, "past_key_");
 
-        this->kv_cache_.addPrefillCache(
-            std::get<uint8_t *>(prefill_inputs[prefill_input_index]),
-            GraphParser::get_tensor_size(prefill_info),
-            get_kv_row_length(prefill_info, is_key, name), kv_input_index,
-            is_key);
+        this->prefill_kvs.push_back(
+            std::get<uint8_t *>(prefill_inputs[prefill_input_index]));
+        this->prefill_kv_sizes.push_back(
+            GraphParser::get_tensor_size(prefill_info));
+        this->prefill_kv_row_lengths.push_back(
+            get_kv_row_length(prefill_info, is_key, name));
+        this->prefill_to_generation_kv_indices.push_back(kv_input_index);
+        this->prefill_kv_is_key.push_back(is_key ? 1 : 0);
       }
     }
   }
 
-  this->kv_cache_.setPrefillOutputBindings(
+  this->prefill_output_kv_bindings =
       build_kv_output_bindings(prefill_graph_info.raw_outputs,
-                               this->kv_cache_.generationIndexByName(),
-                               prefill_graph));
-  this->kv_cache_.setGenerationOutputBindings(
+                               generation_kv_index_by_name, prefill_graph);
+  this->generation_output_kv_bindings =
       build_kv_output_bindings(generation_graph_info.raw_outputs,
-                               this->kv_cache_.generationIndexByName(),
-                               generation_graph));
+                               generation_kv_index_by_name, generation_graph);
 
   LOGD("KV cache mapping: generation_inputs=%zu prefill_inputs=%zu "
        "prefill_outputs=%zu generation_outputs=%zu",
-       this->kv_cache_.generationCacheCount(), this->kv_cache_.prefillCacheCount(),
-       this->kv_cache_.prefillOutputBindingCount(),
-       this->kv_cache_.generationOutputBindingCount());
+       this->kvs.size(), this->prefill_kvs.size(),
+       this->prefill_output_kv_bindings.size(),
+       this->generation_output_kv_bindings.size());
 
   initialize_kv_cache();
   LOGD("----------------------- initialize() done");
 }
 
 void causallm::Gauss3_6_QNN::initialize_kv_cache() {
-  kv_cache_.reset();
+  kv_len = 0;
+
+  for (int i = 0; i < this->kvs.size(); i++) {
+    std::memset(this->kvs[i], 128, this->kv_sizes[i]);
+  }
+  reset_prefill_kv_cache_inputs();
 }
 
-void causallm::Gauss3_6_QNN::resetKvCache() { kv_cache_.reset(); }
-
-void causallm::Gauss3_6_QNN::saveKvCache(
-    const std::string &cache_path) const {
-  kv_cache_.save(cache_path, architectures);
+void causallm::Gauss3_6_QNN::reset_prefill_kv_cache_inputs() {
+  for (int i = 0; i < this->prefill_kvs.size(); i++) {
+    std::fill_n(this->prefill_kvs[i], this->prefill_kv_sizes[i],
+                static_cast<uint8_t>(128));
+  }
 }
 
-void causallm::Gauss3_6_QNN::loadKvCache(const std::string &cache_path) {
-  kv_cache_.load(cache_path, architectures, generation_full_kv_past_length);
+void causallm::Gauss3_6_QNN::sync_generation_kv_cache_to_prefill() {
+  reset_prefill_kv_cache_inputs();
+
+  if (kv_len <= 0) {
+    return;
+  }
+
+#pragma omp parallel for
+  for (int i = 0; i < (int)this->prefill_kvs.size(); i++) {
+    int generation_idx = this->prefill_to_generation_kv_indices[i];
+    int generation_layer_idx = generation_idx / 4;
+    if (generation_idx < 0 || generation_idx >= (int)this->kvs.size() ||
+        generation_layer_idx < 0 ||
+        generation_layer_idx >= (int)this->kv_row_lengths.size()) {
+      continue;
+    }
+
+    copy_kv_cache_window(this->prefill_kvs[i], this->prefill_kv_row_lengths[i],
+                         this->kvs[generation_idx],
+                         this->kv_row_lengths[generation_layer_idx], kv_len,
+                         this->prefill_kv_is_key[i] != 0);
+  }
 }
 
 void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
@@ -346,6 +386,19 @@ void causallm::Gauss3_6_QNN::setupParameters(json &cfg, json &generation_cfg,
   context_size = cfg["context_size"].get<int>();
   pos_dim = cfg["pos_dim"].get<int>();
   head_dim = cfg["head_dim"].get<int>();
+
+  // Read generation_config parameters
+  padding_token = generation_cfg["padding_token"].get<int>();
+  eos_token = generation_cfg["eos_token_id"].get<int>();
+  temperature = generation_cfg["temperature"].get<float>();
+  top_k = generation_cfg["top_k"].get<int>();
+  top_p = generation_cfg["top_p"].get<float>();
+  repetition_penalty = generation_cfg["repetition_penalty"].get<float>();
+  logit_scale = generation_cfg["logit_scale"].get<float>();
+  logit_offset = generation_cfg["logit_offset"].get<int>();
+
+  // Read optional lora_path
+  lora_path = nntr_cfg.value("lora_path", "");
 }
 
 void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
@@ -366,12 +419,10 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
   }
   unsigned int input_len = input.size() - 1;
 
-  if (kv_cache_.length() + static_cast<int>(input_len) >=
-      generation_full_kv_past_length) {
+  if (kv_len + static_cast<int>(input_len) >= generation_full_kv_past_length) {
     throw std::runtime_error(
         "Input prompt leaves no room for generation: kv_len=" +
-        std::to_string(kv_cache_.length()) + ", input_len=" +
-        std::to_string(input_len) +
+        std::to_string(kv_len) + ", input_len=" + std::to_string(input_len) +
         ", generation_full_kv_past_length=" +
         std::to_string(generation_full_kv_past_length));
   }
@@ -379,7 +430,7 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
   auto n_chunks = (input_len % context_size != 0)
                       ? ((input_len / context_size) + 1)
                       : (input_len / context_size);
-  auto token  = input.back();
+  auto token = input.back();
 
   std::cout << "len: " << input_len << ", n_chunks: " << n_chunks << std::endl;
   LOGD("prompt token length=%u, n_chunks=%u, full_kv_past=%d, "
@@ -402,67 +453,37 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
   auto &prefill_model = models[prefill_graph].model_handle;
   auto &generation_model = models[generation_graph].model_handle;
 
-  auto fill_generation_inputs = [&](int current_token, int position) {
-    if (position < 0 || position >= rope_cache_seq_len) {
-      throw std::runtime_error("Generation position is out of rope cache");
-    }
-
-    generation_sample[0] = current_token;
-
-    std::fill_n(generation_attention_mask, generation_attention_mask_elements, 0);
-    std::fill_n(generation_sliding_attention_mask,
-                generation_sliding_attention_mask_elements, 0);
-
-    generation_attention_mask[generation_attention_mask_elements - 1] =
-        std::numeric_limits<uint16_t>::max();
-    generation_sliding_attention_mask
-        [generation_sliding_attention_mask_elements - 1] =
-            std::numeric_limits<uint16_t>::max();
-
-    // The KV cache contains only previous tokens; the current token uses the
-    // fixed final column in the generation mask.
-    for (int i = 0; i < position && i < generation_full_kv_past_length; i++)
-      generation_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-    for (int i = 0; i < position && i < generation_sliding_kv_past_length; i++)
-      generation_sliding_attention_mask[i] = std::numeric_limits<uint16_t>::max();
-
-    std::memcpy(generation_position_ids_cos,
-                position_ids_cos + position * pos_dim,
-                pos_dim * sizeof(uint16_t));
-    std::memcpy(generation_position_ids_sin,
-                position_ids_sin + position * pos_dim,
-                pos_dim * sizeof(uint16_t));
-    std::memcpy(generation_swa_position_ids_cos,
-                swa_position_ids_cos + position * pos_dim,
-                pos_dim * sizeof(uint16_t));
-    std::memcpy(generation_swa_position_ids_sin,
-                swa_position_ids_sin + position * pos_dim,
-                pos_dim * sizeof(uint16_t));
-  };
-
   auto append_generation_token_to_kv_cache = [&](int token_to_append) {
-    if (kv_cache_.length() >= generation_full_kv_past_length) {
+    if (kv_len >= generation_full_kv_past_length) {
       LOGD("skip appending terminal token to KV: kv_len=%d, full_kv_past=%d",
-           kv_cache_.length(), generation_full_kv_past_length);
+           kv_len, generation_full_kv_past_length);
       return;
     }
 
-    fill_generation_inputs(token_to_append, kv_cache_.length());
+    fill_generation_inputs(
+        generation_sample, token_to_append, generation_attention_mask,
+        generation_attention_mask_elements, generation_sliding_attention_mask,
+        generation_sliding_attention_mask_elements,
+        generation_full_kv_past_length, generation_sliding_kv_past_length,
+        generation_position_ids_cos, generation_position_ids_sin,
+        position_ids_cos, position_ids_sin, pos_dim,
+        generation_swa_position_ids_cos, generation_swa_position_ids_sin,
+        swa_position_ids_cos, swa_position_ids_sin, pos_dim, kv_len,
+        rope_cache_seq_len);
     auto terminal_outputs = generation_model->inference(1, generation_inputs);
-    kv_cache_.appendGenerationOutputs(terminal_outputs, kv_cache_.length(), 1,
-                                      1, generation_graph);
-    kv_cache_.advance(1);
+    append_outputs_to_kv_cache(
+        terminal_outputs, this->generation_output_kv_bindings, this->kvs,
+        this->kv_row_lengths, kv_len, 1, 1, generation_graph);
+    kv_len += 1;
   };
-
-  auto prefill_start = std::chrono::high_resolution_clock::now();
 
   for (int c = 0; c < n_chunks; c++) {
     const int chunk_offset = c * context_size;
     int chunk_len = ((c + 1) * context_size < input_len)
                         ? context_size
                         : (input_len - chunk_offset);
-    LOGD("kv_len : %d, chunk_len : %d", kv_cache_.length(), chunk_len);
-    kv_cache_.syncGenerationToPrefill();
+    LOGD("kv_len : %d, chunk_len : %d", kv_len, chunk_len);
+    sync_generation_kv_cache_to_prefill();
 
     for (int i = 0; i < context_size; i++)
       input_sample[i] =
@@ -471,11 +492,10 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     fill_attention_mask_with_length(context_size, max_seq_len, chunk_len,
                                     attention_mask);
     fill_attention_mask_with_prev_length(
-        context_size, max_seq_len,
-        std::min(kv_cache_.length(), max_seq_len - context_size),
+        context_size, max_seq_len, std::min(kv_len, max_seq_len - context_size),
         attention_mask);
 
-    if (kv_cache_.length() >= generation_sliding_kv_past_length) {
+    if (kv_len >= generation_sliding_kv_past_length) {
       std::fill_n(sliding_attention_mask, context_size * sliding_window,
                   std::numeric_limits<uint16_t>::min());
       for (int i = 0; i < chunk_len; i++) {
@@ -488,8 +508,7 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     } else {
       fill_attention_mask_with_length(context_size, sliding_window, chunk_len,
                                       sliding_attention_mask);
-      fill_attention_mask_with_prev_length(context_size, sliding_window,
-                                           kv_cache_.length(),
+      fill_attention_mask_with_prev_length(context_size, sliding_window, kv_len,
                                            sliding_attention_mask);
     }
 
@@ -498,11 +517,11 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     std::fill_n(prefill_swa_position_ids_cos, context_size * pos_dim, 65535);
     std::fill_n(prefill_swa_position_ids_sin, context_size * pos_dim, 32768);
 
-    if (kv_cache_.length() + chunk_len > rope_cache_seq_len) {
+    if (kv_len + chunk_len > rope_cache_seq_len) {
       throw std::runtime_error("Prefill position is out of rope cache");
     }
 
-    auto pos_ids_offset = kv_cache_.length() * pos_dim;
+    auto pos_ids_offset = kv_len * pos_dim;
     std::memcpy(prefill_position_ids_cos, position_ids_cos + pos_ids_offset,
                 chunk_len * pos_dim * sizeof(uint16_t));
     std::memcpy(prefill_position_ids_sin, position_ids_sin + pos_ids_offset,
@@ -516,45 +535,56 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
 
     auto outputs = prefill_model->inference(1, prefill_inputs);
     // Append prefill output KV into the shared prefill/generation cache.
-    kv_cache_.appendPrefillOutputs(outputs, kv_cache_.length(), chunk_len,
-                                   context_size, prefill_graph);
+    append_outputs_to_kv_cache(outputs, this->prefill_output_kv_bindings,
+                               this->kvs, this->kv_row_lengths, kv_len,
+                               chunk_len, context_size, prefill_graph);
 
-    kv_cache_.advance(chunk_len);
+    kv_len += chunk_len;
   }
-  auto prefill_end = std::chrono::high_resolution_clock::now();
 
   auto start = std::chrono::system_clock::now();
   int idx;
-  int prefill_len = kv_cache_.length();
+  int prefill_len = kv_len;
   for (idx = prefill_len; idx < generation_full_kv_past_length; idx++) {
-    fill_generation_inputs(token, idx);
+    fill_generation_inputs(
+        generation_sample, token, generation_attention_mask,
+        generation_attention_mask_elements, generation_sliding_attention_mask,
+        generation_sliding_attention_mask_elements,
+        generation_full_kv_past_length, generation_sliding_kv_past_length,
+        generation_position_ids_cos, generation_position_ids_sin,
+        position_ids_cos, position_ids_sin, pos_dim,
+        generation_swa_position_ids_cos, generation_swa_position_ids_sin,
+        swa_position_ids_cos, swa_position_ids_sin, pos_dim, idx,
+        rope_cache_seq_len);
 
     outputs = generation_model->inference(1, generation_inputs);
-    kv_cache_.appendGenerationOutputs(outputs, idx, 1, 1, generation_graph);
-    kv_cache_.advance(1);
+    append_outputs_to_kv_cache(outputs, this->generation_output_kv_bindings,
+                               this->kvs, this->kv_row_lengths, idx, 1, 1,
+                               generation_graph);
+    kv_len += 1;
     token = sample(std::get<uint16_t *>(outputs.back()), vocab_size,
                    input.data(), input.size(), logit_scale, logit_offset,
                    repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
-    if (token == eos_token || token == padding_token) {
+    if (token == eos_token) {
       append_generation_token_to_kv_cache(token);
       break;
-    }
-
-    std::string decoded= tokenizer->Decode({token});
-    LOGD("%d : %s",token, decoded.c_str());
-    // Stream the token if a streamer is attached
-    if (streamer_) {
-      if (streamer_put(streamer_, decoded.c_str()) != 0) {
-        // User requested cancellation via streamer
-        stop_requested_.store(true, std::memory_order_release);
-        break;
+    } else {
+      std::string decoded = tokenizer->Decode({token});
+      LOGD("%d : %s", token, decoded.c_str());
+      // Stream the token if a streamer is attached
+      if (streamer_) {
+        if (streamer_put(streamer_, decoded.c_str()) != 0) {
+          // User requested cancellation via streamer
+          stop_requested_.store(true, std::memory_order_release);
+          break;
+        }
+      } else if (log_output) {
+        std::cout << decoded << std::flush;
       }
-    } else if (log_output) {
-      std::cout << decoded << std::flush;
+      input.push_back(token);
     }
-    input.push_back(token);
   }
 
   // Notify the streamer that generation is complete
@@ -562,26 +592,17 @@ void causallm::Gauss3_6_QNN::run(const WSTR prompt, bool do_sample,
     streamer_end(streamer_);
   }
 
+  has_run_ = true;
+
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
-
-  performance_metrics.prefill_tokens = input_len;
-  performance_metrics.prefill_duration_ms =
-      std::chrono::duration<double, std::milli>(prefill_end - prefill_start).count();
-  performance_metrics.generation_tokens = (idx > prefill_len) ? (unsigned int)(idx - prefill_len) : 0U;
-  performance_metrics.generation_duration_ms =
-      std::chrono::duration<double, std::milli>(end - start).count();
-  performance_metrics.total_duration_ms =
-      performance_metrics.prefill_duration_ms + performance_metrics.generation_duration_ms;
-  performance_metrics.peak_memory_kb = 0; // TODO: implement memory tracking
-
-  has_run_ = true;
   if (log_output) {
-  std::cout << std::endl;
-  std::cout << std::endl;
-  std::cout << "Generation exec_time : " << raw_exec_seconds.count()
-            << ", token per second: " << (idx - input_len) / raw_exec_seconds.count()
-            << ", token generation time average: "
-            << raw_exec_seconds.count() / (idx - input_len) << std::endl;
+    std::cout << std::endl;
+    std::cout << std::endl;
+    std::cout << "Generation exec_time : " << raw_exec_seconds.count()
+              << ", token per second: "
+              << (idx - input_len) / raw_exec_seconds.count()
+              << ", token generation time average: "
+              << raw_exec_seconds.count() / (idx - input_len) << std::endl;
   }
 }
