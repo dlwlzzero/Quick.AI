@@ -8,7 +8,7 @@
 #include "android_memory_allocator.h"
 #include "generate_qnn_utils.h"
 
-#include "api/streamer.h"
+#include "streamer.h"
 #include <llm_util.hpp>
 #include <model.h>
 
