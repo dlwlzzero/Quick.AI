@@ -1,8 +1,10 @@
 #include "graph_parser.h"
 #include <algorithm>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 
 #include "nntrainer_error.h"
 
@@ -13,8 +15,8 @@ GraphParser::~GraphParser() {}
 int GraphParser::find_tensor_index(const TensorInfoList &tensor_infos,
                                    const std::string &tensor_name) {
   int index = 0;
-  for (const auto &[name, info] : tensor_infos) {
-    if (name == tensor_name) {
+  for (const auto &info : tensor_infos) {
+    if (info.name == tensor_name) {
       return index;
     }
     index++;
@@ -28,7 +30,7 @@ int GraphParser::find_tensor_index(const TensorInfoList &tensor_infos,
 const TensorInfo &
 GraphParser::get_tensor_info_or_throw(const TensorInfoList &tensor_infos,
                                       const std::string &tensor_name) {
-  return tensor_infos[find_tensor_index(tensor_infos, tensor_name)].second;
+  return tensor_infos[find_tensor_index(tensor_infos, tensor_name)];
 }
 
 int GraphParser::get_named_tensor_elements_or_throw(
@@ -71,13 +73,11 @@ GraphInfo GraphParser::extractGraphInfo(const json &graph_object) {
   auto graph_outputs = graph_info_json["graphOutputs"];
 
   for (const auto &element : graph_inputs) {
-    auto tensor_info = extractTensorInfo(element);
-    graph_info.raw_inputs.push_back({tensor_info.name, tensor_info});
+    graph_info.raw_inputs.push_back(extractTensorInfo(element));
   }
 
   for (const auto &element : graph_outputs) {
-    auto tensor_info = extractTensorInfo(element);
-    graph_info.raw_outputs.push_back({tensor_info.name, tensor_info});
+    graph_info.raw_outputs.push_back(extractTensorInfo(element));
   }
 
   return graph_info;
@@ -92,10 +92,16 @@ TensorInfo GraphParser::extractTensorInfo(const json &tensor_object) {
   tensor_info.dimensions =
       tensor_info_json["dimensions"].get<std::vector<int>>();
   tensor_info.data_type = tensor_info_json["dataType"];
-  tensor_info.scale =
-      tensor_info_json["quantizeParams"]["scaleOffset"]["scale"];
-  tensor_info.offset =
-      tensor_info_json["quantizeParams"]["scaleOffset"]["offset"];
+  if (tensor_info_json.contains("quantizeParams") &&
+      tensor_info_json["quantizeParams"].contains("scaleOffset") &&
+      tensor_info_json["quantizeParams"]["scaleOffset"].is_object()) {
+    auto scale_offset = tensor_info_json["quantizeParams"]["scaleOffset"];
+    tensor_info.scale = scale_offset.value("scale", 0.0);
+    tensor_info.offset = scale_offset.value("offset", 0);
+  } else {
+    tensor_info.scale = 0.0;
+    tensor_info.offset = 0;
+  }
 
   return tensor_info;
 }
@@ -112,7 +118,8 @@ int GraphParser::get_tensor_count(const TensorInfo &tensor_info) {
 
 int GraphParser::get_tensor_bit_width(const TensorInfo &tensor_info) {
   int bit_width;
-  if (tensor_info.data_type == "QNN_DATATYPE_UFIXED_POINT_16") {
+  if (tensor_info.data_type == "QNN_DATATYPE_UFIXED_POINT_16" ||
+      tensor_info.data_type == "QNN_DATATYPE_FLOAT_16") {
     bit_width = 2;
   } else if (tensor_info.data_type == "QNN_DATATYPE_UFIXED_POINT_8") {
     bit_width = 1;

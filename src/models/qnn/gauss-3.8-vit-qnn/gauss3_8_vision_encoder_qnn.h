@@ -16,6 +16,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
 #ifdef __ANDROID__
 #include <android/log.h>
 #define LOG_TAG "QuickAI"

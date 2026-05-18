@@ -220,7 +220,6 @@ int QNNContext::init() {
 
   LOGD("init: Creating backend extensions");
   BackendExtensionsConfigs backend_extensions_config;
-
   std::string config_path;
   if (!m_backendExtConfigPath.empty()) {
     config_path = m_backendExtConfigPath;
