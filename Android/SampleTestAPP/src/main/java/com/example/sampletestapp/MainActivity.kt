@@ -174,6 +174,7 @@ private val MESSAGES_API_MODELS = setOf(
     ModelId.GAUSS3_8,
     ModelId.GAUSS3_6,
     ModelId.GEMMA4,
+    ModelId.GEMMA4_E2B_QNN,
 )
 
 class MainActivity : AppCompatActivity() {
@@ -1663,6 +1664,7 @@ class MainActivity : AppCompatActivity() {
         ModelId.TINY_BERT -> "[EMBEDDING]   ${m.name}"
         ModelId.FUNCTION_GEMMA -> "[TEXT]   ${m.name}"
         ModelId.GEMMA4_CPU -> "[TEXT]   ${m.name}"
+        ModelId.GEMMA4_E2B_QNN -> "[QNN]         ${m.name}"
     }
 
     /* ════════════════════════════════════════════════════════════════
@@ -2395,6 +2397,8 @@ class MainActivity : AppCompatActivity() {
                 "$base/models/function_gemma"
             ModelId.GEMMA4_CPU ->
                 "$base/models/gemma4_cpu"
+            ModelId.GEMMA4_E2B_QNN ->
+                "$base/models/gemma-4-e2b-qnn"
 
         }
     }

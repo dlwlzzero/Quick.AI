@@ -49,7 +49,8 @@ enum class ModelId {
     GAUSS3_6,
     TINY_BERT,
     FUNCTION_GEMMA,
-    GEMMA4_CPU
+    GEMMA4_CPU,
+    GEMMA4_E2B_QNN
 }
 
 
