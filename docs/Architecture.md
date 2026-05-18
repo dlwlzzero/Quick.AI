@@ -27,7 +27,7 @@ The native build produces these main artifacts:
 | `builddir_*/api/libquick_dot_ai_api.so` | `api/quick_dot_ai_api.cpp` + model deps | Public C API for apps/JNI |
 | `builddir_android/qnn/libqnn_context.so` | `qnn/` | QNN context plugin, Android QNN builds |
 
-## 🧩 Self-Registration
+## 🧩 Self Registration
 
 Model implementations register themselves with nntrainer's CausalLM factory
 before `main()` or API load-time execution:
@@ -87,6 +87,7 @@ Meson options live in `meson_options.txt`.
 
 - [Main README](../README.md)
 - [C API Reference](../api/README.md)
+- [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md)
 - [Chat Templates](ChatTemplate.md)
-- [XGrammar Usage](how-to-use-xgrammar.md)
+- [XGrammar Reference](XGrammarReference.md)
 - [QNN Context Guide](../qnn/README.md)

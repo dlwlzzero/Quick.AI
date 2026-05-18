@@ -233,7 +233,9 @@ public:
   /**
    * @brief   Set the default backend extension config path before singleton
    * initialization. Must be called before QNNContext::Global() or any
-   * operation that triggers context creation.
+   * operation that triggers context creation. Relative paths are resolved from
+   * QUICK_DOT_AI_BASE_DIR when set, otherwise from the current working
+   * directory.
    */
   static void setDefaultBackendExtConfigPath(const std::string &path);
 

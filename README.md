@@ -72,34 +72,10 @@ dependencies {
 }
 ```
 
-```kotlin
-val engine: QuickDotAI = when (req.model) {
-    ModelId.GEMMA4 -> LiteRTLm(applicationContext)
-    else -> NativeQuickDotAI(applicationContext)
-}
-
-engine.load(
-    LoadModelRequest(
-        model = ModelId.GAUSS3_8_QNN,
-        backend = BackendType.NPU,
-        modelBasePath = "/sdcard/Android/data/com.example.app/files/models",
-        nativeLibDir = applicationInfo.nativeLibraryDir
-    )
-)
-
-val messages = listOf(
-    QuickAiChatMessage(
-        role = QuickAiChatRole.USER,
-        parts = listOf(PromptPart.Text("Hello!"))
-    )
-)
-
-engine.runModelHandleWithMessagesStreaming(messages, sink)
-engine.close()
-```
-
-See [`Android/QuickDotAI/README.md`](Android/QuickDotAI/README.md) for the full
-AAR API.
+See [`docs/ChatAndOpenAIUsage.md`](docs/ChatAndOpenAIUsage.md) for Chat tab,
+OpenAI tab, JSON streaming, and XGrammar examples. See
+[`Android/QuickDotAI/README.md`](Android/QuickDotAI/README.md) for the full AAR
+API.
 
 ### C API
 
@@ -155,7 +131,7 @@ Plugin mode is still available for the original `nntr_causallm` executable:
 LD_PRELOAD=$(pwd)/builddir_x86/src/libquick_dot_ai.so nntr_causallm /path/to/model
 ```
 
-### Android (arm64-v8a)
+### Android Arm64 Build
 
 ```bash
 export ANDROID_NDK=/path/to/android-ndk
@@ -241,11 +217,11 @@ project-root/
 | Document | Audience | Content |
 |---|---|---|
 | [`docs/Guides.md`](docs/Guides.md) | All users | Entry points by platform and goal |
+| [`docs/ChatAndOpenAIUsage.md`](docs/ChatAndOpenAIUsage.md) | App/API users | Chat tab, OpenAI tab, JSON streaming, and XGrammar examples |
 | [`docs/Architecture.md`](docs/Architecture.md) | Native contributors | Plugin, build, and C API architecture |
 | [`api/README.md`](api/README.md) | C/C++ users | C API reference |
-| [`Android/QuickDotAI/README.md`](Android/QuickDotAI/README.md) | Android users | AAR API and examples |
+| [`Android/QuickDotAI/README.md`](Android/QuickDotAI/README.md) | Android users | AAR API surface and types |
 | [`Android/Architecture.md`](Android/Architecture.md) | Android contributors | Current modules and planned service layer |
 | [`docs/ChatTemplate.md`](docs/ChatTemplate.md) | Model/API users | Chat template discovery and JSON request handling |
-| [`docs/runWithJsonStreaming_API.md`](docs/runWithJsonStreaming_API.md) | Android/API users | `runModelHandleWithJsonStreaming` usage |
-| [`docs/how-to-use-xgrammar.md`](docs/how-to-use-xgrammar.md) | Tool-calling users | XGrammar structured generation |
+| [`docs/XGrammarReference.md`](docs/XGrammarReference.md) | Tool-calling users | XGrammar internals, toolsets, cache behavior, and native API notes |
 | [`qnn/README.md`](qnn/README.md) | QNN developers | QNN context development guide |

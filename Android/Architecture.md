@@ -60,7 +60,7 @@ The preferred calls are handle-based:
 - `cancelModelHandle`
 - `destroyModelHandle`
 
-## 🌗 LiteRT-LM Path
+## 🌗 LiteRT Runtime Path
 
 `LiteRTLm` is selected for `ModelId.GEMMA4` and takes a `.litertlm` file path
 through `LoadModelRequest.modelPath`. `visionBackend != null` enables
@@ -110,5 +110,5 @@ Set `NDK_ROOT` inside `apk-build-install.sh` before using it on a new machine.
 ## 📎 Related Docs
 
 - [QuickDotAI AAR API](QuickDotAI/README.md)
-- [Native Streaming](AsyncAndStreaming.md)
+- [Android Native Async & Streaming](AsyncAndStreaming.md)
 - [Main README](../README.md)

@@ -1,4 +1,4 @@
-# Install QNN and Hexagon SDK ⚙️
+# How to Install QNN and Hexagon SDK ⚙️
 :last update 2025-03-25:
 
 There are various ways to install qnn.
@@ -8,7 +8,7 @@ If you install the QNN and Hexagon SDK for NNtrainer usage, please follow the ve
 - QNN (a.k.a., Qualcoomm Neuarl Processing SDK) version 2.31.0.250130
 - HexagonSDK version 5.5.2.0
 
-## Prepare qpm-cli
+## Prepare QPM CLI
 
 
 1. Download qpm-cli

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <cxxabi.h>
 #include <iostream>
 #include <map>
@@ -1256,16 +1257,24 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
 #ifdef ENABLE_QNN
     if (architecture == "Gauss_3_6_QNN" || architecture == "Gauss_3_8_QNN" ||
         architecture == "Gauss_3_8_VEncoder_QNN") {
-      std::string config_path = base_dir;
-      if (config_path.length() >= 7 &&
-          config_path.substr(config_path.length() - 7) == "/models") {
-        config_path = config_path.substr(0, config_path.length() - 7);
+      const char *configured_config_path =
+        getenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
+      if (configured_config_path != nullptr &&
+          configured_config_path[0] != '\0') {
+        LOGD("[DEBUG] load_into_handle: using configured QNN config path: %s",
+             configured_config_path);
+      } else {
+        std::string config_path = base_dir;
+        if (config_path.length() >= 7 &&
+            config_path.substr(config_path.length() - 7) == "/models") {
+          config_path = config_path.substr(0, config_path.length() - 7);
+        }
+        config_path += "/htp_backend_ext_config.json";
+        LOGD("[DEBUG] load_into_handle: setting QNN config path: %s",
+             config_path.c_str());
+        setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH", config_path.c_str(),
+               1);
       }
-      config_path += "/htp_backend_ext_config.json";
-      LOGD("[DEBUG] load_into_handle: setting QNN config path: %s",
-           config_path.c_str());
-      setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH", config_path.c_str(),
-             1);
     }
 #endif
 

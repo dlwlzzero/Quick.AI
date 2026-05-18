@@ -506,6 +506,43 @@ class LiteRTLm(
         }
     }
 
+    override fun runChatMultimodalHandleStreaming(
+        parts: List<PromptPart>,
+        sink: StreamSink
+    ): BackendResult<QuickAiChatResult> {
+        val session = activeSession
+        if (session == null) {
+            val err = BackendResult.Err(
+                QuickAiError.BAD_REQUEST,
+                "No active chat session — call openChatSession() first"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+        if (!visionEnabled) {
+            val err = BackendResult.Err(
+                QuickAiError.UNSUPPORTED,
+                "LiteRTLm was loaded without a visionBackend"
+            )
+            sink.onError(err.error, err.message)
+            return err
+        }
+        return try {
+            val messages = listOf(
+                QuickAiChatMessage(role = QuickAiChatRole.USER, parts = parts)
+            )
+            session.runStreaming(messages, sink)
+        } catch (t: Throwable) {
+            Log.e(TAG, "runChatMultimodalHandleStreaming(): threw", t)
+            val err = BackendResult.Err(
+                QuickAiError.INFERENCE_FAILED,
+                t.message ?: "chat multimodal streaming failed"
+            )
+            sink.onError(err.error, err.message)
+            err
+        }
+    }
+
     // ----- OpenAI messages API (handle-based) --------------------------------
 
     /**

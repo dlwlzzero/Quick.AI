@@ -24,6 +24,7 @@
 #include <android/log.h>
 #include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 #include <jni.h>
 #include <string>
 #include <unistd.h>
@@ -165,18 +166,20 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
       env->GetStringUTFChars(htpBackendConfigPathJ, nullptr);
   }
 
-  // Change CWD to htp_backend_config_path's directory so QNNContext
-  // can locate htp_backend_ext_config.json there.
-  char original_cwd[PATH_MAX];
-  bool cwd_changed = false;
-  if (htp_backend_config_path != nullptr) {
-    if (getcwd(original_cwd, PATH_MAX) != nullptr) {
-      std::string cfg(htp_backend_config_path);
-      size_t pos = cfg.find_last_of('/');
-      if (pos != std::string::npos) {
-        cwd_changed = (chdir(cfg.substr(0, pos).c_str()) == 0);
-      }
-    }
+  const char *previous_htp_backend_config_path =
+    getenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
+  const bool had_previous_htp_backend_config_path =
+    previous_htp_backend_config_path != nullptr;
+  std::string previous_htp_backend_config_path_value;
+  if (had_previous_htp_backend_config_path) {
+    previous_htp_backend_config_path_value =
+      previous_htp_backend_config_path;
+  }
+  const bool has_htp_backend_config_path =
+    htp_backend_config_path != nullptr && htp_backend_config_path[0] != '\0';
+  if (has_htp_backend_config_path) {
+    setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH",
+           htp_backend_config_path, 1);
   }
 
   CausalLmHandle handle = nullptr;
@@ -186,9 +189,13 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
                     static_cast<ModelQuantizationType>(quantOrdinal),
                     native_lib_dir, model_base_path, &handle);
 
-  // Restore original CWD
-  if (cwd_changed) {
-    chdir(original_cwd);
+  if (has_htp_backend_config_path) {
+    if (had_previous_htp_backend_config_path) {
+      setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH",
+             previous_htp_backend_config_path_value.c_str(), 1);
+    } else {
+      unsetenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
+    }
   }
 
   if (native_lib_dir != nullptr && nativeLibDirJ != nullptr) {

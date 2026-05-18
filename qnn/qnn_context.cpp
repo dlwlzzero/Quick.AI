@@ -57,6 +57,10 @@ static std::string trim_trailing_slashes(std::string path) {
   return path;
 }
 
+static bool is_absolute_path(const std::string &path) {
+  return !path.empty() && path[0] == '/';
+}
+
 static std::string resolve_quick_dot_ai_base_dir() {
   const char *override_base_dir = std::getenv("QUICK_DOT_AI_BASE_DIR");
   if (override_base_dir != nullptr && override_base_dir[0] != '\0') {
@@ -80,11 +84,20 @@ static std::string resolve_quick_dot_ai_base_dir() {
   return fallback;
 }
 
+static std::string resolve_backend_extensions_config_value(
+  const std::string &path) {
+  if (path.empty() || is_absolute_path(path)) {
+    return path;
+  }
+  return resolve_quick_dot_ai_base_dir() + "/" + path;
+}
+
 static std::string resolve_backend_extensions_config_path() {
   const char *override_config_path =
     std::getenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
   if (override_config_path != nullptr && override_config_path[0] != '\0') {
-    std::string config_path = override_config_path;
+    std::string config_path =
+      resolve_backend_extensions_config_value(override_config_path);
     LOGD("resolve_backend_extensions_config_path: using "
          "QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH=%s",
          config_path.c_str());
@@ -228,6 +241,7 @@ int QNNContext::init() {
   } else {
     config_path = resolve_backend_extensions_config_path();
   }
+  config_path = resolve_backend_extensions_config_value(config_path);
   LOGD("init: backend_extensions_config.configFilePath = %s",
        config_path.c_str());
   backend_extensions_config.configFilePath = config_path;

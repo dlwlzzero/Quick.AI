@@ -10,8 +10,8 @@ helpers, chat templates, and XGrammar structured generation.
 - [Model Enums](#-model-enums)
 - [Core Types](#-core-types)
 - [Global Options](#-global-options)
-- [Legacy Single-Model API](#-legacy-single-model-api)
-- [Handle-Based API](#-handle-based-api)
+- [Legacy Single Model API](#-legacy-single-model-api)
+- [Handle Based API](#-handle-based-api)
 - [Streaming](#-streaming)
 - [Multimodal](#-multimodal)
 - [XGrammar](#-xgrammar)
@@ -84,7 +84,7 @@ ErrorCode setOptions(Config config);
 `setOptions()` affects global chat-template/debug behavior for subsequent API
 calls in the current process.
 
-## 🕰️ Legacy Single-Model API
+## 🕰️ Legacy Single Model API
 
 These functions operate on one process-wide default handle. Prefer the
 handle-based API for new code.
@@ -106,7 +106,7 @@ ErrorCode loadQnnKvCache(const char *cache_path);
 ErrorCode resetQnnKvCache(void);
 ```
 
-## 🧩 Handle-Based API
+## 🧩 Handle Based API
 
 ```c
 ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
@@ -129,6 +129,14 @@ ErrorCode resetQnnKvCacheHandle(CausalLmHandle handle);
 
 `native_lib_dir` is mainly used by Android/QNN flows to locate shared
 libraries. `model_base_path` is the base directory for model files.
+
+For native QNN backend extensions, set
+`QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH` before loading the model to override
+the default `htp_backend_ext_config.json` location. Absolute values are used
+as-is. Relative values are resolved by `QNNContext` from
+`QUICK_DOT_AI_BASE_DIR` when set, otherwise from the process current working
+directory. If no override is set, the C API uses
+`<model_base_path without trailing /models>/htp_backend_ext_config.json`.
 
 ## 🔄 Streaming
 
@@ -238,7 +246,9 @@ ErrorCode runModelHandleWithTool(CausalLmHandle handle,
 If a model directory contains `Toolset.json`, tools are precompiled at model
 load. For dynamic schemas, pass `tool_schema` on first use.
 
-See [`../docs/how-to-use-xgrammar.md`](../docs/how-to-use-xgrammar.md).
+See [`../docs/ChatAndOpenAIUsage.md`](../docs/ChatAndOpenAIUsage.md) for usage
+examples and [`../docs/XGrammarReference.md`](../docs/XGrammarReference.md)
+for XGrammar internals.
 
 ## 📡 OpenAI JSON Streaming
 
@@ -253,7 +263,8 @@ ErrorCode runModelHandleWithJsonStreaming(CausalLmHandle handle,
 and legacy `functions`. A chat template must be available from the loaded model
 directory or the call returns `CAUSAL_LM_ERROR_UNSUPPORTED`.
 
-See [`../docs/runWithJsonStreaming_API.md`](../docs/runWithJsonStreaming_API.md).
+See [`../docs/ChatAndOpenAIUsage.md`](../docs/ChatAndOpenAIUsage.md) for usage
+examples and request routing details.
 
 ## ❌ Error Codes
 
@@ -272,5 +283,6 @@ See [`../docs/runWithJsonStreaming_API.md`](../docs/runWithJsonStreaming_API.md)
 
 - [Main README](../README.md)
 - [Android AAR API](../Android/QuickDotAI/README.md)
+- [Chat and OpenAI Usage Examples](../docs/ChatAndOpenAIUsage.md)
 - [Chat Templates](../docs/ChatTemplate.md)
-- [XGrammar Usage](../docs/how-to-use-xgrammar.md)
+- [XGrammar Reference](../docs/XGrammarReference.md)

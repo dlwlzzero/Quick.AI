@@ -1,4 +1,4 @@
-# Native Async & Streaming 🔄
+# Android Native Async & Streaming 🔄
 
 Quick.AI streaming is synchronous at the native C boundary and asynchronous at
 the host-app boundary. The native call blocks the worker thread while invoking a
@@ -94,4 +94,5 @@ Native non-zero `ErrorCode` values are mapped through `QuickAiError.fromNativeCo
 
 - [QuickDotAI AAR API](QuickDotAI/README.md)
 - [Android Architecture](Architecture.md)
+- [Chat and OpenAI Usage Examples](../docs/ChatAndOpenAIUsage.md)
 - [C API Reference](../api/README.md)

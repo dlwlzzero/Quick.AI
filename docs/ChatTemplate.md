@@ -65,44 +65,10 @@ template is available, `runModelHandleWithJsonStreaming()` returns
 
 Legacy OpenAI `functions` is accepted as an alias for raw function schemas.
 
-## 🧑‍💻 C Usage
+## 🧑‍💻 Usage Examples
 
-```c
-CausalLMChatMessage messages[] = {
-  {.role = "system", .content = "You are concise."},
-  {.role = "user", .content = "Hello!"}
-};
-
-const char *formatted = NULL;
-ErrorCode err = applyChatTemplate(messages, 2, true, &formatted);
-```
-
-For streaming:
-
-```c
-runModelHandleWithMessagesStreaming(handle, messages, 2, true,
-                                    callback, user_data);
-```
-
-## 📱 Android Usage
-
-```kotlin
-engine.runModelHandleWithMessagesStreaming(
-    listOf(
-        QuickAiChatMessage(
-            role = QuickAiChatRole.USER,
-            parts = listOf(PromptPart.Text("Hello!"))
-        )
-    ),
-    sink
-)
-```
-
-For full OpenAI JSON:
-
-```kotlin
-engine.runModelHandleWithJsonStreaming(jsonRequest, sink)
-```
+End-to-end Chat tab, OpenAI tab, native messages, and JSON streaming examples
+live in [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md).
 
 ## ⚠️ Notes
 
@@ -115,6 +81,7 @@ engine.runModelHandleWithJsonStreaming(jsonRequest, sink)
 
 ## 📎 Related Docs
 
-- [JSON Streaming API](runWithJsonStreaming_API.md)
+- [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md)
+- [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md)
 - [C API Reference](../api/README.md)
 - [QuickDotAI AAR API](../Android/QuickDotAI/README.md)

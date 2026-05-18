@@ -78,13 +78,22 @@ class NativeQuickDotAI(
             Log.i(TAG, "load(): modelBasePath=$modelBasePath")
         }
 
-        // HTP backend extension config path for QNN models.
-        // Falls back to the app's external files dir if not provided.
-        val htpBackendConfigPath = req.htpBackendConfigPath
-            ?: File(
-                appContext.getExternalFilesDir(null),
-                "htp_backend_ext_config.json"
-            ).absolutePath
+        // HTP backend extension config path for QNN models. Relative values
+        // are resolved from the app external files dir so app/API callers can
+        // pass "configs/htp_backend_ext_config.json" portably.
+        val externalFilesDir = appContext.getExternalFilesDir(null)
+        val requestedHtpBackendConfigPath = req.htpBackendConfigPath
+            ?.takeIf { it.isNotBlank() }
+        val htpBackendConfigPath = when {
+            requestedHtpBackendConfigPath == null ->
+                File(externalFilesDir, "htp_backend_ext_config.json").absolutePath
+            File(requestedHtpBackendConfigPath).isAbsolute ->
+                requestedHtpBackendConfigPath
+            externalFilesDir != null ->
+                File(externalFilesDir, requestedHtpBackendConfigPath).absolutePath
+            else ->
+                File(requestedHtpBackendConfigPath).absolutePath
+        }
 
         return try {
             Log.i(
@@ -171,6 +180,8 @@ class NativeQuickDotAI(
     override fun unload(): BackendResult<Unit> {
         // Cancel any in-flight inference before unloading
         cancel()
+        activeSession?.close()
+        activeSession = null
 
         if (!loaded || handle == 0L) {
             return BackendResult.Ok(Unit)
@@ -255,8 +266,7 @@ class NativeQuickDotAI(
         parts: List<PromptPart>,
         sink: StreamSink
     ): BackendResult<QuickAiChatResult> {
-        val session = activeSession
-        if (session == null) {
+        if (activeSession == null) {
             val err = BackendResult.Err(
                 QuickAiError.BAD_REQUEST,
                 "No active chat session — call openChatSession() first"
@@ -264,7 +274,43 @@ class NativeQuickDotAI(
             sink.onError(err.error, err.message)
             return err
         }
-        return session.runMultimodalStreaming(parts, sink)
+        val accumulated = StringBuilder()
+        val forwardingSink = object : StreamSink {
+            override fun onDelta(text: String) {
+                accumulated.append(text)
+                sink.onDelta(text)
+            }
+
+            override fun onReasoningDelta(text: String) {
+                sink.onReasoningDelta(text)
+            }
+
+            override fun onDone() {
+                sink.onDone()
+            }
+
+            override fun onError(error: QuickAiError, message: String?) {
+                sink.onError(error, message)
+            }
+        }
+        val messages = listOf(
+            QuickAiChatMessage(role = QuickAiChatRole.USER, parts = parts)
+        )
+        return when (val r = runMultimodalHandleWithMessagesStreaming(messages, forwardingSink)) {
+            is BackendResult.Ok -> {
+                val metrics = when (val m = metrics()) {
+                    is BackendResult.Ok -> m.value
+                    is BackendResult.Err -> null
+                }
+                BackendResult.Ok(
+                    QuickAiChatResult(
+                        content = accumulated.toString(),
+                        metrics = metrics
+                    )
+                )
+            }
+            is BackendResult.Err -> BackendResult.Err(r.error, r.message)
+        }
     }
 
     override fun cancel() {

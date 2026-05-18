@@ -95,38 +95,12 @@ values map to native enum ordinals in `quick_dot_ai_api.h`.
 
 ## 💬 OpenAI Message Streaming
 
-```kotlin
-val messages = listOf(
-    QuickAiChatMessage(
-        role = QuickAiChatRole.SYSTEM,
-        parts = listOf(PromptPart.Text("You are concise."))
-    ),
-    QuickAiChatMessage(
-        role = QuickAiChatRole.USER,
-        parts = listOf(PromptPart.Text("Hello!"))
-    )
-)
+Use `runModelHandleWithMessagesStreaming()` for OpenAI-style message lists and
+`runModelHandleWithJsonStreaming()` for full OpenAI JSON requests containing
+`tools` or legacy `functions`.
 
-engine.runModelHandleWithMessagesStreaming(messages, sink)
-```
-
-For a full OpenAI JSON request, including `tools` or legacy `functions`:
-
-```kotlin
-val jsonRequest = """
-{
-  "messages": [
-    {"role": "developer", "content": "You can call tools."},
-    {"role": "user", "content": "Call mom"}
-  ],
-  "tools": [
-    {"type": "function", "function": {"name": "call", "description": "..."}}
-  ]
-}
-""".trimIndent()
-
-engine.runModelHandleWithJsonStreaming(jsonRequest, sink)
-```
+End-to-end Chat tab and OpenAI tab examples live in
+[`../../docs/ChatAndOpenAIUsage.md`](../../docs/ChatAndOpenAIUsage.md).
 
 ## 🖼️ Multimodal Usage
 
@@ -160,19 +134,14 @@ engine.runMultimodalHandleWithMessagesStreaming(
 
 ## 🧵 Chat Sessions
 
-Chat sessions keep backend-managed conversation state.
+Chat sessions keep backend-managed conversation state. Use
+`openChatSession()` before `runChatModelHandleStreaming()` or
+`runChatMultimodalHandleStreaming()`, then call `chatRebuild()` or
+`closeChatSession()` when the conversation state changes or ends. Only one chat
+session may be active per engine instance.
 
-```kotlin
-val sessionId = engine.openChatSession().let { result ->
-    (result as BackendResult.Ok).value
-}
-
-engine.runChatModelHandleStreaming("Hello!", sink)
-engine.chatRebuild(emptyList())
-engine.closeChatSession()
-```
-
-Only one chat session may be active per engine instance.
+See [`../../docs/ChatAndOpenAIUsage.md`](../../docs/ChatAndOpenAIUsage.md) for
+complete session examples.
 
 ## 🧱 Core Types
 
@@ -233,6 +202,13 @@ interface StreamSink {
 See `Types.kt` for the full DTO set, including `QuickAiChatSessionConfig`,
 sampling options, error codes, and metrics.
 
+For native QNN models, `htpBackendConfigPath` points to
+`htp_backend_ext_config.json`. Absolute paths are used as-is. Relative paths are
+resolved from the app external files directory, so
+`"configs/htp_backend_ext_config.json"` resolves to
+`<externalFilesDir>/configs/htp_backend_ext_config.json`. When omitted,
+`NativeQuickDotAI` uses `<externalFilesDir>/htp_backend_ext_config.json`.
+
 ## ✅ Rules
 
 - Call `load()` before any inference call.
@@ -242,4 +218,6 @@ sampling options, error codes, and metrics.
   `applicationInfo.nativeLibraryDir`.
 - Pass `modelBasePath` for native models when model files live outside the
   native default path.
+- Pass `htpBackendConfigPath` for QNN models when
+  `htp_backend_ext_config.json` lives outside the app external files root.
 - Pass `modelPath` for `LiteRTLm` / `GEMMA4` models.

@@ -79,7 +79,7 @@ model.enable_conv()
 output = model.generate(input_ids, max_new_tokens=50)
 ```
 
-## Compilation-Style Forward
+## Compilation Style Forward
 
 Prefill graph:
 

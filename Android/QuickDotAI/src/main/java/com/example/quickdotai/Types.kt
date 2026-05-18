@@ -172,7 +172,8 @@ data class LoadModelRequest(
 
     /**
      * Path to the HTP backend extension config JSON file used by QNN
-     * models. When null, the native engine falls back to
+     * models. Absolute paths are used as-is. Relative paths are resolved
+     * from `<externalFilesDir>`. When null, the native engine falls back to
      * `<externalFilesDir>/htp_backend_ext_config.json`.
      *
      * Only honored by [NativeQuickDotAI]; [LiteRTLm] ignores it.

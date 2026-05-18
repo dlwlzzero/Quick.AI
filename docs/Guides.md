@@ -12,31 +12,13 @@ contains `:QuickDotAI` and `:SampleTestAPP`.
 
 | Guide | What you get |
 |---|---|
+| [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md) | Chat tab, OpenAI tab, JSON streaming, and XGrammar examples |
 | [QuickDotAI AAR API](../Android/QuickDotAI/README.md) | Kotlin API, model loading, streaming, chat sessions |
 | [Android Architecture](../Android/Architecture.md) | Current module layout and planned REST/service layer |
-| [Native Streaming](../Android/AsyncAndStreaming.md) | How JNI and the C streaming callback connect |
+| [Android Native Async & Streaming](../Android/AsyncAndStreaming.md) | How JNI and the C streaming callback connect |
 
-```kotlin
-val engine: QuickDotAI = NativeQuickDotAI(applicationContext)
-engine.load(
-    LoadModelRequest(
-        model = ModelId.GAUSS3_8_QNN,
-        backend = BackendType.NPU,
-        nativeLibDir = applicationInfo.nativeLibraryDir,
-        modelBasePath = "/sdcard/Android/data/com.example.app/files/models"
-    )
-)
-
-engine.runModelHandleWithMessagesStreaming(
-    listOf(
-        QuickAiChatMessage(
-            role = QuickAiChatRole.USER,
-            parts = listOf(PromptPart.Text("Tell me a joke."))
-        )
-    ),
-    sink
-)
-```
+For app-level examples, start with the usage guide and use the AAR API
+reference for exact type definitions.
 
 ### C/C++ Developer
 
@@ -44,17 +26,13 @@ Use the handle-based C API directly from native applications.
 
 | Guide | What you get |
 |---|---|
-| [C API Reference](../api/README.md) | Function signatures, enums, error codes, examples |
+| [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md) | Native messages, JSON streaming, and XGrammar examples |
+| [C API Reference](../api/README.md) | Function signatures, enums, and error codes |
 | [Build Options](../README.md#-building) | Meson flags and Android/x86 build commands |
 | [Chat Templates](ChatTemplate.md) | `messages`, `tools`, and `functions` formatting |
 
-```cpp
-CausalLmHandle handle = nullptr;
-loadModelHandle(CAUSAL_LM_BACKEND_NPU, CAUSAL_LM_MODEL_GAUSS3_8_QNN,
-                CAUSAL_LM_QUANTIZATION_W4A32, nullptr, "/models", &handle);
-runModelHandleStreaming(handle, "Hello!", callback, nullptr);
-destroyModelHandle(handle);
-```
+For native examples, start with the usage guide and use the C API reference for
+full signatures and error codes.
 
 ### Model Developer
 
@@ -70,10 +48,11 @@ Extend Quick.AI with a new CausalLM architecture or QNN model.
 
 | Feature | Guide |
 |---|---|
-| Structured output and tool calling | [XGrammar Usage](how-to-use-xgrammar.md) |
-| OpenAI JSON request streaming | [JSON Streaming API](runWithJsonStreaming_API.md) |
+| Chat/OpenAI usage examples | [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md) |
+| Structured output and tool calling | [XGrammar Reference](XGrammarReference.md) |
+| OpenAI JSON request streaming | [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md) |
 | Chat templates | [Chat Templates](ChatTemplate.md) |
-| QNN SDK setup | [QNN Installation](how-to-install-qnn.md) |
+| QNN SDK setup | [How to Install QNN](HowToInstallQNN.md) |
 
 ## 📋 API References
 
@@ -87,11 +66,11 @@ Extend Quick.AI with a new CausalLM architecture or QNN model.
 |---|---|
 | [Native Architecture](Architecture.md) | Self-registration, model factory, native build outputs |
 | [Android Architecture](../Android/Architecture.md) | Current AAR/sample modules and planned REST service |
-| [Native Streaming](../Android/AsyncAndStreaming.md) | C callback streaming through JNI |
+| [Android Native Async & Streaming](../Android/AsyncAndStreaming.md) | C callback streaming through JNI |
 
 ## 🔗 Quick Links
 
 - [Main README](../README.md)
+- [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md)
 - [QuickDotAI AAR](../Android/QuickDotAI/README.md)
 - [C API Reference](../api/README.md)
-- [JSON Streaming API](runWithJsonStreaming_API.md)
