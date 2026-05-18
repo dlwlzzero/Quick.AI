@@ -348,6 +348,10 @@ static bool is_gauss_architecture(const std::string &architecture) {
   return architecture == "Gauss_3_6_QNN" || architecture == "Gauss_3_8_QNN";
 }
 
+static bool is_gauss3_8_qnn_architecture(const std::string &architecture) {
+  return architecture == "Gauss_3_8_QNN";
+}
+
 static std::string trim_wrapping_newlines(std::string value) {
   while (!value.empty() && (value.front() == '\n' || value.front() == '\r')) {
     value.erase(value.begin());
@@ -441,6 +445,11 @@ static void update_handle_session_after_run(CausalLmModel &h,
   }
 
   if (!is_gauss_architecture(h.architectures[model_index])) {
+    return;
+  }
+
+  if (is_gauss3_8_qnn_architecture(h.architectures[model_index])) {
+    h.kv_len = 0;
     return;
   }
 
@@ -548,6 +557,9 @@ static std::string prepare_input_for_model(CausalLmModel &h, size_t model_index,
   }
 
   const std::string &architecture = h.architectures[model_index];
+  if (is_gauss3_8_qnn_architecture(architecture)) {
+    h.kv_len = 0;
+  }
   if (is_gauss_architecture(architecture) && h.kv_len > 0) {
     return build_gauss_incremental_user_prompt(
       extract_latest_gauss_user_content(input));
@@ -1598,6 +1610,7 @@ ErrorCode applyChatTemplate(const CausalLMChatMessage *messages,
     std::string formattedInput = apply_chat_template_messages(
       arch, chat_messages, add_generation_prompt, model_dir);
 
+    g_formatted_template = std::move(formattedInput);
     *formattedText = g_formatted_template.c_str();
   } catch (const std::exception &e) {
     LOGE("Exception in applyChatTemplate: %s", e.what());
@@ -2127,7 +2140,7 @@ execute_multimodal_llm(CausalLmModel &h, causallm::Gauss3_8_QNN *llm,
     llm->run_with_embeddings(combined.data(), n_total, text_ids,
                              /*do_sample=*/false,
                              /*log_output=*/g_verbose);
-    h.kv_len = llm->getKvLen();
+    h.kv_len = 0;
   } catch (const std::exception &e) {
     LOGE("[DEBUG] execute_multimodal_llm: llm threw: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
@@ -2232,10 +2245,15 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
 
   LOGD("[DEBUG] runMultimodalHandleStreaming: Preparing input text...");
   const std::string raw_input(prompt);
+  const bool input_already_formatted =
+    raw_input.find("<|turn_start|>") != std::string::npos ||
+    raw_input.find("<|im_start|>") != std::string::npos ||
+    raw_input.find("<start_of_turn>") != std::string::npos;
   std::string input =
-    prepare_input_for_model(h, 1, raw_input, /*input_already_formatted=*/false);
+    prepare_input_for_model(h, 1, raw_input, input_already_formatted);
   LOGD("[DEBUG]   raw input length: %zu", raw_input.length());
   LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
+  LOGD("[DEBUG]   input_already_formatted: %d", input_already_formatted);
   LOGD("[DEBUG]   model input length: %zu", input.length());
   LOGD("[DEBUG]   model input preview: %.100s%s", input.c_str(),
        input.length() > 100 ? "..." : "");
@@ -2297,10 +2315,14 @@ ErrorCode runMultimodalHandleWithMessages(
 
   // Apply chat template
   auto chat_messages = convertMessages(messages, num_messages);
+  const size_t llm_index = h.architectures.size() > 1 ? 1 : 0;
   std::string arch =
-    h.architectures.empty() ? std::string() : h.architectures[0];
-  std::string prompt =
-    apply_chat_template_messages(arch, chat_messages, add_generation_prompt);
+    h.architectures.size() > llm_index ? h.architectures[llm_index]
+                                       : std::string();
+  std::string model_dir =
+    h.model_dirs.size() > llm_index ? h.model_dirs[llm_index] : std::string();
+  std::string prompt = apply_chat_template_messages(
+    arch, chat_messages, add_generation_prompt, model_dir);
   LOGD("[DEBUG]   formatted prompt length: %zu", prompt.length());
   LOGD("[DEBUG]   formatted prompt preview: %.100s%s", prompt.c_str(),
        prompt.length() > 100 ? "..." : "");
@@ -2326,6 +2348,8 @@ ErrorCode runMultimodalHandleWithMessages(
     *outputText = nullptr;
     return CAUSAL_LM_ERROR_UNSUPPORTED;
   }
+  auto embedding_info = llm->get_embedding_info();
+  vision->set_quant_param(embedding_info.first, embedding_info.second);
 
   const size_t pixel_bytes = static_cast<size_t>(numPatches) * 3 * PATCH_SIZE *
                              PATCH_SIZE * sizeof(float);
@@ -2484,21 +2508,42 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
     LOGD("[DEBUG] runMultimodalHandleWithMessagesStreaming: Formatting "
          "messages...");
 
-    const char *formattedInput = nullptr;
-    ErrorCode err = applyChatTemplate(messages, num_messages,
-                                      add_generation_prompt, &formattedInput);
-    if (err != CAUSAL_LM_ERROR_NONE) {
-      return err;
+    std::string formattedInput;
+    {
+      auto &h = *handle;
+      std::lock_guard<std::mutex> lock(h.mtx);
+      if (!h.initialized) {
+        LOGE("[DEBUG] runMultimodalHandleWithMessagesStreaming: handle is not "
+             "initialized for multimodal");
+        return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+      }
+      if (h.models.size() < 2) {
+        LOGE("[DEBUG] runMultimodalHandleWithMessagesStreaming: need >=2 "
+             "sub-models (got %zu)",
+             h.models.size());
+        return CAUSAL_LM_ERROR_UNSUPPORTED;
+      }
+
+      auto chat_messages = convertMessages(messages, num_messages);
+      const size_t llm_index = h.architectures.size() > 1 ? 1 : 0;
+      std::string arch =
+        h.architectures.size() > llm_index ? h.architectures[llm_index]
+                                           : std::string();
+      std::string model_dir =
+        h.model_dirs.size() > llm_index ? h.model_dirs[llm_index]
+                                        : std::string();
+      formattedInput = apply_chat_template_messages(
+        arch, chat_messages, add_generation_prompt, model_dir);
     }
 
     LOGD("[DEBUG]   raw messages count: %zu", num_messages);
-    LOGD("[DEBUG]   formatted input length: %zu", strlen(formattedInput));
-    LOGD("[DEBUG]   formatted input preview: %.100s%s", formattedInput,
-         strlen(formattedInput) > 100 ? "..." : "");
+    LOGD("[DEBUG]   formatted input length: %zu", formattedInput.length());
+    LOGD("[DEBUG]   formatted input preview: %.100s%s", formattedInput.c_str(),
+         formattedInput.length() > 100 ? "..." : "");
 
     LOGD("[DEBUG] runMultimodalHandleWithMessagesStreaming: Delegating to "
          "runMultimodalHandleStreaming...");
-    return runMultimodalHandleStreaming(handle, formattedInput, pixelValues,
+    return runMultimodalHandleStreaming(handle, formattedInput.c_str(), pixelValues,
                                         numPatches, originalHeight,
                                         originalWidth, callback, user_data);
   } catch (const std::exception &e) {
