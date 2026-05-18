@@ -9,7 +9,7 @@ set -e
 # ==========================================================
 # Configuration
 # ==========================================================
-NDK_ROOT="/home/junbong/progra/Android/Sdk/ndk/26.3.11579264"
+NDK_ROOT="/home/suyeon/Android/Sdk/ndk/27.0.12077973"
 APK_APPLICATION="SampleTestApp"
 
 # ==========================================================
@@ -28,16 +28,16 @@ echo "[2/6] Building project for Android (with QNN, clean build)..."
 ./build.sh --platform=android --enable-qnn --clean
 
 # ==========================================================
-# 3. Install Android Libraries
+# 3. Install Android Libraries for APK
 # ==========================================================
-echo "[3/6] Installing Android libraries..."
-./install_android.sh
+echo "[3/6] Installing Android libraries for APK..."
+./apk_install_android.sh
 
 # ==========================================================
 # 4. Deploy Prebuilt Libraries
 # ==========================================================
 echo "[4/6] Copying prebuilt libraries to QuickDotAI project..."
-PREBUILT_DIR="./nntrainer/Applications/QuickAI/QuickDotAI/prebuilt_libs"
+PREBUILT_DIR="./Android/QuickDotAI/prebuilt_libs"
 
 # Ensure destination directory exists
 mkdir -p "${PREBUILT_DIR}"
@@ -50,7 +50,7 @@ echo "      Libraries copied to: ${PREBUILT_DIR}"
 # 5. Build and Install APK
 # ==========================================================
 echo "[5/6] Building and installing APK..."
-cd ./nntrainer/Applications/QuickAI/
+cd ./Android/
 ./gradlew ":${APK_APPLICATION}:installDebug"
 
 # ==========================================================

@@ -22,9 +22,14 @@
 
 #include "graph_parser.h"
 #include <transformer.h>
-
+#include <iostream>
 #include <atomic>
 #include <set>
+
+// Forward declaration for XGrammar
+namespace causallm {
+class XGrammar;
+}
 
 namespace causallm {
 /**
@@ -44,8 +49,8 @@ struct QNNModelInfo {
 class Quick_Dot_AI_QNN : public Transformer {
 
 public:
-  Quick_Dot_AI_QNN(json &cfg, json &generation_cfg, json &nntr_cfg)
-      : Transformer(cfg, generation_cfg, nntr_cfg, ModelType::MODEL) {
+  Quick_Dot_AI_QNN(json &cfg, json &generation_cfg, json &nntr_cfg) :
+    Transformer(cfg, generation_cfg, nntr_cfg, ModelType::MODEL) {
     LOGD("--------------------------------- Quick_Dot_AI_QNN");
     setupParameters(cfg, generation_cfg, nntr_cfg);
   }
@@ -53,10 +58,25 @@ public:
   ~Quick_Dot_AI_QNN() override;
 
   void initialize() override;
+  void initialize(const std::string &native_lib_dir) override;
 
   void load_weight(const std::string &weight_path) override;
 
   void save_weight(const std::string &weight_path) override;
+
+  virtual bool supportsKvCachePersistence() const { return false; }
+  virtual int getKvLen() const { return 0; }
+  virtual void resetKvCache() {
+    throw std::runtime_error("QNN KV cache is not supported by this model");
+  }
+  virtual void saveKvCache(const std::string &cache_path) const {
+    (void)cache_path;
+    throw std::runtime_error("QNN KV cache is not supported by this model");
+  }
+  virtual void loadKvCache(const std::string &cache_path) {
+    (void)cache_path;
+    throw std::runtime_error("QNN KV cache is not supported by this model");
+  }
 
   void setupParameters(json &cfg, json &generation_cfg,
                        json &nntr_cfg) override;
@@ -64,10 +84,27 @@ public:
   void constructModel() override;
 
   /**
+   * @brief Sample token with XGrammar
+   */
+  int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
+             float logit_scale, int logit_offset, float repetition_penalty,
+             float temperature, float top_p, int top_k);
+
+  /**
    * @brief Attach (or detach) a BaseStreamer to intercept per-token output.
    *        Passing nullptr detaches any currently-attached streamer.
    */
   void setStreamer(::BaseStreamer *streamer) override { streamer_ = streamer; }
+
+  /**
+   * @brief Attach an XGrammar instance for grammar-constrained generation.
+   */
+  void setXGrammar(XGrammar *grammar) override { xgrammar_ = grammar; }
+
+  /**
+   * @brief Reset the XGrammar matcher state after generation.
+   */
+  void resetXGrammar() override;
 
   /**
    * @brief Request cancellation of the current run().
@@ -81,7 +118,8 @@ public:
     __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
                         "requestStop: setting stop_requested_ to true");
 #else
-    std::cout << "[DEBUG] requestStop: setting stop_requested_ to true" << std::endl;
+    std::cout << "[DEBUG] requestStop: setting stop_requested_ to true"
+              << std::endl;
 #endif
     stop_requested_.store(true, std::memory_order_release);
   }
@@ -90,13 +128,17 @@ public:
    * @brief Check if stop has been requested.
    * Thread-safe: can be called from any thread.
    */
-  bool isStopRequested() const { return stop_requested_.load(std::memory_order_acquire); }
+  bool isStopRequested() const {
+    return stop_requested_.load(std::memory_order_acquire);
+  }
 
   /**
    * @brief Clear the stop request flag.
    * Thread-safe: can be called from any thread.
    */
-  void clearStopRequest() { stop_requested_.store(false, std::memory_order_release); }
+  void clearStopRequest() {
+    stop_requested_.store(false, std::memory_order_release);
+  }
 
   std::vector<LayerHandle>
   createTransformerDecoderBlock(const int layer_id,
@@ -123,9 +165,23 @@ protected:
   std::string embedding_path;
   std::string binary_config_path;
   std::vector<std::string> graphs_to_use;
+  std::string last_output_;
 
   // config
   int vocab_size;
+
+  // generation_config
+  int padding_token;
+  int eos_token;
+  int top_k;
+  float top_p;
+  float temperature;
+  float repetition_penalty;
+  float logit_scale;
+  int logit_offset;
+
+  // LoRA path (optional)
+  std::string lora_path;
 
   // Model map, key: graph name, value: QNN model info
   std::map<std::string, QNNModelInfo> models;
@@ -139,6 +195,9 @@ protected:
 
   // Streaming support
   ::BaseStreamer *streamer_ = nullptr;
+
+  // XGrammar instance for grammar-constrained generation (non-owning)
+  XGrammar *xgrammar_ = nullptr;
 
   /**
    * @brief Cooperative cancellation flag set by the attached streamer's
@@ -162,6 +221,17 @@ protected:
 
   /// Deallocate every tracked pointer and clear the set.
   void deallocate_all();
+
+  /**
+   * @brief Convert the run() prompt argument into UTF-8 text for tokenization.
+   *
+   * This helper only normalizes the platform string representation required by
+   * Transformer::run(WSTR): on Windows it converts wide strings to UTF-8, while
+   * on Android/Linux WSTR is already UTF-8-compatible and is returned as-is.
+   * Chat-template formatting and incremental conversation handling must remain
+   * in the API layer before the prompt reaches the model.
+   */
+  static std::string promptToUtf8(const WSTR &prompt);
 };
 
 } // namespace causallm

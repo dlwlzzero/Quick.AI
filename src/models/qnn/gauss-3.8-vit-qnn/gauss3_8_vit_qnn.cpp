@@ -24,7 +24,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstring>
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <tuple>
+#include <vector>
 
 using namespace causallm;
 
@@ -61,44 +69,44 @@ void causallm::Gauss3_8_VIT_QNN::initialize() {
   auto &generation_inputs = models[generation_graph].model_inputs;
 
   // Find input indices by name
-  int prefill_input_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "inputs_embeds");
-  int generation_input_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "inputs_embeds");
+  int prefill_input_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "inputs_embeds");
+  int generation_input_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "inputs_embeds");
 
   // Save pointers to input samples
   input_sample = std::get<float *>(prefill_inputs[prefill_input_idx]);
-  generation_sample = std::get<float *>(generation_inputs[generation_input_idx]);
+  generation_sample =
+      std::get<float *>(generation_inputs[generation_input_idx]);
 
   // Find and save pointers to other input tensors by name
   // Attention masks
-  int prefill_attn_mask_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "attention_mask");
+  int prefill_attn_mask_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "attention_mask");
   int prefill_sliding_attn_mask_idx = GraphParser::find_tensor_index(
       prefill_graph_info.raw_inputs, "sliding_attention_mask");
-  int generation_attn_mask_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "attention_mask");
+  int generation_attn_mask_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "attention_mask");
   int generation_sliding_attn_mask_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "sliding_attention_mask");
 
-  attention_mask =
-      std::get<uint16_t *>(prefill_inputs[prefill_attn_mask_idx]);
+  attention_mask = std::get<uint16_t *>(prefill_inputs[prefill_attn_mask_idx]);
   sliding_attention_mask =
       std::get<uint16_t *>(prefill_inputs[prefill_sliding_attn_mask_idx]);
   generation_attention_mask =
       std::get<uint16_t *>(generation_inputs[generation_attn_mask_idx]);
-  generation_sliding_attention_mask = std::get<uint16_t *>(
-      generation_inputs[generation_sliding_attn_mask_idx]);
+  generation_sliding_attention_mask =
+      std::get<uint16_t *>(generation_inputs[generation_sliding_attn_mask_idx]);
 
   // Position IDs
-  int prefill_pos_cos_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_cos");
-  int prefill_pos_sin_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "position_ids_sin");
-  int generation_pos_cos_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_cos");
-  int generation_pos_sin_idx =
-      GraphParser::find_tensor_index(generation_graph_info.raw_inputs, "position_ids_sin");
+  int prefill_pos_cos_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "position_ids_cos");
+  int prefill_pos_sin_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "position_ids_sin");
+  int generation_pos_cos_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "position_ids_cos");
+  int generation_pos_sin_idx = GraphParser::find_tensor_index(
+      generation_graph_info.raw_inputs, "position_ids_sin");
 
   prefill_position_ids_cos =
       std::get<uint16_t *>(prefill_inputs[prefill_pos_cos_idx]);
@@ -110,10 +118,10 @@ void causallm::Gauss3_8_VIT_QNN::initialize() {
       std::get<uint16_t *>(generation_inputs[generation_pos_sin_idx]);
 
   // SWA Position IDs
-  int prefill_swa_pos_cos_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_cos");
-  int prefill_swa_pos_sin_idx =
-      GraphParser::find_tensor_index(prefill_graph_info.raw_inputs, "swa_position_ids_sin");
+  int prefill_swa_pos_cos_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "swa_position_ids_cos");
+  int prefill_swa_pos_sin_idx = GraphParser::find_tensor_index(
+      prefill_graph_info.raw_inputs, "swa_position_ids_sin");
   int generation_swa_pos_cos_idx = GraphParser::find_tensor_index(
       generation_graph_info.raw_inputs, "swa_position_ids_cos");
   int generation_swa_pos_sin_idx = GraphParser::find_tensor_index(
@@ -143,16 +151,16 @@ void causallm::Gauss3_8_VIT_QNN::initialize() {
   if (lora_path.empty()) {
     // Default: fill with 32768 (zero value for quantized uint16_t)
     for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = prefill_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         auto *lora_ptr = std::get<uint16_t *>(prefill_inputs[idx]);
         std::fill_n(lora_ptr, size / sizeof(uint16_t), 32768);
       }
     }
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = generation_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         auto *lora_ptr = std::get<uint16_t *>(generation_inputs[idx]);
         std::fill_n(lora_ptr, size / sizeof(uint16_t), 32768);
@@ -182,8 +190,8 @@ void causallm::Gauss3_8_VIT_QNN::initialize() {
 
     // Copy to prefill lora inputs (in model input order)
     for (size_t idx = 0; idx < prefill_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = prefill_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = prefill_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         memcpy(std::get<uint16_t *>(prefill_inputs[idx]), data_ptr, size);
         data_ptr += size;
@@ -192,8 +200,8 @@ void causallm::Gauss3_8_VIT_QNN::initialize() {
 
     // Copy to generation lora inputs (in model input order)
     for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-      const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-      if (name.find("_lora_") != std::string::npos) {
+      const auto &info = generation_graph_info.raw_inputs[idx];
+      if (info.name.find("_lora_") != std::string::npos) {
         int size = GraphParser::get_tensor_size(info);
         memcpy(std::get<uint16_t *>(generation_inputs[idx]), data_ptr, size);
         data_ptr += size;
@@ -214,8 +222,8 @@ void causallm::Gauss3_8_VIT_QNN::initialize() {
   // Find all KV cache tensors (names starting with "past_") in generation
   // inputs
   for (size_t idx = 0; idx < generation_graph_info.raw_inputs.size(); idx++) {
-    const auto &[name, info] = generation_graph_info.raw_inputs[idx];
-    if (name.find("past_") == 0) {
+    const auto &info = generation_graph_info.raw_inputs[idx];
+    if (info.name.find("past_") == 0) {
       // Found a KV cache tensor
       auto *kv_ptr = std::get<uint8_t *>(generation_inputs[idx]);
       this->kvs.push_back((uint16_t *)kv_ptr);
@@ -328,7 +336,9 @@ void causallm::Gauss3_8_VIT_QNN::run(const WSTR prompt, bool do_sample,
   auto &generation_model = models[generation_graph].model_handle;
 
   std::cout << "before prefill model run..." << std::endl;
+  auto prefill_start = std::chrono::high_resolution_clock::now();
   auto outputs = prefill_model->inference(1, prefill_inputs);
+  auto prefill_end = std::chrono::high_resolution_clock::now();
   auto token = _input.back();
   std::vector<int> output;
 
@@ -384,7 +394,7 @@ void causallm::Gauss3_8_VIT_QNN::run(const WSTR prompt, bool do_sample,
                    repetition_penalty, temperature, top_p, top_k);
 
     output.push_back(token);
-    if (token == eos_token) {
+    if (token == eos_token || token == padding_token) {
       std::cout << "Finished generating, break..." << std::endl;
       break;
     } else {
@@ -394,6 +404,18 @@ void causallm::Gauss3_8_VIT_QNN::run(const WSTR prompt, bool do_sample,
   }
   auto end = std::chrono::system_clock::now();
   raw_exec_seconds = end - start;
+
+  performance_metrics.prefill_tokens = _len;
+  performance_metrics.prefill_duration_ms =
+      std::chrono::duration<double, std::milli>(prefill_end - prefill_start).count();
+  performance_metrics.generation_tokens = (idx > static_cast<int>(_len)) ? (unsigned int)(idx - static_cast<int>(_len)) : 0U;
+  performance_metrics.generation_duration_ms =
+      std::chrono::duration<double, std::milli>(end - start).count();
+  performance_metrics.total_duration_ms =
+      performance_metrics.prefill_duration_ms + performance_metrics.generation_duration_ms;
+  performance_metrics.peak_memory_kb = 0; // TODO: implement memory tracking
+  has_run_ = true;
+
   std::cout << std::endl;
   std::cout << std::endl;
   std::cout << "Generation exec_time : " << raw_exec_seconds.count()

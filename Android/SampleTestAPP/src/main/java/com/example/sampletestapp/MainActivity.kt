@@ -81,6 +81,9 @@ import com.example.quickdotai.StreamSink
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -157,6 +160,23 @@ private val DARK = M3Tokens(
     codeFg = 0xFFCFBCFF.toInt(),
 )
 
+/**
+ * Models that must use the messages-based API for OpenAI streaming.
+ *
+ * - Gauss models need messages-based API for proper Gauss
+ *   <|turn_start|>/ <|turn_end|> markers in incremental prompts.
+ * - LiteRT-LM (GEMMA4) only supports messages-based API.
+ */
+private val MESSAGES_API_MODELS = setOf(
+    ModelId.GAUSS3_6_QNN,
+    ModelId.GAUSS3_8_QNN,
+    ModelId.GAUSS3_8_VISION_QNN,
+    ModelId.GAUSS3_8,
+    ModelId.GAUSS3_6,
+    ModelId.GEMMA4,
+    ModelId.GEMMA4_E2B_QNN,
+)
+
 class MainActivity : AppCompatActivity() {
 
     /* ───── Engine plumbing (unchanged from the original sample) ───── */
@@ -174,7 +194,7 @@ class MainActivity : AppCompatActivity() {
     /* ───── UI state (preserved across light/dark theme rebuilds) ───── */
 
     private var darkMode = false
-    private var selectedTab: String = "run"             // run | chat | openai | metrics
+    private var selectedTab: String = "openai"          // chat | openai | metrics
     private var modelExpanded = true
     private var samplingExpanded = false
 
@@ -210,6 +230,7 @@ class MainActivity : AppCompatActivity() {
     private var loadStatus: String = "idle"             // idle | loading | loaded
     private var loadedLabel: String = ""
     private var sessionIdText: String? = null
+    private var activeSessionKey: String? = null
     private var lastMetrics: PerformanceMetrics? = null
 
     private var mainScrollY = 0
@@ -320,11 +341,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         scrollColumn.addView(when (selectedTab) {
-            "run"     -> buildRunTab(tokens)
             "chat"    -> buildChatTab(tokens)
             "openai"  -> buildOpenAiTab(tokens)
             "metrics" -> buildMetricsTab(tokens)
-            else      -> buildRunTab(tokens)
+            else      -> buildOpenAiTab(tokens)
         })
 
         if (selectedTab != "metrics") {
@@ -470,7 +490,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(4), dp(4), dp(4), dp(4))
             layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
-        val tabs = listOf("run" to "▶ Run", "chat" to "⌬ Chat",
+        val tabs = listOf("chat" to "⌬ Chat",
                           "openai" to "{ } OpenAI", "metrics" to "▤ Metrics")
         for ((idx, entry) in tabs.withIndex()) {
             val (key, label) = entry
@@ -717,7 +737,7 @@ class MainActivity : AppCompatActivity() {
             background = solid(t.surfaceContainer, 20)
             setPadding(dp(14), dp(14), dp(14), dp(14))
         }
-        val active = sessionIdText != null
+        val active = sessionIdText != null && activeSessionKey == loadedKey
         val modelIcon = TextView(this).apply {
             text = "▦"
             gravity = Gravity.CENTER
@@ -744,6 +764,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 popup.setOnMenuItemClickListener { item ->
                     chatSelectedModel = ModelId.values()[item.itemId]
+                    clearChatSessionState()
+                    if (chatSelectedModel == ModelId.GAUSS3_8_VISION_QNN) {
+                        chatPromptText = defaultVisionPrompt()
+                    }
                     rebuildUi()
                     true
                 }
@@ -948,7 +972,7 @@ class MainActivity : AppCompatActivity() {
         }
         composerRow.addView(chatPromptField)
 
-        val canSend = sessionIdText != null && !streaming
+        val canSend = sessionIdText != null && activeSessionKey == loadedKey && !streaming
         val sendFab = TextView(this).apply {
             text = "▶"
             gravity = Gravity.CENTER
@@ -1034,6 +1058,94 @@ class MainActivity : AppCompatActivity() {
             card.addView(errBox)
             spacer(card, 12)
         }
+
+        val openAiImageCard = roundedCard(t, t.surfaceContainerHigh)
+        openAiImageCard.addView(sectionHeader(t, "[ ]", t.secondaryContainer, t.onSurface,
+            "Image input", "Attach the selected image to the last user message"))
+        spacer(openAiImageCard, 12)
+
+        val imageLabelRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        imageLabelRow.addView(labelView(t, "IMAGE INPUT").also {
+            it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+        })
+        if (!supportsMultimodalInput(selectedModel)) {
+            spacerH(imageLabelRow, 6)
+            imageLabelRow.addView(TextView(this).apply {
+                text = "Vision model only"
+                setTextColor(t.tertiary)
+                textSize = 10f
+                typeface = Typeface.DEFAULT_BOLD
+                background = solid(t.tertiaryContainer, 4)
+                setPadding(dp(6), dp(1), dp(6), dp(1))
+            })
+        }
+        openAiImageCard.addView(imageLabelRow)
+        spacer(openAiImageCard, 6)
+
+        if (selectedImageBytes != null) {
+            val attached = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = solid(t.surfaceContainer, 12)
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+            }
+            attached.addView(TextView(this).apply {
+                text = "[ ]"
+                setTextColor(t.onSurface)
+                textSize = 22f
+                gravity = Gravity.CENTER
+                background = gradient(
+                    blendAlpha(t.primary, 0x55),
+                    blendAlpha(t.tertiary, 0x55), 8
+                )
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+            })
+            spacerH(attached, 10)
+            val info = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+            }
+            info.addView(TextView(this).apply {
+                text = "Selected image"
+                setTextColor(t.onSurface)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            info.addView(TextView(this).apply {
+                text = "${selectedImageBytes!!.size} bytes  raw bytes ready"
+                setTextColor(t.onSurfaceVar)
+                textSize = 11f
+                typeface = Typeface.MONOSPACE
+            })
+            attached.addView(info)
+            attached.addView(TextView(this).apply {
+                text = "x"
+                setTextColor(t.onSurfaceVar)
+                gravity = Gravity.CENTER
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
+                setOnClickListener { onClearImageClicked(); rebuildUi() }
+            })
+            openAiImageCard.addView(attached)
+            imageStatusView = TextView(this).apply { visibility = View.GONE }
+        } else {
+            openAiImageCard.addView(TextView(this).apply {
+                text = "+  Pick image for OpenAI multimodal"
+                setTextColor(t.onSurfaceVar)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                background = dashedBg(t)
+                setPadding(dp(14), dp(14), dp(14), dp(14))
+                setOnClickListener { onPickImageClicked() }
+            })
+            imageStatusView = TextView(this).apply { visibility = View.GONE }
+        }
+        card.addView(openAiImageCard)
+        spacer(card, 12)
 
         card.addView(labelView(t, "MESSAGES JSON"))
         openAIMessagesField = roundedEditText(t, openAiJsonText, multiline = true, mono = true, rows = 8,
@@ -1643,6 +1755,9 @@ class MainActivity : AppCompatActivity() {
         ModelId.GAUSS3_8 -> "[TEXT]        ${m.name}"
         ModelId.GAUSS3_6 -> "[TEXT]        ${m.name}"
         ModelId.TINY_BERT -> "[EMBEDDING]   ${m.name}"
+        ModelId.FUNCTION_GEMMA -> "[TEXT]   ${m.name}"
+        ModelId.GEMMA4_CPU -> "[TEXT]   ${m.name}"
+        ModelId.GEMMA4_E2B_QNN -> "[QNN]         ${m.name}"
     }
 
     /* ════════════════════════════════════════════════════════════════
@@ -1738,8 +1853,13 @@ class MainActivity : AppCompatActivity() {
             try { engine?.close() } catch (_: Throwable) { /* best effort */ }
             engine = null
             loadedKey = null
+            clearChatSessionState()
         }
         if (engine != null && loadedKey == req.modelKey) {
+            if (activeSessionKey != null && activeSessionKey != req.modelKey) {
+                clearChatSessionState()
+            }
+            loadDefaultOpenAIExampleFor(req.model)
             loadStatus = "loaded"
             loadedLabel = req.modelKey
             setStatus("Already loaded: ${req.modelKey}")
@@ -1755,6 +1875,8 @@ class MainActivity : AppCompatActivity() {
             is BackendResult.Ok -> {
                 engine = newEngine
                 loadedKey = req.modelKey
+                clearChatSessionState()
+                loadDefaultOpenAIExampleFor(req.model)
                 loadStatus = "loaded"
                 loadedLabel = req.modelKey
                 setStatus("Loaded ${req.modelKey} (${newEngine.kind}, arch=${newEngine.architecture ?: "?"})")
@@ -1764,6 +1886,7 @@ class MainActivity : AppCompatActivity() {
             is BackendResult.Err -> {
                 try { newEngine.close() } catch (_: Throwable) { /* best effort */ }
                 loadStatus = "idle"
+                clearChatSessionState()
                 setStatus("Load failed: [${r.error.name}] ${r.message ?: ""}")
                 mainHandler.post { rebuildUi() }
                 null
@@ -1815,9 +1938,12 @@ class MainActivity : AppCompatActivity() {
                         PromptPart.ImageBytes(imgBytes),
                         PromptPart.Text(prompt),
                     )
-                    e.runMultimodalStreaming(parts, sink)
+                    e.runMultimodalHandleStreaming(parts, sink)
                 } else {
-                    e.runStreaming(prompt, sink)
+                    // Run tab removed - use Chat or OpenAI tab instead
+                    streaming = false
+                    setStatus("Run tab removed. Use Chat or OpenAI tab.")
+                    mainHandler.post { rebuildUi() }
                 }
             } catch (t: Throwable) {
                 streaming = false
@@ -1853,14 +1979,20 @@ class MainActivity : AppCompatActivity() {
         engineExecutor.execute {
             val e = engine
             if (e == null) {
+                clearChatSessionState()
                 setStatus("Nothing to unload.")
                 return@execute
+            }
+            if (e.chatSessionId != null) {
+                try { e.closeChatSession() } catch (_: Throwable) {}
+                clearChatSessionState()
             }
             when (val r = e.unload()) {
                 is BackendResult.Ok -> {
                     loadedKey = null
                     loadStatus = "idle"
                     loadedLabel = ""
+                    clearChatSessionState()
                     setStatus("Unloaded.")
                     mainHandler.post { rebuildUi() }
                 }
@@ -1889,6 +2021,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (e.chatSessionId != null) {
                 try { e.closeChatSession() } catch (_: Throwable) {}
+                clearChatSessionState()
             }
 
             val sampling = if (temperature != null || topK != null || topP != null || seed != null) {
@@ -1913,11 +2046,12 @@ class MainActivity : AppCompatActivity() {
 
             when (val r = e.openChatSession(config)) {
                 is BackendResult.Ok -> {
-                    sessionIdText = r.value
+                    markChatSessionOpened(r.value)
                     setStatus("Chat session opened: ${r.value.take(8)}…")
                     mainHandler.post { rebuildUi() }
                 }
                 is BackendResult.Err -> {
+                    clearChatSessionState()
                     setStatus("Chat open failed: [${r.error.name}] ${r.message ?: ""}")
                 }
             }
@@ -1925,44 +2059,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onChatRunStreamingClicked() {
-        val prompt = chatPromptField.text.toString()
+        val prompt = normalizeVisionPromptText(chatPromptField.text.toString())
         if (prompt.isBlank()) { setStatus("Chat message is empty."); return }
         val imgBytes = selectedImageBytes
-        val useDirectMultimodalRun = shouldUseDirectMultimodalChatRun(imgBytes)
+        if (imgBytes != null && !supportsMultimodalInput(chatSelectedModel)) {
+            setStatus("Selected chat model does not support image input.")
+            return
+        }
         outputText = ""
         outputView.text = ""
         streaming = true
-        setStatus("Chat streaming…")
+        setStatus(if (imgBytes != null) "Chat multimodal streaming..." else "Chat streaming...")
         mainHandler.post { rebuildUi() }
 
         engineExecutor.execute {
             val e = engine
-            if (useDirectMultimodalRun) {
-                if (e == null) {
+            if (e == null) {
+                streaming = false
+                setStatus("No model loaded - tap Open first.")
+                mainHandler.post { rebuildUi() }
+                return@execute
+            }
+            if (imgBytes == null && (e.chatSessionId == null || activeSessionKey != loadedKey)) {
+                clearChatSessionState()
+                streaming = false
+                setStatus("No chat session - tap Open first.")
+                mainHandler.post { rebuildUi() }
+                return@execute
+            }
+            val sink = object : StreamSink {
+                override fun onDelta(text: String) {
+                    outputText += text
+                    mainHandler.post { outputView.append(text) }
+                }
+                override fun onDone() {
                     streaming = false
-                    setStatus("No model loaded - tap Open first.")
+                    setStatus("Chat done.")
                     mainHandler.post { rebuildUi() }
-                    return@execute
                 }
-                val sink = object : StreamSink {
-                    override fun onDelta(text: String) {
-                        outputText += text
-                        mainHandler.post { outputView.append(text) }
-                    }
-                    override fun onDone() {
-                        streaming = false
-                        setStatus("Chat multimodal done.")
-                        mainHandler.post { rebuildUi() }
-                    }
-                    override fun onError(error: QuickAiError, message: String?) {
-                        streaming = false
-                        setStatus("Chat error: [${error.name}] ${message ?: ""}")
-                        mainHandler.post { rebuildUi() }
-                    }
+                override fun onError(error: QuickAiError, message: String?) {
+                    streaming = false
+                    setStatus("Chat error: [${error.name}] ${message ?: ""}")
+                    mainHandler.post { rebuildUi() }
                 }
-                val parts = buildChatParts(prompt, imgBytes)
+            }
+            val parts = buildChatParts(prompt, imgBytes)
+            if (imgBytes != null) {
                 try {
-                    when (val r = e.runMultimodalStreaming(parts, sink)) {
+                    when (val r = e.runMultimodalHandleStreaming(parts, sink)) {
                         is BackendResult.Ok -> {
                             streaming = false
                             when (val metrics = e.metrics()) {
@@ -1987,32 +2131,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 return@execute
             }
-            if (e == null || e.chatSessionId == null) {
-                streaming = false
-                setStatus("No chat session — tap Open first.")
-                mainHandler.post { rebuildUi() }
-                return@execute
-            }
-            val sink = object : StreamSink {
-                override fun onDelta(text: String) {
-                    outputText += text
-                    mainHandler.post { outputView.append(text) }
-                }
-                override fun onDone() {
-                    streaming = false
-                    setStatus("Chat done.")
-                    mainHandler.post { rebuildUi() }
-                }
-                override fun onError(error: QuickAiError, message: String?) {
-                    streaming = false
-                    setStatus("Chat error: [${error.name}] ${message ?: ""}")
-                    mainHandler.post { rebuildUi() }
-                }
-            }
-            val parts = buildChatParts(prompt, imgBytes)
-            val messages = listOf(QuickAiChatMessage(role = QuickAiChatRole.USER, parts = parts))
             try {
-                when (val r = e.chatRunStreaming(messages, sink)) {
+                when (val r = e.runChatModelHandleStreaming(prompt, sink)) {
                     is BackendResult.Ok -> {
                         streaming = false
                         lastMetrics = r.value.metrics ?: lastMetrics
@@ -2033,64 +2153,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onChatRunBlockingClicked() {
-        val prompt = chatPromptField.text.toString()
+        val prompt = normalizeVisionPromptText(chatPromptField.text.toString())
         if (prompt.isBlank()) { setStatus("Chat message is empty."); return }
         val imgBytes = selectedImageBytes
-        val useDirectMultimodalRun = shouldUseDirectMultimodalChatRun(imgBytes)
+        if (imgBytes != null && !supportsMultimodalInput(chatSelectedModel)) {
+            setStatus("Selected chat model does not support image input.")
+            return
+        }
         outputText = ""
         outputView.text = ""
-        setStatus("Chat running (blocking)…")
+        setStatus("Blocking chat API removed. Use streaming API.")
 
         engineExecutor.execute {
             val e = engine
-            if (useDirectMultimodalRun) {
-                if (e == null) {
-                    setStatus("No model loaded - tap Open first.")
-                    return@execute
-                }
-                val parts = buildChatParts(prompt, imgBytes)
-                try {
-                    when (val r = e.runMultimodal(parts)) {
-                        is BackendResult.Ok -> {
-                            outputText = r.value
-                            mainHandler.post { outputView.text = r.value }
-                            when (val metrics = e.metrics()) {
-                                is BackendResult.Ok -> {
-                                    lastMetrics = metrics.value
-                                    setStatus("Chat multimodal done. (${metrics.value.totalDurationMs.toLong()} ms)")
-                                }
-                                is BackendResult.Err ->
-                                    setStatus("Chat multimodal done.")
-                            }
-                        }
-                        is BackendResult.Err ->
-                            setStatus("Chat failed: [${r.error.name}] ${r.message ?: ""}")
-                    }
-                } catch (t: Throwable) {
-                    setStatus("Chat threw: ${t.message}")
-                }
+            if (e == null || e.chatSessionId == null || activeSessionKey != loadedKey) {
+                clearChatSessionState()
+                setStatus("No chat session - tap Open first.")
                 return@execute
             }
-            if (e == null || e.chatSessionId == null) {
-                setStatus("No chat session — tap Open first.")
-                return@execute
-            }
-            val parts = buildChatParts(prompt, imgBytes)
-            val messages = listOf(QuickAiChatMessage(role = QuickAiChatRole.USER, parts = parts))
-            try {
-                when (val r = e.chatRun(messages)) {
-                    is BackendResult.Ok -> {
-                        outputText = r.value.content
-                        lastMetrics = r.value.metrics ?: lastMetrics
-                        mainHandler.post { outputView.text = r.value.content }
-                        setStatus("Chat done. (${r.value.metrics?.totalDurationMs?.toLong() ?: "?"} ms)")
-                    }
-                    is BackendResult.Err ->
-                        setStatus("Chat failed: [${r.error.name}] ${r.message ?: ""}")
-                }
-            } catch (t: Throwable) {
-                setStatus("Chat threw: ${t.message}")
-            }
+            setStatus("Blocking chat API removed. Use streaming API.")
         }
     }
 
@@ -2098,7 +2179,8 @@ class MainActivity : AppCompatActivity() {
         setStatus("Rebuilding chat (clear history)…")
         engineExecutor.execute {
             val e = engine
-            if (e == null || e.chatSessionId == null) {
+            if (e == null || e.chatSessionId == null || activeSessionKey != loadedKey) {
+                clearChatSessionState()
                 setStatus("No active chat session.")
                 return@execute
             }
@@ -2115,13 +2197,14 @@ class MainActivity : AppCompatActivity() {
         setStatus("Closing chat session…")
         engineExecutor.execute {
             val e = engine
-            if (e == null || e.chatSessionId == null) {
+            if (e == null || e.chatSessionId == null || activeSessionKey != loadedKey) {
+                clearChatSessionState()
                 setStatus("No active chat session.")
                 return@execute
             }
             when (val r = e.closeChatSession()) {
                 is BackendResult.Ok -> {
-                    sessionIdText = null
+                    clearChatSessionState()
                     setStatus("Chat session closed.")
                     mainHandler.post { rebuildUi() }
                 }
@@ -2143,21 +2226,55 @@ class MainActivity : AppCompatActivity() {
         return model == ModelId.GEMMA4 || model == ModelId.GAUSS3_8_VISION_QNN
     }
 
-    private fun shouldUseDirectMultimodalChatRun(imgBytes: ByteArray?): Boolean {
-        return imgBytes != null
-    }
-
     /* ───── OpenAI-style messages handlers ───── */
 
-    private fun parseOpenAIMessages(jsonString: String): List<QuickAiChatMessage>? {
+    private fun parseOpenAIContentParts(contentElement: JsonElement?): List<PromptPart> {
+        if (contentElement == null) return listOf(PromptPart.Text(""))
+        if (contentElement is JsonArray) {
+            val parts = mutableListOf<PromptPart>()
+            for (partElement in contentElement) {
+                val partObj = partElement as? JsonObject ?: continue
+                val type = partObj["type"]?.jsonPrimitive?.content?.lowercase() ?: continue
+                when (type) {
+                    "text", "input_text" -> {
+                        val text = normalizeVisionPromptText(
+                            partObj["text"]?.jsonPrimitive?.content.orEmpty()
+                        )
+                        if (text.isNotEmpty()) parts.add(PromptPart.Text(text))
+                    }
+                    "image_url", "input_image" -> {
+                        // SampleTestAPP keeps picked images in selectedImageBytes;
+                        // the actual bytes are attached after parsing.
+                    }
+                }
+            }
+            return parts.ifEmpty { listOf(PromptPart.Text("")) }
+        }
+        return listOf(PromptPart.Text(
+            normalizeVisionPromptText(contentElement.jsonPrimitive.content)
+        ))
+    }
+
+    private fun parseOpenAIMessages(
+        jsonString: String,
+        attachedImageBytes: ByteArray? = null
+    ): List<QuickAiChatMessage>? {
         return try {
             val json = Json { ignoreUnknownKeys = true; isLenient = true }
-            val jsonArray = json.parseToJsonElement(jsonString).jsonArray
+            val element = json.parseToJsonElement(jsonString)
+
+            // Support both top-level array and {"messages": [...]} object
+            val jsonArray = when {
+                element is JsonArray -> element
+                element is JsonObject && element.containsKey("messages") ->
+                    element["messages"]!!.jsonArray
+                else -> return null
+            }
+
             val messages = mutableListOf<QuickAiChatMessage>()
             for (element in jsonArray) {
                 val obj = element.jsonObject
                 val role = obj["role"]?.jsonPrimitive?.content?.lowercase() ?: continue
-                val content = obj["content"]?.jsonPrimitive?.content ?: ""
                 val quickRole = when (role) {
                     "system"    -> QuickAiChatRole.SYSTEM
                     "user"      -> QuickAiChatRole.USER
@@ -2166,8 +2283,21 @@ class MainActivity : AppCompatActivity() {
                 }
                 messages.add(QuickAiChatMessage(
                     role = quickRole,
-                    parts = listOf(PromptPart.Text(content))
+                    parts = parseOpenAIContentParts(obj["content"])
                 ))
+            }
+            if (attachedImageBytes != null) {
+                val lastUserIndex = messages.indexOfLast { it.role == QuickAiChatRole.USER }
+                if (lastUserIndex < 0) return null
+                val lastUser = messages[lastUserIndex]
+                val hasImage = lastUser.parts.any {
+                    it is PromptPart.ImageBytes || it is PromptPart.ImageFile
+                }
+                if (!hasImage) {
+                    messages[lastUserIndex] = lastUser.copy(
+                        parts = listOf(PromptPart.ImageBytes(attachedImageBytes)) + lastUser.parts
+                    )
+                }
             }
             messages
         } catch (t: Throwable) { null }
@@ -2176,17 +2306,15 @@ class MainActivity : AppCompatActivity() {
     private fun onOpenAIMessagesRunClicked() {
         val jsonText = openAIMessagesField.text.toString().trim()
         if (jsonText.isBlank()) { setStatus("Messages JSON is empty."); return }
-        val messages = parseOpenAIMessages(jsonText)
-        if (messages == null) { setStatus("Failed to parse messages JSON. Check format."); return }
-        if (messages.isEmpty()) { setStatus("No messages found in JSON."); return }
-        if (messages.last().role != QuickAiChatRole.USER) {
-            setStatus("Last message must be role=\"user\" to trigger inference.")
+        val imgBytes = selectedImageBytes
+        if (imgBytes != null && !supportsMultimodalInput(selectedModel)) {
+            setStatus("Selected model does not support OpenAI image input.")
             return
         }
         outputText = ""
         outputView.text = ""
         streaming = true
-        setStatus("Opening session and running OpenAI messages…")
+        setStatus(if (imgBytes != null) "Running OpenAI multimodal (streaming)..." else "Running OpenAI JSON (streaming)...")
         mainHandler.post { rebuildUi() }
 
         val req = buildLoadRequest()
@@ -2196,19 +2324,18 @@ class MainActivity : AppCompatActivity() {
                 streaming = false; setStatus("Model load failed.")
                 mainHandler.post { rebuildUi() }; return@execute
             }
-            val config: QuickAiChatSessionConfig? = null
-            if (e.chatSessionId == null) {
-                when (val openResult = e.openChatSession(config)) {
+            if (e.chatSessionId != null) {
+                when (val closeResult = e.closeChatSession()) {
+                    is BackendResult.Ok -> clearChatSessionState()
                     is BackendResult.Err -> {
                         streaming = false
-                        setStatus("Failed to open session: ${openResult.message}")
-                        mainHandler.post { rebuildUi() }; return@execute
-                    }
-                    is BackendResult.Ok -> {
-                        sessionIdText = openResult.value
+                        setStatus("Failed to close chat session: ${closeResult.message ?: closeResult.error.name}")
                         mainHandler.post { rebuildUi() }
+                        return@execute
                     }
                 }
+            } else if (sessionIdText != null) {
+                clearChatSessionState()
             }
             val sink = object : StreamSink {
                 override fun onDelta(text: String) {
@@ -2216,28 +2343,77 @@ class MainActivity : AppCompatActivity() {
                     mainHandler.post { outputView.append(text) }
                 }
                 override fun onDone() {
-                    streaming = false; setStatus("OpenAI messages chat done.")
+                    streaming = false; setStatus("OpenAI JSON done.")
                     mainHandler.post { rebuildUi() }
                 }
                 override fun onError(error: QuickAiError, message: String?) {
-                    streaming = false; setStatus("Chat error: [${error.name}] ${message ?: ""}")
+                    streaming = false; setStatus("OpenAI error: [${error.name}] ${message ?: ""}")
                     mainHandler.post { rebuildUi() }
                 }
             }
             try {
-                when (val r = e.chatRunStreaming(messages, sink)) {
-                    is BackendResult.Ok -> {
+                // Route based on model type:
+                // - Gauss models need messages-based API for Gauss <|turn_start|>/
+                //   <|turn_end|> markers in incremental prompts.
+                // - LiteRT-LM (GEMMA4) only supports messages-based API.
+                // - All others use JSON streaming for full OpenAI format support.
+                if (imgBytes != null) {
+                    val messages = parseOpenAIMessages(jsonText, attachedImageBytes = imgBytes)
+                    if (messages == null) {
                         streaming = false
-                        lastMetrics = r.value.metrics ?: lastMetrics
-                        setStatus("Done. (${r.value.metrics?.totalDurationMs?.toLong() ?: "?"} ms)")
+                        setStatus("Failed to parse messages JSON for multimodal API.")
                         mainHandler.post { rebuildUi() }
+                        return@execute
                     }
-                    is BackendResult.Err -> {
-                        streaming = false; mainHandler.post { rebuildUi() }
+                    when (val r = e.runMultimodalHandleWithMessagesStreaming(messages, sink)) {
+                        is BackendResult.Ok -> {
+                            streaming = false
+                            setStatus("Done.")
+                            mainHandler.post { rebuildUi() }
+                        }
+                        is BackendResult.Err -> {
+                            streaming = false
+                            setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+                            mainHandler.post { rebuildUi() }
+                        }
+                    }
+                } else if (selectedModel in MESSAGES_API_MODELS) {
+                    val messages = parseOpenAIMessages(jsonText)
+                    if (messages == null) {
+                        streaming = false
+                        setStatus("Failed to parse messages JSON for Messages API.")
+                        mainHandler.post { rebuildUi() }
+                        return@execute
+                    }
+                    when (val r = e.runModelHandleWithMessagesStreaming(messages, sink)) {
+                        is BackendResult.Ok -> {
+                            streaming = false
+                            setStatus("Done.")
+                            mainHandler.post { rebuildUi() }
+                        }
+                        is BackendResult.Err -> {
+                            streaming = false
+                            setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+                            mainHandler.post { rebuildUi() }
+                        }
+                    }
+                } else {
+                    // Use runWithJsonStreaming for full OpenAI format support
+                    when (val r = e.runModelHandleWithJsonStreaming(jsonText, sink)) {
+                        is BackendResult.Ok -> {
+                            streaming = false
+                            setStatus("Done.")
+                            mainHandler.post { rebuildUi() }
+                        }
+                        is BackendResult.Err -> {
+                            streaming = false
+                            setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+                            mainHandler.post { rebuildUi() }
+                        }
                     }
                 }
             } catch (t: Throwable) {
-                streaming = false; setStatus("Chat threw: ${t.message}")
+                streaming = false; setStatus("Threw: ${t.message}")
                 mainHandler.post { rebuildUi() }
             }
         }
@@ -2254,37 +2430,26 @@ class MainActivity : AppCompatActivity() {
             return
         }
         outputText = ""; outputView.text = ""
-        setStatus("Opening session and running OpenAI messages (blocking)…")
+        setStatus("Running OpenAI messages (blocking)…")
 
-        val req = buildLoadRequest()
-        engineExecutor.execute {
-            val e = loadModelInternal(req)
-            if (e == null) { setStatus("Model load failed."); return@execute }
-            val config: QuickAiChatSessionConfig? = null
-            if (e.chatSessionId == null) {
-                when (val openResult = e.openChatSession(config)) {
-                    is BackendResult.Err -> {
-                        setStatus("Failed to open session: ${openResult.message}"); return@execute
-                    }
-                    is BackendResult.Ok -> {
-                        sessionIdText = openResult.value
-                        mainHandler.post { rebuildUi() }
-                    }
-                }
-            }
-            try {
-                when (val r = e.chatRun(messages)) {
-                    is BackendResult.Ok -> {
-                        outputText = r.value.content
-                        lastMetrics = r.value.metrics ?: lastMetrics
-                        mainHandler.post { outputView.text = r.value.content }
-                        setStatus("Done. (${r.value.metrics?.totalDurationMs?.toLong() ?: "?"} ms)")
-                    }
-                    is BackendResult.Err ->
-                        setStatus("Chat failed: [${r.error.name}] ${r.message ?: ""}")
-                }
-            } catch (t: Throwable) { setStatus("Chat threw: ${t.message}") }
-        }
+        // Blocking API removed - use streaming API instead
+        setStatus("Blocking API removed. Use streaming API.")
+        // val req = buildLoadRequest()
+        // engineExecutor.execute {
+        //     val e = loadModelInternal(req)
+        //     if (e == null) { setStatus("Model load failed."); return@execute }
+        //     try {
+        //         when (val r = e.runModelHandleWithMessages(messages)) {
+        //             is BackendResult.Ok -> {
+        //                 outputText = r.value
+        //                 mainHandler.post { outputView.text = r.value }
+        //                 setStatus("Done.")
+        //             }
+        //             is BackendResult.Err ->
+        //                 setStatus("Failed: [${r.error.name}] ${r.message ?: ""}")
+        //         }
+        //     } catch (t: Throwable) { setStatus("Threw: ${t.message}") }
+        // }
     }
 
     /* ───── Image picker handlers ───── */
@@ -2323,6 +2488,86 @@ class MainActivity : AppCompatActivity() {
 
     /* ───── Misc helpers ───── */
 
+    private fun defaultVisionPrompt(): String =
+        "이미지 설명해줘<|image_start|><|image|><|image_end|>"
+
+    private fun normalizeVisionPromptText(text: String): String =
+        text.replace("<|image_strart|>", "<|image_start|>")
+
+    private fun defaultOpenAIExampleFor(model: ModelId): String = when (model) {
+        ModelId.GEMMA4, ModelId.GAUSS3_8_VISION_QNN -> """[
+  {"role": "system", "content": "You are a concise vision assistant."},
+  {
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "${defaultVisionPrompt()}"},
+      {"type": "image_url", "image_url": {"url": "sampletestapp://selected-image"}}
+    ]
+  }
+]"""
+        ModelId.GAUSS3_6_QNN,
+        ModelId.GAUSS3_8_QNN,
+        ModelId.GAUSS3_8,
+        ModelId.GAUSS3_6,
+        ModelId.GEMMA4_E2B_QNN -> """[
+  {"role": "system", "content": "You are a helpful assistant. Answer briefly."},
+  {"role": "user", "content": "Summarize why on-device language models are useful."}
+]"""
+        ModelId.FUNCTION_GEMMA -> """{
+  "messages": [
+    {"role": "system", "content": "You can call tools when they are useful."},
+    {"role": "user", "content": "01012345678 번호로 상담 예약 확인 문자를 보내줘."}
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "send_sms",
+        "description": "Send a text message to a phone number.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "phone_number": {"type": "string"},
+            "message": {"type": "string"}
+          },
+          "required": ["phone_number", "message"]
+        }
+      }
+    }
+  ]
+}"""
+        ModelId.QWEN3_0_6B,
+        ModelId.QWEN3_1_7B_Q40,
+        ModelId.GEMMA4_CPU -> """{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Write a short checklist for testing an Android API wrapper."}
+  ]
+}"""
+        ModelId.TINY_BERT -> """{
+  "messages": [
+    {"role": "user", "content": "Explain what text embeddings are in one sentence."}
+  ]
+}"""
+    }
+
+    private fun loadDefaultOpenAIExampleFor(model: ModelId) {
+        openAiJsonText = defaultOpenAIExampleFor(model)
+        if (::openAIMessagesField.isInitialized) {
+            mainHandler.post { openAIMessagesField.setText(openAiJsonText) }
+        }
+    }
+
+    private fun clearChatSessionState() {
+        sessionIdText = null
+        activeSessionKey = null
+    }
+
+    private fun markChatSessionOpened(sessionId: String) {
+        sessionIdText = sessionId
+        activeSessionKey = loadedKey
+    }
+
     private fun setStatus(text: String) {
         statusText = text
         mainHandler.post {
@@ -2360,6 +2605,13 @@ class MainActivity : AppCompatActivity() {
                 "$base/models/gauss-3.6"
             ModelId.TINY_BERT ->
                 "$base/models/tiny-bert"
+            ModelId.FUNCTION_GEMMA ->
+                "$base/models/function_gemma"
+            ModelId.GEMMA4_CPU ->
+                "$base/models/gemma4_cpu"
+            ModelId.GEMMA4_E2B_QNN ->
+                "$base/models/gemma-4-e2b-qnn"
+
         }
     }
 

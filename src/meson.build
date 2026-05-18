@@ -8,7 +8,7 @@
 causallm_auto_src = run_command('find',
   causallm_root / 'layers',
   causallm_root / 'models',
-  causallm_root / 'huggingface_tokenizer.cpp',
+  causallm_root / 'tokenizers',
   causallm_root / 'llm_util.cpp',
   causallm_root / 'chat_template.cpp',
   '-name', '*.cpp',
@@ -45,9 +45,48 @@ causallm_dep = declare_dependency(
     compile_args: causallm_inc_args,
 )
 
+# ── XGrammar wrapper sources ────────────────────────────────────────────
+xgrammar_wrapper_src = [
+  meson.current_source_dir() / 'xgrammar' / 'xgrammar_wrapper.cpp',
+  meson.current_source_dir() / 'xgrammar' / 'xgrammar_manager.cpp',
+]
+
+xgrammar_wrapper_inc = include_directories('xgrammar')
+
+# ── XGrammar library sources (from xgrammar submodule) ───────────────────
+xgrammar_lib_src = [
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'compiled_grammar.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'config.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'earley_parser.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'fsm_builder.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'fsm.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'grammar_builder.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'grammar_compiler.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'grammar_functor.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'grammar_matcher.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'grammar_parser.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'grammar_printer.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'grammar.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'json_schema_converter_ext.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'json_schema_converter.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'regex_converter.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'structural_tag.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'tokenizer_info.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'testing.cc',
+  # Support files (required for linking)
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'support' / 'logging.cc',
+  meson.project_source_root() / 'xgrammar' / 'cpp' / 'support' / 'recursion_guard.cc',
+]
+
 # ── Extension model sources ────────────────────────────────────────────
 quick_dot_ai_src = []
 quick_dot_ai_inc = []
+
+# Add XGrammar wrapper and library sources
+# Note: xgrammar include paths are already in causallm_inc_args (root meson.build)
+quick_dot_ai_src += xgrammar_wrapper_src
+quick_dot_ai_src += xgrammar_lib_src
+quick_dot_ai_inc += xgrammar_wrapper_inc
 
 subdir('models')
 

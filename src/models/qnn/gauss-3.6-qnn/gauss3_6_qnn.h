@@ -11,6 +11,7 @@
 #define __GAUSS_3_6_QNN_H__
 
 #include "quick_dot_ai_qnn.h"
+#include "qnn_kv_cache_manager.h"
 
 #include <cstdint>
 
@@ -38,17 +39,23 @@ public:
 
   void initialize_kv_cache();
 
+  void reset_prefill_kv_cache_inputs();
+
+  void sync_generation_kv_cache_to_prefill();
+
   void setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) override;
 
   void run(const WSTR prompt, bool do_sample = false,
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
            bool log_output = true) override;
 
-private:
-  std::string normalize_conversation_prompt(const std::string &prompt) const;
-  void reset_prefill_kv_cache_inputs();
-  void sync_generation_kv_cache_to_prefill();
+  bool supportsKvCachePersistence() const override { return true; }
+  int getKvLen() const override { return kv_cache_.length(); }
+  void resetKvCache() override;
+  void saveKvCache(const std::string &cache_path) const override;
+  void loadKvCache(const std::string &cache_path) override;
 
+ private:
   // Input/output tensors
   uint16_t *attention_mask;
   uint16_t *sliding_attention_mask;
@@ -71,28 +78,7 @@ private:
   float *input_sample;
   float *generation_sample;
 
-  // KV cache variables
-  int kv_len;
-  bool conversation_started_ = false;
-  
-  std::vector<uint8_t *> kvs;
-  std::vector<int> kv_sizes;
-  std::vector<uint8_t *> fresh_kvs;
-  std::vector<int> kv_row_lengths;
-  std::vector<uint8_t *> prefill_kvs;
-  std::vector<int> prefill_kv_sizes;
-  std::vector<int> prefill_kv_row_lengths;
-  std::vector<int> prefill_to_generation_kv_indices;
-  std::vector<int> prefill_kv_is_key;
-
-  struct KvOutputBinding {
-    int output_index;
-    int kv_index;
-    int layer_index;
-    bool is_key;
-  };
-  std::vector<KvOutputBinding> prefill_output_kv_bindings;
-  std::vector<KvOutputBinding> generation_output_kv_bindings;
+  QnnKvCacheManager kv_cache_;
 
   int prefill_attention_mask_elements = 0;
   int prefill_sliding_attention_mask_elements = 0;
@@ -116,19 +102,6 @@ private:
   int context_size;
   int pos_dim;
   int head_dim;
-
-  // generation_config
-  int padding_token;
-  int eos_token;
-  int top_k;
-  float top_p;
-  float temperature;
-  float repetition_penalty;
-  float logit_scale;
-  int logit_offset;
-
-  // LoRA path (optional)
-  std::string lora_path;
 };
 
 } // namespace causallm

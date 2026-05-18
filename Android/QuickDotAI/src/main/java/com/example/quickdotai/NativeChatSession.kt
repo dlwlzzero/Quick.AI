@@ -44,49 +44,8 @@ internal class NativeChatSession(
         }
     }
 
-    fun run(
-        messages: List<QuickAiChatMessage>
-    ): BackendResult<QuickAiChatResult> {
-        if (closed) return errClosed()
-
-        val prep = prepareTurn(messages) ?: return lastPrepError
-            ?: BackendResult.Err(QuickAiError.INVALID_PARAMETER, "invalid chat input")
-
-        cancelRequested.set(false)
-
-        val handle = handleProvider()
-        if (handle == 0L) {
-            return BackendResult.Err(QuickAiError.NOT_INITIALIZED, "Native handle is not available")
-        }
-
-        val prompt = extractText(prep.lastUser)
-
-        return try {
-            val startNs = System.nanoTime()
-            val result = NativeCausalLm.runModelHandleNative(handle, prompt)
-            lastRunDurationMs = (System.nanoTime() - startNs) / 1_000_000.0
-
-            if (result.errorCode != 0) {
-                Log.e(TAG, "run($sessionId): inference failed with errorCode=${result.errorCode}")
-                BackendResult.Err(QuickAiError.fromNativeCode(result.errorCode))
-            } else {
-                val output = result.output.orEmpty()
-                Log.i(TAG, "run($sessionId): completed in ${lastRunDurationMs.toLong()} ms, output length=${output.length}")
-                BackendResult.Ok(
-                    QuickAiChatResult(
-                        content = output,
-                        metrics = PerformanceMetrics(totalDurationMs = lastRunDurationMs)
-                    )
-                )
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "run($sessionId): threw exception", t)
-            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
-        }
-    }
-
     fun runStreaming(
-        messages: List<QuickAiChatMessage>,
+        text: String,
         sink: StreamSink
     ): BackendResult<QuickAiChatResult> {
         if (closed) {
@@ -95,12 +54,13 @@ internal class NativeChatSession(
             return err
         }
 
-        val prep = prepareTurn(messages)
-        if (prep == null) {
-            val err = lastPrepError ?: BackendResult.Err(QuickAiError.INVALID_PARAMETER, "invalid chat input")
-            sink.onError(err.error, err.message)
-            return err
-        }
+        // Convert raw text to message format for C++ chat template
+        val messages = listOf(
+            QuickAiChatMessage(
+                role = QuickAiChatRole.USER,
+                parts = listOf(PromptPart.Text(text))
+            )
+        )
 
         cancelRequested.set(false)
 
@@ -111,16 +71,22 @@ internal class NativeChatSession(
             return err
         }
 
-        val prompt = extractText(prep.lastUser)
         val accumulated = StringBuilder()
         val startNs = System.nanoTime()
 
         return try {
-            val errorCode = NativeCausalLm.runModelHandleStreamingNative(handle, prompt) { delta ->
-                if (cancelRequested.get()) return@runModelHandleStreamingNative
-                accumulated.append(delta)
-                sink.onDelta(delta)
-            }
+            val errorCode = NativeCausalLm.runModelHandleWithMessagesStreamingNative(
+                handle,
+                messages.toTypedArray(),
+                true,
+                object : NativeCausalLm.NativeStreamListener {
+                    override fun onDelta(text: String) {
+                        if (cancelRequested.get()) return
+                        accumulated.append(text)
+                        sink.onDelta(text)
+                    }
+                }
+            )
 
             lastRunDurationMs = (System.nanoTime() - startNs) / 1_000_000.0
 
@@ -142,6 +108,74 @@ internal class NativeChatSession(
             }
         } catch (t: Throwable) {
             Log.e(TAG, "runStreaming($sessionId): threw exception", t)
+            sink.onError(QuickAiError.INFERENCE_FAILED, t.message)
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
+    fun runMultimodalStreaming(
+        parts: List<PromptPart>,
+        sink: StreamSink
+    ): BackendResult<QuickAiChatResult> {
+        if (closed) {
+            val err = errClosed()
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        cancelRequested.set(false)
+
+        val handle = handleProvider()
+        if (handle == 0L) {
+            val err = BackendResult.Err(QuickAiError.NOT_INITIALIZED, "Native handle is not available")
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        // Extract text and image from parts
+        val text = parts.filterIsInstance<PromptPart.Text>().joinToString(" ") { it.text }
+        val imageBytes = parts.filterIsInstance<PromptPart.ImageBytes>().firstOrNull()?.bytes
+
+        if (imageBytes == null) {
+            val err = BackendResult.Err(QuickAiError.INVALID_PARAMETER, "No image found in parts")
+            sink.onError(err.error, err.message)
+            return err
+        }
+
+        val accumulated = StringBuilder()
+        val startNs = System.nanoTime()
+
+        return try {
+            // For now, use simple text streaming - image processing will be added
+            val errorCode = NativeCausalLm.runModelHandleStreamingNative(
+                handle,
+                text
+            ) { delta ->
+                if (cancelRequested.get()) return@runModelHandleStreamingNative
+                accumulated.append(delta)
+                sink.onDelta(delta)
+            }
+
+            lastRunDurationMs = (System.nanoTime() - startNs) / 1_000_000.0
+
+            if (errorCode != 0) {
+                val err = QuickAiError.fromNativeCode(errorCode)
+                Log.e(TAG, "runMultimodalStreaming($sessionId): failed with errorCode=$errorCode")
+                sink.onError(err, "Inference failed (errorCode=$errorCode)")
+                BackendResult.Err(err, "Inference failed (errorCode=$errorCode)")
+            } else {
+                val output = accumulated.toString()
+                Log.i(TAG, "runMultimodalStreaming($sessionId): completed in ${lastRunDurationMs.toLong()} ms")
+                sink.onDone()
+                BackendResult.Ok(
+                    QuickAiChatResult(
+                        content = output,
+                        metrics = PerformanceMetrics(totalDurationMs = lastRunDurationMs)
+                    )
+                )
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "runMultimodalStreaming($sessionId): threw exception", t)
             sink.onError(QuickAiError.INFERENCE_FAILED, t.message)
             BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
         }

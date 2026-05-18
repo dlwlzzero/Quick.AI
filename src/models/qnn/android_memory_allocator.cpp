@@ -1,6 +1,7 @@
 #include "android_memory_allocator.h"
 
 #include <dynamic_library_loader.h>
+#include <iostream>
 
 #define RPCMEM_HEAP_ID_SYSTEM 25
 #define RPCMEM_DEFAULT_FLAGS 1
@@ -21,17 +22,11 @@ RpcMemFreeFn_t rpcmem_free;
 
 void init_RPCMEM() {
   void *handle = nntrainer::DynamicLibraryLoader::loadLibrary(
-      "libcdsprpc.so", DL_NOW | DL_LOCAL);
-  const char *error_msg = nntrainer::DynamicLibraryLoader::getLastError();
-
+    "libcdsprpc.so", DL_NOW | DL_LOCAL);
   rpcmem_alloc = (RpcMemAllocFn_t)nntrainer::DynamicLibraryLoader::loadSymbol(
-      handle, "rpcmem_alloc");
+    handle, "rpcmem_alloc");
   rpcmem_free = (RpcMemFreeFn_t)nntrainer::DynamicLibraryLoader::loadSymbol(
-      handle, "rpcmem_free");
-
-  auto close_dl = [handle] {
-    nntrainer::DynamicLibraryLoader::freeLibrary(handle);
-  };
+    handle, "rpcmem_free");
 
   if (rpcmem_alloc == nullptr || rpcmem_free == nullptr) {
     std::cerr << "open rpc mem failed" << std::endl;
@@ -44,7 +39,7 @@ void *allocate(size_t fileSize) {
     inited = true;
   }
   void *buffer =
-      rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM, RPCMEM_DEFAULT_FLAGS, fileSize + 140);
+    rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM, RPCMEM_DEFAULT_FLAGS, fileSize + 140);
 
   return buffer;
 }

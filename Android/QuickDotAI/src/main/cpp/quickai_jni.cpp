@@ -20,12 +20,15 @@
  * background dispatcher).
  */
 
+#include <algorithm>
 #include <android/log.h>
 #include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 #include <jni.h>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 #include "quick_dot_ai_api.h"
 
@@ -40,10 +43,10 @@ namespace {
 // ---------------------------------------------------------------------------
 
 struct JniCache {
-  jclass loadResultCls = nullptr;   // NativeCausalLm$LoadResult
+  jclass loadResultCls = nullptr; // NativeCausalLm$LoadResult
   jmethodID loadResultCtor = nullptr;
 
-  jclass runResultCls = nullptr;    // NativeCausalLm$RunResult
+  jclass runResultCls = nullptr; // NativeCausalLm$RunResult
   jmethodID runResultCtor = nullptr;
 
   jclass metricsResultCls = nullptr; // NativeCausalLm$MetricsResult
@@ -82,15 +85,15 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void * /*reserved*/) {
   g_cache.runResultCls =
     find_global(env, "com/example/quickdotai/NativeCausalLm$RunResult");
   if (g_cache.runResultCls != nullptr) {
-    g_cache.runResultCtor = env->GetMethodID(
-      g_cache.runResultCls, "<init>", "(ILjava/lang/String;)V");
+    g_cache.runResultCtor = env->GetMethodID(g_cache.runResultCls, "<init>",
+                                             "(ILjava/lang/String;)V");
   }
 
-  g_cache.metricsResultCls = find_global(
-    env, "com/example/quickdotai/NativeCausalLm$MetricsResult");
+  g_cache.metricsResultCls =
+    find_global(env, "com/example/quickdotai/NativeCausalLm$MetricsResult");
   if (g_cache.metricsResultCls != nullptr) {
-    g_cache.metricsResultCtor = env->GetMethodID(
-      g_cache.metricsResultCls, "<init>", "(IIDIDDDJ)V");
+    g_cache.metricsResultCtor =
+      env->GetMethodID(g_cache.metricsResultCls, "<init>", "(IIDIDDDJ)V");
   }
 
   return JNI_VERSION_1_6;
@@ -123,8 +126,9 @@ Java_com_example_quickdotai_NativeCausalLm_setOptionsNative(
 // NativeQuickDotAI surfaces as CAUSAL_LM_ERROR_MODEL_LOAD_FAILED.
 // ---------------------------------------------------------------------------
 extern "C" JNIEXPORT jint JNICALL
-Java_com_example_quickdotai_NativeCausalLm_chdirNative(
-  JNIEnv *env, jobject /*thiz*/, jstring pathJ) {
+Java_com_example_quickdotai_NativeCausalLm_chdirNative(JNIEnv *env,
+                                                       jobject /*thiz*/,
+                                                       jstring pathJ) {
   if (pathJ == nullptr) {
     return EINVAL;
   }
@@ -144,7 +148,8 @@ Java_com_example_quickdotai_NativeCausalLm_chdirNative(
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
   JNIEnv *env, jobject /*thiz*/, jint backendOrdinal, jint modelOrdinal,
-  jint quantOrdinal, jstring nativeLibDirJ, jstring modelBasePathJ) {
+  jint quantOrdinal, jstring nativeLibDirJ, jstring modelBasePathJ,
+  jstring htpBackendConfigPathJ) {
   const char *native_lib_dir = nullptr;
   if (nativeLibDirJ != nullptr) {
     native_lib_dir = env->GetStringUTFChars(nativeLibDirJ, nullptr);
@@ -155,6 +160,28 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
     model_base_path = env->GetStringUTFChars(modelBasePathJ, nullptr);
   }
 
+  const char *htp_backend_config_path = nullptr;
+  if (htpBackendConfigPathJ != nullptr) {
+    htp_backend_config_path =
+      env->GetStringUTFChars(htpBackendConfigPathJ, nullptr);
+  }
+
+  const char *previous_htp_backend_config_path =
+    getenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
+  const bool had_previous_htp_backend_config_path =
+    previous_htp_backend_config_path != nullptr;
+  std::string previous_htp_backend_config_path_value;
+  if (had_previous_htp_backend_config_path) {
+    previous_htp_backend_config_path_value =
+      previous_htp_backend_config_path;
+  }
+  const bool has_htp_backend_config_path =
+    htp_backend_config_path != nullptr && htp_backend_config_path[0] != '\0';
+  if (has_htp_backend_config_path) {
+    setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH",
+           htp_backend_config_path, 1);
+  }
+
   CausalLmHandle handle = nullptr;
   ErrorCode ec =
     loadModelHandle(static_cast<BackendType>(backendOrdinal),
@@ -162,52 +189,34 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
                     static_cast<ModelQuantizationType>(quantOrdinal),
                     native_lib_dir, model_base_path, &handle);
 
+  if (has_htp_backend_config_path) {
+    if (had_previous_htp_backend_config_path) {
+      setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH",
+             previous_htp_backend_config_path_value.c_str(), 1);
+    } else {
+      unsetenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
+    }
+  }
+
   if (native_lib_dir != nullptr && nativeLibDirJ != nullptr) {
     env->ReleaseStringUTFChars(nativeLibDirJ, native_lib_dir);
   }
   if (model_base_path != nullptr && modelBasePathJ != nullptr) {
     env->ReleaseStringUTFChars(modelBasePathJ, model_base_path);
   }
+  if (htp_backend_config_path != nullptr && htpBackendConfigPathJ != nullptr) {
+    env->ReleaseStringUTFChars(htpBackendConfigPathJ, htp_backend_config_path);
+  }
 
   if (g_cache.loadResultCls == nullptr || g_cache.loadResultCtor == nullptr) {
     return nullptr;
   }
   return env->NewObject(g_cache.loadResultCls, g_cache.loadResultCtor,
-                        static_cast<jint>(ec),
-                        reinterpret_cast<jlong>(handle));
+                        static_cast<jint>(ec), reinterpret_cast<jlong>(handle));
 }
 
 // ---------------------------------------------------------------------------
-// runModelHandle
-// ---------------------------------------------------------------------------
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_example_quickdotai_NativeCausalLm_runModelHandleNative(
-  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jstring promptJ) {
-  auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
-
-  const char *prompt = env->GetStringUTFChars(promptJ, nullptr);
-  if (prompt == nullptr) {
-    return env->NewObject(g_cache.runResultCls, g_cache.runResultCtor,
-                          static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER),
-                          nullptr);
-  }
-
-  const char *output = nullptr;
-  ErrorCode ec = runModelHandle(handle, prompt, &output);
-
-  env->ReleaseStringUTFChars(promptJ, prompt);
-
-  jstring outJ = nullptr;
-  if (ec == CAUSAL_LM_ERROR_NONE && output != nullptr) {
-    outJ = env->NewStringUTF(output);
-  }
-
-  return env->NewObject(g_cache.runResultCls, g_cache.runResultCtor,
-                        static_cast<jint>(ec), outJ);
-}
-
-// ---------------------------------------------------------------------------
-// getPerformanceMetricsHandle
+// runModelHandleStreaming
 // ---------------------------------------------------------------------------
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_example_quickdotai_NativeCausalLm_getPerformanceMetricsHandleNative(
@@ -221,14 +230,15 @@ Java_com_example_quickdotai_NativeCausalLm_getPerformanceMetricsHandleNative(
       g_cache.metricsResultCtor == nullptr) {
     return nullptr;
   }
-  return env->NewObject(
-    g_cache.metricsResultCls, g_cache.metricsResultCtor, static_cast<jint>(ec),
-    static_cast<jint>(m.prefill_tokens), static_cast<jdouble>(m.prefill_duration_ms),
-    static_cast<jint>(m.generation_tokens),
-    static_cast<jdouble>(m.generation_duration_ms),
-    static_cast<jdouble>(m.total_duration_ms),
-    static_cast<jdouble>(m.initialization_duration_ms),
-    static_cast<jlong>(m.peak_memory_kb));
+  return env->NewObject(g_cache.metricsResultCls, g_cache.metricsResultCtor,
+                        static_cast<jint>(ec),
+                        static_cast<jint>(m.prefill_tokens),
+                        static_cast<jdouble>(m.prefill_duration_ms),
+                        static_cast<jint>(m.generation_tokens),
+                        static_cast<jdouble>(m.generation_duration_ms),
+                        static_cast<jdouble>(m.total_duration_ms),
+                        static_cast<jdouble>(m.initialization_duration_ms),
+                        static_cast<jlong>(m.peak_memory_kb));
 }
 
 // ---------------------------------------------------------------------------
@@ -282,9 +292,37 @@ Java_com_example_quickdotai_NativeCausalLm_cancelModelHandleNative(
 namespace {
 struct StreamCtx {
   JNIEnv *env;
-  jobject listener;   // local ref owned by the JNI entry frame
-  jmethodID onDelta;  // Ljava/lang/String;)V
+  jobject listener;  // local ref owned by the JNI entry frame
+  jmethodID onDelta; // Ljava/lang/String;)V
 };
+
+inline bool is_valid_utf8(const char *s) {
+  if (s == nullptr)
+    return true;
+  while (*s) {
+    unsigned char c = static_cast<unsigned char>(*s);
+    int follow = 0;
+    if (c < 0x80) {
+      ++s;
+      continue;
+    } else if ((c & 0xE0) == 0xC0)
+      follow = 1;
+    else if ((c & 0xF0) == 0xE0)
+      follow = 2;
+    else if ((c & 0xF8) == 0xF0)
+      follow = 3;
+    else
+      return false; // invalid lead byte
+
+    for (int i = 0; i < follow; ++i) {
+      ++s;
+      if (*s == '\0' || (static_cast<unsigned char>(*s) & 0xC0) != 0x80)
+        return false; // missing or invalid continuation byte
+    }
+    ++s;
+  }
+  return true;
+}
 
 int stream_trampoline(const char *delta, void *user_data) {
   auto *ctx = static_cast<StreamCtx *>(user_data);
@@ -292,7 +330,13 @@ int stream_trampoline(const char *delta, void *user_data) {
       ctx->onDelta == nullptr) {
     return 1; // cancel
   }
-  jstring js = ctx->env->NewStringUTF(delta != nullptr ? delta : "");
+  const char *deltaStr = delta != nullptr ? delta : "";
+  if (!is_valid_utf8(deltaStr)) {
+    LOGE("Invalid UTF-8 delta skipped (lead=0x%02X)",
+         static_cast<unsigned char>(deltaStr[0]));
+    return 0; // skip this delta, keep streaming
+  }
+  jstring js = ctx->env->NewStringUTF(deltaStr);
   if (js == nullptr) {
     // OOM or pending exception; clear and ask the native runner to stop.
     if (ctx->env->ExceptionCheck()) {
@@ -363,8 +407,8 @@ Java_com_example_quickdotai_NativeCausalLm_runModelHandleStreamingNative(
 extern "C" JNIEXPORT jint JNICALL
 Java_com_example_quickdotai_NativeCausalLm_runMultimodalHandleStreamingNative(
   JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jstring promptJ,
-  jfloatArray pixelValuesJ, jint numPatches, jint originalHeight, jint originalWidth,
-  jobject listenerObj) {
+  jfloatArray pixelValuesJ, jint numPatches, jint originalHeight,
+  jint originalWidth, jobject listenerObj) {
   if (promptJ == nullptr || pixelValuesJ == nullptr || listenerObj == nullptr) {
     return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
   }
@@ -410,52 +454,293 @@ Java_com_example_quickdotai_NativeCausalLm_runMultimodalHandleStreamingNative(
   return static_cast<jint>(ec);
 }
 
+namespace {
+
+/**
+ * @brief Convert a Kotlin QuickAiChatMessage to C CausalLMChatMessage.
+ *
+ * QuickAiChatMessage structure:
+ *   role: QuickAiChatRole (enum) — call name() to get String
+ *   parts: List<PromptPart> — extract Text parts and concatenate
+ *
+ * Returns false if conversion fails (sets JNI exception).
+ */
+bool convertQuickAiChatMessage(JNIEnv *env, jobject msgObj,
+                               std::string &outRole, std::string &outContent) {
+  if (msgObj == nullptr)
+    return false;
+
+  jclass msgCls = env->GetObjectClass(msgObj);
+  if (msgCls == nullptr)
+    return false;
+
+  // --- role: QuickAiChatRole enum ---
+  jfieldID roleFid =
+    env->GetFieldID(msgCls, "role", "Lcom/example/quickdotai/QuickAiChatRole;");
+  if (roleFid == nullptr) {
+    env->DeleteLocalRef(msgCls);
+    return false;
+  }
+  jobject roleEnum = env->GetObjectField(msgObj, roleFid);
+  if (roleEnum == nullptr) {
+    env->DeleteLocalRef(msgCls);
+    return false;
+  }
+
+  // Call enum.name() and convert to lowercase for OpenAI API compatibility
+  jclass enumCls = env->GetObjectClass(roleEnum);
+  jmethodID nameMid = env->GetMethodID(enumCls, "name", "()Ljava/lang/String;");
+  jstring roleNameJ = (jstring)env->CallObjectMethod(roleEnum, nameMid);
+  if (roleNameJ != nullptr) {
+    const char *roleName = env->GetStringUTFChars(roleNameJ, nullptr);
+    outRole = roleName ? roleName : "";
+    // Convert to lowercase: "SYSTEM" -> "system", "USER" -> "user", "ASSISTANT"
+    // -> "assistant"
+    std::transform(outRole.begin(), outRole.end(), outRole.begin(), ::tolower);
+    env->ReleaseStringUTFChars(roleNameJ, roleName);
+    env->DeleteLocalRef(roleNameJ);
+  }
+  env->DeleteLocalRef(enumCls);
+  env->DeleteLocalRef(roleEnum);
+
+  // --- parts: List<PromptPart> ---
+  jfieldID partsFid = env->GetFieldID(msgCls, "parts", "Ljava/util/List;");
+  if (partsFid == nullptr) {
+    env->DeleteLocalRef(msgCls);
+    return false;
+  }
+  jobject partsList = env->GetObjectField(msgObj, partsFid);
+  if (partsList == nullptr) {
+    env->DeleteLocalRef(msgCls);
+    return false;
+  }
+
+  // Get List.size() and List.get()
+  jclass listCls = env->GetObjectClass(partsList);
+  jmethodID sizeMid = env->GetMethodID(listCls, "size", "()I");
+  jmethodID getMid = env->GetMethodID(listCls, "get", "(I)Ljava/lang/Object;");
+
+  jint partsSize = env->CallIntMethod(partsList, sizeMid);
+  std::string content;
+
+  // PromptPart.Text class
+  jclass textPartCls = env->FindClass("com/example/quickdotai/PromptPart$Text");
+  if (textPartCls == nullptr) {
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+  } else {
+    jfieldID textFid =
+      env->GetFieldID(textPartCls, "text", "Ljava/lang/String;");
+    if (textFid != nullptr) {
+      for (jint p = 0; p < partsSize; ++p) {
+        jobject partObj = env->CallObjectMethod(partsList, getMid, p);
+        if (partObj == nullptr)
+          continue;
+
+        if (env->IsInstanceOf(partObj, textPartCls)) {
+          jstring textJ = (jstring)env->GetObjectField(partObj, textFid);
+          if (textJ != nullptr) {
+            const char *text = env->GetStringUTFChars(textJ, nullptr);
+            if (text != nullptr) {
+              if (!content.empty())
+                content += " ";
+              content += text;
+              env->ReleaseStringUTFChars(textJ, text);
+            }
+            env->DeleteLocalRef(textJ);
+          }
+        }
+        env->DeleteLocalRef(partObj);
+      }
+    }
+    env->DeleteLocalRef(textPartCls);
+  }
+
+  outContent = std::move(content);
+
+  env->DeleteLocalRef(listCls);
+  env->DeleteLocalRef(partsList);
+  env->DeleteLocalRef(msgCls);
+  return true;
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
-// runMultimodalHandle
+// runModelHandleWithMessagesStreaming
 //
-// Blocking multimodal inference that returns the complete output.
+// Streaming inference with OpenAI message format on a specific handle.
+// Converts jobjectArray of QuickAiChatMessage to C array, applies chat
+// template, then drives streaming generation token-by-token.
 // ---------------------------------------------------------------------------
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_example_quickdotai_NativeCausalLm_runMultimodalHandleNative(
-  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jstring promptJ,
-  jfloatArray pixelValuesJ, jint numPatches, jint originalHeight, jint originalWidth) {
-  if (promptJ == nullptr || pixelValuesJ == nullptr) {
-    return env->NewObject(g_cache.runResultCls, g_cache.runResultCtor,
-                          static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER),
-                          nullptr);
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_quickdotai_NativeCausalLm_runModelHandleWithMessagesStreamingNative(
+  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jobjectArray messagesJ,
+  jboolean addGenerationPrompt, jobject listenerObj) {
+
+  if (messagesJ == nullptr || listenerObj == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
   }
 
-  const char *prompt = env->GetStringUTFChars(promptJ, nullptr);
-  if (prompt == nullptr) {
-    return env->NewObject(g_cache.runResultCls, g_cache.runResultCtor,
-                          static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER),
-                          nullptr);
+  // Resolve listener method
+  jclass listenerCls = env->GetObjectClass(listenerObj);
+  if (listenerCls == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+  jmethodID onDelta =
+    env->GetMethodID(listenerCls, "onDelta", "(Ljava/lang/String;)V");
+  env->DeleteLocalRef(listenerCls);
+  if (onDelta == nullptr) {
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
   }
 
-  // Get float* from FloatArray
-  float *pixels = env->GetFloatArrayElements(pixelValuesJ, nullptr);
-  if (pixels == nullptr) {
-    env->ReleaseStringUTFChars(promptJ, prompt);
-    return env->NewObject(g_cache.runResultCls, g_cache.runResultCtor,
-                          static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER),
-                          nullptr);
+  // Convert messages
+  jsize len = env->GetArrayLength(messagesJ);
+  std::vector<CausalLMChatMessage> msgs;
+  msgs.reserve(len);
+  std::vector<std::string> roleStorage;
+  std::vector<std::string> contentStorage;
+  roleStorage.reserve(len);
+  contentStorage.reserve(len);
+
+  for (jsize i = 0; i < len; ++i) {
+    jobject msgObj = env->GetObjectArrayElement(messagesJ, i);
+    std::string roleStr, contentStr;
+    if (msgObj != nullptr &&
+        convertQuickAiChatMessage(env, msgObj, roleStr, contentStr)) {
+      roleStorage.push_back(std::move(roleStr));
+      contentStorage.push_back(std::move(contentStr));
+      msgs.push_back(
+        {roleStorage.back().c_str(), contentStorage.back().c_str()});
+    }
+    if (msgObj != nullptr)
+      env->DeleteLocalRef(msgObj);
   }
 
   auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
-  const char *output = nullptr;
+  StreamCtx ctx{env, listenerObj, onDelta};
 
-  ErrorCode ec = runMultimodalHandle(
-    handle, prompt, pixels, numPatches, originalHeight, originalWidth, &output);
+  ErrorCode ec = runModelHandleWithMessagesStreaming(
+    handle, msgs.data(), msgs.size(), addGenerationPrompt == JNI_TRUE,
+    &stream_trampoline, &ctx);
 
-  // Release resources
-  env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
-  env->ReleaseStringUTFChars(promptJ, prompt);
+  return static_cast<jint>(ec);
+}
 
-  jstring outJ = nullptr;
-  if (ec == CAUSAL_LM_ERROR_NONE && output != nullptr) {
-    outJ = env->NewStringUTF(output);
+// ---------------------------------------------------------------------------
+// runMultimodalHandleWithMessagesStreaming
+//
+// Streaming multimodal inference with OpenAI message format on a specific
+// handle.
+// ---------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_quickdotai_NativeCausalLm_runMultimodalHandleWithMessagesStreamingNative(
+  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jobjectArray messagesJ,
+  jboolean addGenerationPrompt, jfloatArray pixelValuesJ, jint numPatches,
+  jint originalHeight, jint originalWidth, jobject listenerObj) {
+
+  if (messagesJ == nullptr || pixelValuesJ == nullptr ||
+      listenerObj == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
   }
 
-  return env->NewObject(g_cache.runResultCls, g_cache.runResultCtor,
-                        static_cast<jint>(ec), outJ);
+  // Resolve listener method
+  jclass listenerCls = env->GetObjectClass(listenerObj);
+  if (listenerCls == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+  jmethodID onDelta =
+    env->GetMethodID(listenerCls, "onDelta", "(Ljava/lang/String;)V");
+  env->DeleteLocalRef(listenerCls);
+  if (onDelta == nullptr) {
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Convert messages
+  jsize len = env->GetArrayLength(messagesJ);
+  std::vector<CausalLMChatMessage> msgs;
+  msgs.reserve(len);
+  std::vector<std::string> roleStorage;
+  std::vector<std::string> contentStorage;
+  roleStorage.reserve(len);
+  contentStorage.reserve(len);
+
+  for (jsize i = 0; i < len; ++i) {
+    jobject msgObj = env->GetObjectArrayElement(messagesJ, i);
+    std::string roleStr, contentStr;
+    if (msgObj != nullptr &&
+        convertQuickAiChatMessage(env, msgObj, roleStr, contentStr)) {
+      roleStorage.push_back(std::move(roleStr));
+      contentStorage.push_back(std::move(contentStr));
+      msgs.push_back(
+        {roleStorage.back().c_str(), contentStorage.back().c_str()});
+    }
+    if (msgObj != nullptr)
+      env->DeleteLocalRef(msgObj);
+  }
+
+  float *pixels = env->GetFloatArrayElements(pixelValuesJ, nullptr);
+  if (pixels == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
+  StreamCtx ctx{env, listenerObj, onDelta};
+
+  ErrorCode ec = runMultimodalHandleWithMessagesStreaming(
+    handle, msgs.data(), msgs.size(), addGenerationPrompt == JNI_TRUE, pixels,
+    numPatches, originalHeight, originalWidth, &stream_trampoline, &ctx);
+
+  env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+
+  return static_cast<jint>(ec);
+}
+
+// ---------------------------------------------------------------------------
+// runModelHandleWithJsonStreaming
+//
+// Streaming inference with OpenAI JSON format on a specific handle.
+// Accepts a JSON string containing messages, tools, functions, etc.
+// ---------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_quickdotai_NativeCausalLm_runModelHandleWithJsonStreamingNative(
+  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jstring jsonRequestJ,
+  jobject listenerObj) {
+
+  if (jsonRequestJ == nullptr || listenerObj == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Resolve listener method
+  jclass listenerCls = env->GetObjectClass(listenerObj);
+  if (listenerCls == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+  jmethodID onDelta =
+    env->GetMethodID(listenerCls, "onDelta", "(Ljava/lang/String;)V");
+  env->DeleteLocalRef(listenerCls);
+  if (onDelta == nullptr) {
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  const char *jsonRequest = env->GetStringUTFChars(jsonRequestJ, nullptr);
+  if (jsonRequest == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
+  StreamCtx ctx{env, listenerObj, onDelta};
+
+  ErrorCode ec = runModelHandleWithJsonStreaming(handle, jsonRequest,
+                                                 &stream_trampoline, &ctx);
+
+  env->ReleaseStringUTFChars(jsonRequestJ, jsonRequest);
+
+  return static_cast<jint>(ec);
 }

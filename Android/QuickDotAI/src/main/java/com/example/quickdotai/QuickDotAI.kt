@@ -16,7 +16,8 @@
  *
  * Both implementations satisfy the same [QuickDotAI] contract so a host
  * app can pick an engine once at load time and then drive it through a
- * single interface for run / runStreaming / metrics / close.
+ * interface for handle-based inference (OpenAI tab), session-based
+ * chat (Chat tab), and lifecycle management (load / unload / close).
  *
  * Threading: a [QuickDotAI] instance is NOT internally thread-safe. The
  * expectation is that the host app owns exactly one instance per loaded
@@ -60,6 +61,8 @@ sealed class BackendResult<out T> {
  */
 interface StreamSink {
     fun onDelta(text: String)
+    fun onReasoningDelta(text: String) {
+    }
     fun onDone()
     fun onError(error: QuickAiError, message: String?)
 }
@@ -67,16 +70,13 @@ interface StreamSink {
 /**
  * @brief Common interface implemented by every QuickDotAI engine.
  *
- * Lifecycle: [load] exactly once, then any number of [run] /
- * [runStreaming] / [metrics] calls, then [close] exactly once. Calling
- * [run] before [load] returns a [BackendResult.Err] with
- * [QuickAiError.NOT_INITIALIZED].
+ * Lifecycle: [load] exactly once, then inference calls, then [close]
+ * exactly once. Calling any inference method before [load] returns a
+ * [BackendResult.Err] with [QuickAiError.NOT_INITIALIZED].
  *
- * **Chat session lifecycle:** [openChatSession] → [chatRun] /
- * [chatRunStreaming] / [chatCancel] / [chatRebuild] → [closeChatSession].
- * Only one session may be active at a time. While a chat session is
- * active, the flat [run] / [runStreaming] / [runMultimodal] APIs are
- * unavailable (their internal Conversation is released to the session).
+ * **Chat session lifecycle:** [openChatSession] → [runChatModelHandleStreaming] /
+ * [runChatMultimodalHandleStreaming] / [chatCancel] / [chatRebuild] → [closeChatSession].
+ * Only one session may be active at a time.
  */
 interface QuickDotAI {
     /** @return a short identifier like "native" or "litert-lm". */
@@ -94,51 +94,12 @@ interface QuickDotAI {
 
     /**
      * @brief Load the model described by [req]. Must be called exactly
-     * once before any [run] or [runStreaming] call.
+     * once before any inference call.
      */
     fun load(req: LoadModelRequest): BackendResult<Unit>
 
     /**
-     * @brief Blocking inference on a single prompt.
-     *
-     * Returns the full decoded generation on success, or a
-     * [BackendResult.Err] on failure.
-     */
-    fun run(prompt: String): BackendResult<String>
-
-    /**
-     * @brief Streaming variant of [run].
-     *
-     * Default implementation simply calls [run] and emits the whole
-     * string as a single delta, so engines without a native streaming
-     * path still work — they just emit one big chunk instead of many
-     * small ones.
-     *
-     * Streaming-capable engines (both [LiteRTLm] and [NativeQuickDotAI]
-     * in this AAR) override this to push progressive deltas through
-     * [sink] as tokens are decoded.
-     *
-     * Contract: on return, exactly one of [StreamSink.onDone] or
-     * [StreamSink.onError] MUST have been delivered. The returned
-     * [BackendResult] mirrors the terminal state for the caller's
-     * convenience.
-     */
-    fun runStreaming(prompt: String, sink: StreamSink): BackendResult<Unit> {
-        return when (val r = run(prompt)) {
-            is BackendResult.Ok -> {
-                if (r.value.isNotEmpty()) sink.onDelta(r.value)
-                sink.onDone()
-                BackendResult.Ok(Unit)
-            }
-            is BackendResult.Err -> {
-                sink.onError(r.error, r.message)
-                r
-            }
-        }
-    }
-
-    /**
-     * @brief Multimodal variant of [run] — accepts a sequence of
+     * @brief Blocking multimodal inference — accepts a sequence of
      * [PromptPart]s that may interleave text and image inputs.
      *
      * The default implementation returns [QuickAiError.UNSUPPORTED]
@@ -161,35 +122,35 @@ interface QuickDotAI {
      *
      * Example:
      * ```
-     * val reply = engine.runMultimodal(listOf(
+     * val reply = engine.runMultimodalHandle(listOf(
      *     PromptPart.ImageFile("/sdcard/photo.jpg"),
      *     PromptPart.Text("What is happening in this picture?"),
      * ))
      * ```
      */
-    fun runMultimodal(parts: List<PromptPart>): BackendResult<String> =
+    fun runMultimodalHandle(parts: List<PromptPart>): BackendResult<String> =
         BackendResult.Err(
             QuickAiError.UNSUPPORTED,
-            "runMultimodal is not supported by engine '$kind'. " +
+            "runMultimodalHandle is not supported by engine '$kind'. " +
                 "Load a multimodal-capable model (e.g. GEMMA4) with " +
                 "LoadModelRequest.visionBackend set to a non-null value."
         )
 
     /**
-     * @brief Streaming variant of [runMultimodal].
+     * @brief Streaming variant of [runMultimodalHandle].
      *
      * The default implementation returns [QuickAiError.UNSUPPORTED]
      * and delivers a single terminal [StreamSink.onError] before
      * returning, so callers can rely on the same StreamSink contract
      * as text-only streaming regardless of which engine they targeted.
      */
-    fun runMultimodalStreaming(
+    fun runMultimodalHandleStreaming(
         parts: List<PromptPart>,
         sink: StreamSink
     ): BackendResult<Unit> {
         val err = BackendResult.Err(
             QuickAiError.UNSUPPORTED,
-            "runMultimodalStreaming is not supported by engine '$kind'. " +
+            "runMultimodalHandleStreaming is not supported by engine '$kind'. " +
                 "Load a multimodal-capable model (e.g. GEMMA4) with " +
                 "LoadModelRequest.visionBackend set to a non-null value."
         )
@@ -247,35 +208,45 @@ interface QuickDotAI {
         )
 
     /**
-     * @brief Send structured chat [messages] and return the assistant
-     * reply. Requires an active session opened via [openChatSession].
+     * @brief Send a chat message in a session with streaming response.
      *
-     * History is owned by the backend's KV cache, not by this wrapper.
-     * Callers should pass only the *new* messages that haven't been
-     * seen yet on this session — prior turns are implicitly retained
-     * across calls. To reset or re-seed the conversation, use
-     * [chatRebuild].
+     * Requires an active session opened via [openChatSession].
+     * The text message is converted internally to a structured format
+     * and sent to the native engine.
+     *
+     * @param text Raw text input from the user
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult containing the chat result or an error
      */
-    fun chatRun(
-        messages: List<QuickAiChatMessage>
-    ): BackendResult<QuickAiChatResult> =
-        BackendResult.Err(
-            QuickAiError.UNSUPPORTED,
-            "chatRun is not supported by engine '$kind'."
-        )
-
-    /**
-     * @brief Streaming variant of [chatRun]. Deltas are pushed through
-     * [sink]; the full assistant reply is returned on completion.
-     * History is retained in the backend's KV cache across turns.
-     */
-    fun chatRunStreaming(
-        messages: List<QuickAiChatMessage>,
+    fun runChatModelHandleStreaming(
+        text: String,
         sink: StreamSink
     ): BackendResult<QuickAiChatResult> {
         val err = BackendResult.Err(
             QuickAiError.UNSUPPORTED,
-            "chatRunStreaming is not supported by engine '$kind'."
+            "runChatModelHandleStreaming is not supported by engine '$kind'."
+        )
+        sink.onError(err.error, err.message)
+        return err
+    }
+
+    /**
+     * @brief Send a multimodal chat message (with image) in a session
+     * with streaming response.
+     *
+     * Requires an active session opened via [openChatSession].
+     *
+     * @param parts List of PromptPart containing text and/or images
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult containing the chat result or an error
+     */
+    fun runChatMultimodalHandleStreaming(
+        parts: List<PromptPart>,
+        sink: StreamSink
+    ): BackendResult<QuickAiChatResult> {
+        val err = BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runChatMultimodalHandleStreaming is not supported by engine '$kind'."
         )
         sink.onError(err.error, err.message)
         return err
@@ -307,6 +278,82 @@ interface QuickDotAI {
             QuickAiError.UNSUPPORTED,
             "chatRebuild is not supported by engine '$kind'."
         )
+
+    // ----- Handle-based OpenAI messages API (streaming only) ----------
+
+    /**
+     * @brief Streaming inference with OpenAI message format on a specific handle.
+     *
+     * @param messages List of chat messages with role (system/user/assistant) and content
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult<Unit> on completion
+     */
+    fun runModelHandleWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        val err = BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runModelHandleWithMessagesStreaming is not supported by engine '$kind'."
+        )
+        sink.onError(err.error, err.message)
+        return err
+    }
+
+    /**
+     * @brief Streaming multimodal inference with OpenAI message format on a specific handle.
+     *
+     * @param messages List of chat messages. Image should be included as ImageBytes part.
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult<Unit> on completion
+     */
+    fun runMultimodalHandleWithMessagesStreaming(
+        messages: List<QuickAiChatMessage>,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        val err = BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runMultimodalHandleWithMessagesStreaming is not supported by engine '$kind'."
+        )
+        sink.onError(err.error, err.message)
+        return err
+    }
+
+    /**
+     * @brief Streaming inference with OpenAI JSON format.
+     *
+     * Accepts a JSON string in OpenAI format and processes it through the
+     * chat template. Supports messages, tools, functions, and all other
+     * fields recognized by minja chat template renderer.
+     *
+     * Example JSON input:
+     * ```
+     * {
+     *   "messages": [
+     *     {"role": "developer", "content": "..."},
+     *     {"role": "user", "content": "..."}
+     *   ],
+     *   "tools": [
+     *     {"type": "function", "function": {"name": "call", "description": "..."}}
+     *   ]
+     * }
+     * ```
+     *
+     * @param jsonRequest OpenAI format JSON string
+     * @param sink StreamSink to receive streaming output
+     * @return BackendResult<Unit> on completion
+     */
+    fun runModelHandleWithJsonStreaming(
+        jsonRequest: String,
+        sink: StreamSink
+    ): BackendResult<Unit> {
+        val err = BackendResult.Err(
+            QuickAiError.UNSUPPORTED,
+            "runModelHandleWithJsonStreaming is not supported by engine '$kind'."
+        )
+        sink.onError(err.error, err.message)
+        return err
+    }
 
     /**
      * @brief Release all resources. Idempotent — safe to call more

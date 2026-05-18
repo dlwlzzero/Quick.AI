@@ -1,15 +1,31 @@
-# QNN Context 가이드: 커스텀 Context 만들기
+# Quick.AI QNN Context Guide ⚙️
+
+> **Quick.AI 프로젝트 문서** | nntrainer 서브모듈 기반 QNN 백엔드 확장 가이드
+>
+> 이 문서는 [nntrainer](https://github.com/nntrainer/nntrainer) 프레임워크에서 Qualcomm Neural Network (QNN) 백엔드를 관리하는 `QNNContext` 클래스를 참고하여, **Quick.AI 프로젝트 내에서 사용자가 자신만의 커스텀 QNN Context를 만드는 방법**을 안내합니다.
 
 ## 개요
 
-`QNNContext`는 nntrainer 프레임워크에서 Qualcomm Neural Network (QNN) 백엔드를 관리하는 핵심 클래스입니다. 이 클래스는 다음과 같은 역할을 수행합니다:
+Quick.AI의 QNN (`qnn/`) 디렉토리는 Android 기기에서 Qualcomm NPU (HTP)를 통해 LLM 추론을 가속화하는 QNN 백엔드 컴포넌트를 포함합니다. 이는 nntrainer의 QNNContext를 기반으로 하며, Quick.AI 빌드 시 `--enable-qnn` 옵션으로 활성화됩니다.
+
+`QNNContext`는 다음과 같은 역할을 수행합니다:
 
 - **QNN 백엔드 초기화**: HTP 백엔드 라이브러리(`libQnnHtp.so`) 로드 및 설정
 - **레이어 팩토리 관리**: QNN 전용 레이어(QNNLinear, QNNGraph 등)의 생성 팩토리 등록/조회
 - **메모리 관리**: RPC 메모리 할당기(`QNNRpcManager`)를 통한 QNN 텐서 메모리 관리
 - **바이너리 컨텍스트 로드**: QNN 바이너리 파일(`.bin`)로부터 그래프를 로드하고 실행 준비
 
-이 문서는 `QNNContext`의 구조를 참고하여 **사용자가 자신만의 커스텀 Context를 만드는 방법**을 안내합니다.
+### Quick.AI에서 QNN 사용하기
+
+```bash
+# QNN 지원으로 Android 빌드
+./build.sh --platform=android --enable-qnn
+
+# 또는 QNN 타겟만 빌드
+./build.sh --platform=android --target=qnn
+```
+
+QNN 모델은 Android (arm64-v8a)에서만 지원됩니다. 자세한 QNN/Hexagon SDK 설치 방법은 [QNN 설치 가이드](../docs/HowToInstallQNN.md)를 참조하세요.
 
 ---
 
@@ -47,7 +63,7 @@ QNNBackendVar (qnn_context_var.h)
 
 `QNNContext`를 참고하여 새로운 백엔드 Context를 만드는 단계별 가이드입니다.
 
-### Step 1: ContextData 상속 - 백엔드 데이터 클래스 작성
+### Step 1: ContextData 상속과 백엔드 데이터 클래스 작성
 
 백엔드에서 사용할 상태와 핸들을 담는 데이터 클래스를 만듭니다.
 
@@ -128,7 +144,7 @@ private:
 
 ### Step 3: 필수 메서드 구현
 
-#### `initialize()` - 최초 초기화 및 레이어 등록
+#### `initialize()`: 최초 초기화 및 레이어 등록
 
 `Singleton<T>::Global()` 호출 시 `initializeOnce()`를 통해 한 번만 실행됩니다. 여기서 백엔드를 초기화하고 레이어 팩토리를 등록합니다.
 
@@ -158,9 +174,9 @@ void MyContext::initialize() noexcept {
 }
 ```
 
-> **참고**: `QNNContext::initialize()`에서는 `QNNLinear`, `WeightLayer`, `TensorLayer`, `QNNGraph` 네 가지 레이어를 등록합니다. (`qnn_context.cpp:40-58` 참조)
+> **참고**: `QNNContext::initialize()`에서는 `QNNLinear`, `WeightLayer`, `TensorLayer`, `QNNGraph` 네 가지 레이어를 등록합니다. (`qnn_context.cpp`의 `registerFactory` 호출부 참조)
 
-#### `init()` - 백엔드 세부 초기화
+#### `init()`: 백엔드 세부 초기화
 
 백엔드 라이브러리 로드, 핸들 생성 등 구체적인 초기화 로직을 구현합니다.
 
@@ -179,7 +195,7 @@ int MyContext::init() {
 }
 ```
 
-#### `createLayerObject()` - 레이어 객체 생성
+#### `createLayerObject()`: 레이어 객체 생성
 
 팩토리 맵에서 키로 검색하여 레이어 객체를 생성합니다.
 
@@ -197,7 +213,7 @@ MyContext::createLayerObject(const int int_key,
 }
 ```
 
-#### `load()` - 모델 바이너리 로드 (선택)
+#### `load()`: 모델 바이너리 로드 (선택)
 
 QNN 바이너리 등 백엔드 고유 모델 파일을 로드합니다.
 
@@ -355,14 +371,46 @@ load(bin_path)
 
 ---
 
+## HTP backend extension config 경로
+
+`QNNContext`는 backend extension loader를 통해
+`htp_backend_ext_config.json`을 로드합니다. 경로 탐색 우선순위는 다음과
+같습니다.
+
+1. `QNNContext::setBackendExtConfigPath()` /
+   `setDefaultBackendExtConfigPath()`로 지정한 값
+2. `QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH`
+3. `QUICK_DOT_AI_BASE_DIR/htp_backend_ext_config.json`
+4. 현재 작업 디렉터리의 `htp_backend_ext_config.json`
+
+절대 경로는 그대로 사용하고, 상대 경로는 `QUICK_DOT_AI_BASE_DIR`이 있으면
+그 디렉터리 기준으로, 없으면 현재 작업 디렉터리 기준으로 해석합니다.
+Android `QuickDotAI`의 `htpBackendConfigPath`는 상대 경로를 앱 external
+files 디렉터리 기준으로 먼저 절대 경로화한 뒤 native layer에 전달합니다.
+
+---
+
 ## 관련 파일 목록
+
+Quick.AI 프로젝트 루트 기준 경로:
 
 | 파일 | 설명 |
 |------|------|
-| `nntrainer/qnn_context.h` | QNNContext 클래스 선언 |
-| `nntrainer/qnn_context.cpp` | QNNContext 구현 |
-| `nntrainer/context.h` | 베이스 Context 클래스 |
-| `nntrainer/qnn/jni/qnn_context_var.h` | QNNVar, QNNBackendVar 데이터 구조체 |
-| `nntrainer/engine.h` | Engine 클래스 (Context 등록/관리) |
-| `nntrainer/utils/singleton.h` | Singleton 템플릿 |
-| `nntrainer/qnn/jni/qnn_rpc_manager.h` | QNN RPC 메모리 관리자 |
+| `qnn/qnn_context.h` | Quick.AI QNNContext 클래스 선언 |
+| `qnn/qnn_context.cpp` | Quick.AI QNNContext 구현 |
+| `qnn/meson.build` | QNN 라이브러리 빌드 설정 |
+| `qnn/jni/qnn_context_var.h` | QNNVar, QNNBackendVar 데이터 구조체 |
+| `qnn/jni/qnn_rpc_manager.h` | QNN RPC 메모리 관리자 |
+| `nntrainer/nntrainer/qnn_context.h` | nntrainer 베이스 Context 클래스 (서브모듈) |
+| `nntrainer/nntrainer/context.h` | nntrainer 베이스 Context 클래스 (서브모듈) |
+| `nntrainer/nntrainer/engine.h` | Engine 클래스 (서브모듈) |
+| `nntrainer/nntrainer/utils/singleton.h` | Singleton 템플릿 (서브모듈) |
+
+> **참고**: `nntrainer/` 디렉토리는 Quick.AI의 Git 서브모듈입니다. 위 경로는 Quick.AI 루트 기준 상대 경로입니다.
+
+## 관련 문서
+
+| 문서 | 설명 |
+|------|------|
+| [QNN 설치 가이드](../docs/HowToInstallQNN.md) | QNN SDK 및 Hexagon SDK 설치 방법 |
+| [API 문서](../api/README.md) | C API에서 QNN 모델 타입 (`GAUSS3_6_QNN`, `GAUSS3_8_QNN` 등) 참조 |

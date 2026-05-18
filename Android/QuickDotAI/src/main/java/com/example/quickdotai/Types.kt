@@ -47,7 +47,10 @@ enum class ModelId {
     GAUSS3_8_VISION_QNN,
     GAUSS3_8,
     GAUSS3_6,
-    TINY_BERT
+    TINY_BERT,
+    FUNCTION_GEMMA,
+    GEMMA4_CPU,
+    GEMMA4_E2B_QNN
 }
 
 
@@ -166,6 +169,16 @@ data class LoadModelRequest(
      * Only honored by [NativeQuickDotAI]; [LiteRTLm] ignores it.
      */
     @SerialName("model_base_path") val modelBasePath: String? = null,
+
+    /**
+     * Path to the HTP backend extension config JSON file used by QNN
+     * models. Absolute paths are used as-is. Relative paths are resolved
+     * from `<externalFilesDir>`. When null, the native engine falls back to
+     * `<externalFilesDir>/htp_backend_ext_config.json`.
+     *
+     * Only honored by [NativeQuickDotAI]; [LiteRTLm] ignores it.
+     */
+    @SerialName("htp_backend_config_path") val htpBackendConfigPath: String? = null,
 ) {
     /**
      * Canonical key shared across the stack: one worker/handle per
@@ -290,8 +303,7 @@ data class QuickAiChatSamplingConfig(
 /**
  * @brief Template keyword arguments forwarded to the chat template
  * renderer. [enableThinking] controls whether the model's "thinking"
- * prompt preamble is activated. The response schema is unchanged —
- * no separate reasoning field is introduced.
+ * prompt preamble is activated.
  */
 @Serializable
 data class QuickAiChatTemplateKwargs(
@@ -332,6 +344,7 @@ data class QuickAiChatMessage(
  */
 data class QuickAiChatResult(
     val content: String,
+    val reasoning: String? = null,
     val metrics: PerformanceMetrics? = null
 )
 
