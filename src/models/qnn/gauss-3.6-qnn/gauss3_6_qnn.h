@@ -51,6 +51,9 @@ public:
 
   bool supportsKvCachePersistence() const override { return true; }
   int getKvLen() const override { return kv_cache_.length(); }
+  void resetKvCache() override;
+  void saveKvCache(const std::string &cache_path) const override;
+  void loadKvCache(const std::string &cache_path) override;
 
  private:
   // Input/output tensors
@@ -76,21 +79,6 @@ public:
   float *generation_sample;
 
   QnnKvCacheManager kv_cache_;
-
-  std::vector<uint8_t *> kvs;
-  std::vector<int> kv_sizes;
-  std::vector<int> kv_row_lengths;
-
-  std::vector<uint8_t *> prefill_kvs;
-  std::vector<int> prefill_kv_sizes;
-  std::vector<int> prefill_kv_row_lengths;
-  std::vector<int> prefill_to_generation_kv_indices;
-  std::vector<int> prefill_kv_is_key;
-
-  std::vector<QnnKvOutputBinding> prefill_output_kv_bindings;
-  std::vector<QnnKvOutputBinding> generation_output_kv_bindings;
-
-  int kv_len = 0;
 
   int prefill_attention_mask_elements = 0;
   int prefill_sliding_attention_mask_elements = 0;
