@@ -66,6 +66,29 @@ std::string rebase_relative_to_model_file(const std::string &path,
   return base + "/" + path;
 }
 
+std::vector<int> read_eos_token_ids(const json &generation_cfg,
+                                    const json &cfg) {
+  const json *eos = nullptr;
+  if (generation_cfg.contains("eos_token_id") &&
+      !generation_cfg["eos_token_id"].is_null()) {
+    eos = &generation_cfg["eos_token_id"];
+  } else if (cfg.contains("eos_token_id") && !cfg["eos_token_id"].is_null()) {
+    eos = &cfg["eos_token_id"];
+  }
+
+  if (eos == nullptr) {
+    throw std::invalid_argument("missing eos_token_id");
+  }
+  if (eos->is_number_integer() || eos->is_number_unsigned()) {
+    return {eos->get<int>()};
+  }
+  if (eos->is_array()) {
+    return eos->get<std::vector<int>>();
+  }
+
+  throw std::invalid_argument("eos_token_id must be an integer or array");
+}
+
 // PLE 4-bit packed → uint16 (QNN consumer space) two-step requant.
 // ufixed8 path: f = (q4bit + lut_offset) * lut_scale.
 inline void dequant_nibbles_requant_u16(const uint8_t *packed, size_t elems,
@@ -973,7 +996,7 @@ void Gemma4_E2B_QNN::setupParameters(json &cfg, json &generation_cfg,
        rope_scaling_factor_sliding, rope_type_sliding.c_str());
 
   padding_token = generation_cfg["pad_token_id"].get<int>();
-  eos_tokens = generation_cfg["eos_token_id"].get<std::vector<int>>();
+  eos_tokens = read_eos_token_ids(generation_cfg, cfg);
   temperature = generation_cfg["temperature"].get<float>();
   top_k = generation_cfg["top_k"].get<int>();
   top_p = generation_cfg["top_p"].get<float>();

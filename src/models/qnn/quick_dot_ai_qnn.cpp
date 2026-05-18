@@ -63,6 +63,27 @@ std::string rebase_relative_to_model_file(const std::string &path,
   return base_dir + "/" + path;
 }
 
+int read_token_id_or_default(const json &cfg, const char *key,
+                             int default_value) {
+  if (!cfg.contains(key) || cfg[key].is_null()) {
+    return default_value;
+  }
+
+  const auto &value = cfg[key];
+  if (value.is_number_integer() || value.is_number_unsigned()) {
+    return value.get<int>();
+  }
+  if (value.is_array()) {
+    if (value.empty()) {
+      return default_value;
+    }
+    return value.front().get<int>();
+  }
+
+  throw std::invalid_argument(std::string(key) +
+                              " must be an integer or array");
+}
+
 // Format a scale value with enough precision for the float that QNN
 // will eventually use (`Qnn_QuantizeParams_t::scaleOffsetEncoding::scale`
 // is float, parsed with std::stof on the property side). TensorInfo
@@ -507,8 +528,12 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   }
 
   // Read generation_config parameters
-  padding_token = generation_cfg.value("padding_token", 0);
-  eos_token = generation_cfg.value("eos_token_id", 0);
+  padding_token = generation_cfg.contains("padding_token")
+                    ? read_token_id_or_default(generation_cfg,
+                                               "padding_token", 0)
+                    : read_token_id_or_default(generation_cfg,
+                                               "pad_token_id", 0);
+  eos_token = read_token_id_or_default(generation_cfg, "eos_token_id", 0);
   temperature = generation_cfg.value("temperature", 1.0f);
   top_k = generation_cfg.value("top_k", 50);
   top_p = generation_cfg.value("top_p", 1.0f);

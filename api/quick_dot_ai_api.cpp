@@ -348,8 +348,13 @@ static bool is_gauss_architecture(const std::string &architecture) {
   return architecture == "Gauss_3_6_QNN" || architecture == "Gauss_3_8_QNN";
 }
 
-static bool is_gauss3_8_qnn_architecture(const std::string &architecture) {
-  return architecture == "Gauss_3_8_QNN";
+static size_t text_generation_model_index(const CausalLmModel &h) {
+  if (h.models.size() > 1 && h.architectures.size() > 1 &&
+      h.architectures[0] == "Gauss_3_8_VEncoder_QNN" &&
+      h.architectures[1] == "Gauss_3_8_QNN") {
+    return 1;
+  }
+  return 0;
 }
 
 static std::string trim_wrapping_newlines(std::string value) {
@@ -445,11 +450,6 @@ static void update_handle_session_after_run(CausalLmModel &h,
   }
 
   if (!is_gauss_architecture(h.architectures[model_index])) {
-    return;
-  }
-
-  if (is_gauss3_8_qnn_architecture(h.architectures[model_index])) {
-    h.kv_len = 0;
     return;
   }
 
@@ -557,9 +557,6 @@ static std::string prepare_input_for_model(CausalLmModel &h, size_t model_index,
   }
 
   const std::string &architecture = h.architectures[model_index];
-  if (is_gauss3_8_qnn_architecture(architecture)) {
-    h.kv_len = 0;
-  }
   if (is_gauss_architecture(architecture) && h.kv_len > 0) {
     return build_gauss_incremental_user_prompt(
       extract_latest_gauss_user_content(input));
@@ -1368,20 +1365,22 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
  */
 static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
                                const char **outputText,
-                               bool input_already_formatted = false) {
+                               bool input_already_formatted = false,
+                               size_t model_index = 0) {
   if (inputTextPrompt == nullptr || outputText == nullptr) {
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
   }
 
   std::lock_guard<std::mutex> lock(h.mtx);
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  if (!h.initialized || model_index >= h.models.size() ||
+      !h.models[model_index]) {
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
   try {
-    auto &model = *h.models[0];
+    auto &model = *h.models[model_index];
     std::string input = prepare_input_for_model(
-      h, 0, std::string(inputTextPrompt), input_already_formatted);
+      h, model_index, std::string(inputTextPrompt), input_already_formatted);
 
 // We assume single batch request for this API
 #if defined(_WIN32)
@@ -1393,7 +1392,7 @@ static ErrorCode run_on_handle(CausalLmModel &h, const char *inputTextPrompt,
 
     h.last_output = model.getOutput(0);
     *outputText = h.last_output.c_str();
-    update_handle_session_after_run(h, 0);
+    update_handle_session_after_run(h, model_index);
   } catch (const std::exception &e) {
     LOGE("Exception in run_on_handle: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
@@ -1632,57 +1631,67 @@ ErrorCode runModelHandleWithMessages(CausalLmHandle handle,
   }
 
   auto &h = *handle;
-  std::lock_guard<std::mutex> lock(h.mtx);
-
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
-    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
-  }
+  size_t model_index = 0;
+  std::string formattedInput;
 
   try {
-    // Enforce tokenizer_config.json for the messages-based API.
-    // All native models require a chat template to format messages.
-    std::string model_dir =
-      h.model_dirs.empty() ? std::string() : h.model_dirs[0];
-    if (model_dir.empty()) {
-      LOGE("[ERROR] runModelHandleWithMessages: model_dir is empty");
-      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-    }
+    {
+      std::lock_guard<std::mutex> lock(h.mtx);
+      if (!h.initialized || h.models.empty()) {
+        return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+      }
+      model_index = text_generation_model_index(h);
+      if (model_index >= h.models.size() || !h.models[model_index]) {
+        return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+      }
 
-    std::string tc_path = model_dir + "/tokenizer_config.json";
-    if (!check_file_exists(tc_path)) {
-      LOGE("[ERROR] runModelHandleWithMessages: "
-           "tokenizer_config.json not found in %s.  "
-           "The messages-based API requires a chat template.",
-           model_dir.c_str());
-      return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-    }
-
-    // Load chat template on-demand if not already cached.
-    if (!g_chat_template) {
-      try {
-        g_chat_template = causallm::ChatTemplate::Load(model_dir);
-        if (!g_chat_template) {
-          LOGE("[ERROR] runModelHandleWithMessages: "
-               "Failed to load chat template from %s",
-               model_dir.c_str());
-          return CAUSAL_LM_ERROR_INVALID_PARAMETER;
-        }
-      } catch (const std::exception &e) {
-        LOGE("[ERROR] runModelHandleWithMessages: "
-             "Exception loading chat template from %s: %s",
-             model_dir.c_str(), e.what());
+      // Enforce tokenizer_config.json for the messages-based API.
+      // All native models require a chat template to format messages.
+      std::string model_dir = h.model_dirs.size() > model_index
+                                ? h.model_dirs[model_index]
+                                : std::string();
+      if (model_dir.empty()) {
+        LOGE("[ERROR] runModelHandleWithMessages: model_dir is empty");
         return CAUSAL_LM_ERROR_INVALID_PARAMETER;
       }
+
+      std::string tc_path = model_dir + "/tokenizer_config.json";
+      if (!check_file_exists(tc_path)) {
+        LOGE("[ERROR] runModelHandleWithMessages: "
+             "tokenizer_config.json not found in %s.  "
+             "The messages-based API requires a chat template.",
+             model_dir.c_str());
+        return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+      }
+
+      // Load chat template on-demand if not already cached.
+      if (!g_chat_template) {
+        try {
+          g_chat_template = causallm::ChatTemplate::Load(model_dir);
+          if (!g_chat_template) {
+            LOGE("[ERROR] runModelHandleWithMessages: "
+                 "Failed to load chat template from %s",
+                 model_dir.c_str());
+            return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+          }
+        } catch (const std::exception &e) {
+          LOGE("[ERROR] runModelHandleWithMessages: "
+               "Exception loading chat template from %s: %s",
+               model_dir.c_str(), e.what());
+          return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+        }
+      }
+
+      auto chat_messages = convertMessages(messages, num_messages);
+      std::string arch = h.architectures.size() > model_index
+                           ? h.architectures[model_index]
+                           : std::string();
+      formattedInput = apply_chat_template_messages(
+        arch, chat_messages, add_generation_prompt, model_dir);
     }
 
-    auto chat_messages = convertMessages(messages, num_messages);
-    std::string arch =
-      h.architectures.empty() ? std::string() : h.architectures[0];
-    std::string formattedInput = apply_chat_template_messages(
-      arch, chat_messages, add_generation_prompt, model_dir);
-
     return run_on_handle(h, formattedInput.c_str(), outputText,
-                         /*input_already_formatted=*/true);
+                         /*input_already_formatted=*/true, model_index);
   } catch (const std::exception &e) {
     LOGE("Exception in runModelHandleWithMessages: %s", e.what());
     return CAUSAL_LM_ERROR_UNKNOWN;
@@ -1852,8 +1861,12 @@ static ErrorCode run_model_streaming_on_handle(CausalLmModel &h,
                                                const std::string &raw_input,
                                                CausalLmTokenCallback callback,
                                                void *user_data,
-                                               bool input_already_formatted) {
-  auto *m = h.models[0].get();
+                                               bool input_already_formatted,
+                                               size_t model_index) {
+  if (model_index >= h.models.size() || !h.models[model_index]) {
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+  auto *m = h.models[model_index].get();
 
   CallbackStreamer streamer;
   callback_streamer_init(&streamer, callback, user_data);
@@ -1866,7 +1879,8 @@ static ErrorCode run_model_streaming_on_handle(CausalLmModel &h,
 
   try {
     std::string input =
-      prepare_input_for_model(h, 0, raw_input, input_already_formatted);
+      prepare_input_for_model(h, model_index, raw_input,
+                              input_already_formatted);
 
     LOGD("[DEBUG]   raw input length: %zu", raw_input.length());
     LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
@@ -1888,7 +1902,7 @@ static ErrorCode run_model_streaming_on_handle(CausalLmModel &h,
 #endif
 
     h.last_output = m->getOutput(0);
-    update_handle_session_after_run(h, 0);
+    update_handle_session_after_run(h, model_index);
 
     if (m->hasRun()) {
       auto im = m->getPerformanceMetrics();
@@ -1946,14 +1960,15 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   auto &h = *handle;
   std::lock_guard<std::mutex> lock(h.mtx);
 
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  if (!h.initialized || h.models.empty()) {
     LOGE("[DEBUG] runModelHandleStreaming: NOT_INITIALIZED");
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
+  const size_t model_index = text_generation_model_index(h);
 
   ErrorCode ec = run_model_streaming_on_handle(
     h, std::string(inputTextPrompt), callback, user_data,
-    /*input_already_formatted=*/false);
+    /*input_already_formatted=*/false, model_index);
 
   LOGD("[DEBUG] runModelHandleStreaming: END (errorCode=%d)", ec);
   return ec;
@@ -2140,7 +2155,7 @@ execute_multimodal_llm(CausalLmModel &h, causallm::Gauss3_8_QNN *llm,
     llm->run_with_embeddings(combined.data(), n_total, text_ids,
                              /*do_sample=*/false,
                              /*log_output=*/g_verbose);
-    h.kv_len = 0;
+    h.kv_len = llm->getKvLen();
   } catch (const std::exception &e) {
     LOGE("[DEBUG] execute_multimodal_llm: llm threw: %s", e.what());
     return CAUSAL_LM_ERROR_INFERENCE_FAILED;
@@ -2418,8 +2433,13 @@ ErrorCode runModelHandleWithMessagesStreaming(
   auto &h = *handle;
   std::lock_guard<std::mutex> lock(h.mtx);
 
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  if (!h.initialized || h.models.empty()) {
     LOGE("[DEBUG] runModelHandleWithMessagesStreaming: NOT_INITIALIZED");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+  const size_t model_index = text_generation_model_index(h);
+  if (model_index >= h.models.size() || !h.models[model_index]) {
+    LOGE("[DEBUG] runModelHandleWithMessagesStreaming: text model is missing");
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
@@ -2428,8 +2448,9 @@ ErrorCode runModelHandleWithMessagesStreaming(
 
     // Enforce tokenizer_config.json for the messages-based API.
     // All native models require a chat template to format messages.
-    std::string model_dir =
-      h.model_dirs.empty() ? std::string() : h.model_dirs[0];
+    std::string model_dir = h.model_dirs.size() > model_index
+                              ? h.model_dirs[model_index]
+                              : std::string();
     if (model_dir.empty()) {
       LOGE("[ERROR] runModelHandleWithMessagesStreaming: model_dir is empty");
       return CAUSAL_LM_ERROR_INVALID_PARAMETER;
@@ -2465,8 +2486,9 @@ ErrorCode runModelHandleWithMessagesStreaming(
     // Use the *actual* handle's architecture so Gauss-specific
     // <|turn_start|> / <|turn_end|> markers are generated.
     auto chat_messages = convertMessages(messages, num_messages);
-    std::string arch =
-      h.architectures.empty() ? std::string() : h.architectures[0];
+    std::string arch = h.architectures.size() > model_index
+                         ? h.architectures[model_index]
+                         : std::string();
     std::string formattedInput = apply_chat_template_messages(
       arch, chat_messages, add_generation_prompt, model_dir);
 
@@ -2477,7 +2499,8 @@ ErrorCode runModelHandleWithMessagesStreaming(
     LOGD("[DEBUG] runModelHandleWithMessagesStreaming: Calling internal helper "
          "directly...");
     return run_model_streaming_on_handle(h, formattedInput, callback, user_data,
-                                         /*input_already_formatted=*/true);
+                                         /*input_already_formatted=*/true,
+                                         model_index);
   } catch (const std::exception &e) {
     LOGE("[DEBUG] runModelHandleWithMessagesStreaming: Exception caught: %s",
          e.what());
@@ -2579,8 +2602,13 @@ ErrorCode runModelHandleWithJsonStreaming(CausalLmHandle handle,
   auto &h = *handle;
   std::lock_guard<std::mutex> lock(h.mtx);
 
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  if (!h.initialized || h.models.empty()) {
     LOGE("[DEBUG] runModelHandleWithJsonStreaming: NOT_INITIALIZED");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+  const size_t model_index = text_generation_model_index(h);
+  if (model_index >= h.models.size() || !h.models[model_index]) {
+    LOGE("[DEBUG] runModelHandleWithJsonStreaming: text model is missing");
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
@@ -2609,7 +2637,8 @@ ErrorCode runModelHandleWithJsonStreaming(CausalLmHandle handle,
 
     LOGD("[DEBUG] runModelHandleWithJsonStreaming: Running inference...");
     return run_model_streaming_on_handle(h, formattedInput, callback, user_data,
-                                         /*input_already_formatted=*/true);
+                                         /*input_already_formatted=*/true,
+                                         model_index);
   } catch (const json::exception &e) {
     LOGE("[DEBUG] runModelHandleWithJsonStreaming: JSON parse error: %s",
          e.what());

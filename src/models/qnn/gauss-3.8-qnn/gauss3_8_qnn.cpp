@@ -441,7 +441,6 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
   (void)tail_prompt;
 
   stop_requested_.store(false, std::memory_order_release);
-  initialize_kv_cache();
 
   const std::string model_prompt = promptToUtf8(prompt);
   auto input = tokenizer->Encode(model_prompt);
@@ -697,7 +696,6 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
   (void)do_sample;
 
   stop_requested_.store(false, std::memory_order_release);
-  initialize_kv_cache();
 
   if (input_sample_u16 == nullptr || generation_sample_u16 == nullptr) {
     LOGE("run_with_embeddings: u16 input/generation sample not initialized. "
