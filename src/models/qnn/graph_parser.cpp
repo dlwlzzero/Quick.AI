@@ -34,7 +34,7 @@ GraphParser::get_tensor_info_or_throw(const TensorInfoList &tensor_infos,
 }
 
 int GraphParser::get_named_tensor_elements_or_throw(
-    const TensorInfoList &tensor_infos, const std::string &tensor_name) {
+  const TensorInfoList &tensor_infos, const std::string &tensor_name) {
   return get_tensor_count(get_tensor_info_or_throw(tensor_infos, tensor_name));
 }
 
@@ -44,7 +44,7 @@ GraphParser::parseJsonFile(const std::string &file_path) {
   try {
     std::ifstream file(file_path);
     NNTR_THROW_IF(!file.is_open(), std::invalid_argument)
-        << "Failed to open file: " << file_path;
+      << "Failed to open file: " << file_path;
 
     auto json_data_ = json::parse(file);
     file.close();
@@ -90,16 +90,16 @@ TensorInfo GraphParser::extractTensorInfo(const json &tensor_object) {
 
   tensor_info.name = tensor_info_json["name"];
   tensor_info.dimensions =
-      tensor_info_json["dimensions"].get<std::vector<int>>();
+    tensor_info_json["dimensions"].get<std::vector<int>>();
   tensor_info.data_type = tensor_info_json["dataType"];
   if (tensor_info_json.contains("quantizeParams") &&
       tensor_info_json["quantizeParams"].contains("scaleOffset") &&
       tensor_info_json["quantizeParams"]["scaleOffset"].is_object()) {
     auto scale_offset = tensor_info_json["quantizeParams"]["scaleOffset"];
-    tensor_info.scale = scale_offset.value("scale", 0.0);
+    tensor_info.scale = scale_offset.value("scale", 0.0f);
     tensor_info.offset = scale_offset.value("offset", 0);
   } else {
-    tensor_info.scale = 0.0;
+    tensor_info.scale = 0.0f;
     tensor_info.offset = 0;
   }
 
