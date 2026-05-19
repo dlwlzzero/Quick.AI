@@ -23,7 +23,6 @@ using ModelHandle = std::unique_ptr<ml::train::Model>;
 using IO_TensorType = ml::train::TensorDim::IO_TensorType;
 
 extern std::mt19937 rng;
-extern std::chrono::duration<double> raw_exec_seconds;
 
 struct QnnKvOutputBinding {
   int output_index;
@@ -54,9 +53,9 @@ void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
                           int num_columns = 128);
 
 std::vector<QnnKvOutputBinding> build_kv_output_bindings(
-    const TensorInfoList &outputs,
-    const std::unordered_map<std::string, int> &generation_kv_index_by_name,
-    const std::string &graph_name, int kv_per_layer = 4);
+  const TensorInfoList &outputs,
+  const std::unordered_map<std::string, int> &generation_kv_index_by_name,
+  const std::string &graph_name, int kv_per_layer = 4);
 
 void append_outputs_to_kv_cache(const std::vector<IO_TensorType> &step_outputs,
                                 const std::vector<QnnKvOutputBinding> &bindings,
@@ -82,31 +81,29 @@ void fill_attention_mask_with_prev_length(int rows, int columns, int length,
 uint16_t *get_zero_memory(int size, int zero_point);
 
 void fill_generation_inputs(
-    float *generation_sample, int current_token,
-    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
-    uint16_t *generation_sliding_attention_mask,
-    int generation_sliding_attention_mask_elements,
-    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
-    uint16_t *generation_position_ids_cos,
-    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
-    const uint16_t *position_ids_sin, int pos_dim,
-    uint16_t *generation_swa_position_ids_cos,
-    uint16_t *generation_swa_position_ids_sin,
-    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
-    int swa_pos_dim, int position, int rope_cache_seq_len);
+  float *generation_sample, int current_token,
+  uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+  uint16_t *generation_sliding_attention_mask,
+  int generation_sliding_attention_mask_elements,
+  int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+  uint16_t *generation_position_ids_cos, uint16_t *generation_position_ids_sin,
+  const uint16_t *position_ids_cos, const uint16_t *position_ids_sin,
+  int pos_dim, uint16_t *generation_swa_position_ids_cos,
+  uint16_t *generation_swa_position_ids_sin,
+  const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+  int swa_pos_dim, int position, int rope_cache_seq_len);
 
 void fill_generation_inputs_u16(
-    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
-    uint16_t *generation_sliding_attention_mask,
-    int generation_sliding_attention_mask_elements,
-    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
-    uint16_t *generation_position_ids_cos,
-    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
-    const uint16_t *position_ids_sin, int pos_dim,
-    uint16_t *generation_swa_position_ids_cos,
-    uint16_t *generation_swa_position_ids_sin,
-    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
-    int swa_pos_dim, int position, int rope_cache_seq_len);
+  uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+  uint16_t *generation_sliding_attention_mask,
+  int generation_sliding_attention_mask_elements,
+  int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+  uint16_t *generation_position_ids_cos, uint16_t *generation_position_ids_sin,
+  const uint16_t *position_ids_cos, const uint16_t *position_ids_sin,
+  int pos_dim, uint16_t *generation_swa_position_ids_cos,
+  uint16_t *generation_swa_position_ids_sin,
+  const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+  int swa_pos_dim, int position, int rope_cache_seq_len);
 
 int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
            float logit_scale, int logit_offset, float repetition_penalty,

@@ -18,7 +18,6 @@
 #include <tokenizers_cpp.h>
 
 std::mt19937 rng;
-std::chrono::duration<double> raw_exec_seconds;
 
 namespace {
 
@@ -29,7 +28,7 @@ constexpr int kRopeQuantOffset = -32768;
 
 uint16_t quantize_rope_value(double value, double attention_factor) {
   const double q =
-      (value * attention_factor) / kRopeQuantScale - kRopeQuantOffset;
+    (value * attention_factor) / kRopeQuantScale - kRopeQuantOffset;
   if (q <= 0.0)
     return 0;
   if (q >= 65535.0)
@@ -45,7 +44,7 @@ get_cos_sin(int context_size, int pos_dim, const double theta,
             double rope_scaling_factor, int rope_head_dim) {
   double attention_factor = 1.0;
   const double scaling_factor =
-      rope_scaling_factor > 0.0 ? rope_scaling_factor : 1.0;
+    rope_scaling_factor > 0.0 ? rope_scaling_factor : 1.0;
   const int frequency_dim = rope_head_dim > 0 ? rope_head_dim : pos_dim * 2;
   // inv_freq indexes angle pairs, so the exponent advances by 2/head_dim.
   const double exponent = 2.0 / static_cast<double>(frequency_dim);
@@ -64,7 +63,7 @@ get_cos_sin(int context_size, int pos_dim, const double theta,
       if (proportion > 1.0)
         proportion = 1.0;
       rotary_freq_count = static_cast<int>(
-          std::floor(proportion * static_cast<double>(frequency_dim) / 2.0));
+        std::floor(proportion * static_cast<double>(frequency_dim) / 2.0));
       rotary_freq_count = std::max(0, std::min(pos_dim, rotary_freq_count));
     }
 
@@ -84,7 +83,7 @@ get_cos_sin(int context_size, int pos_dim, const double theta,
   int effective_dim = pos_dim;
   if (partial_rotary_factor > 0.0 && partial_rotary_factor < 1.0) {
     effective_dim =
-        static_cast<int>(std::floor(pos_dim * partial_rotary_factor));
+      static_cast<int>(std::floor(pos_dim * partial_rotary_factor));
     if (effective_dim < 0)
       effective_dim = 0;
     if (effective_dim > pos_dim)
@@ -92,9 +91,9 @@ get_cos_sin(int context_size, int pos_dim, const double theta,
   }
 
   uint16_t *cos_val =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
+    (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
   uint16_t *sin_val =
-      (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
+    (uint16_t *)allocate(sizeof(uint16_t) * context_size * pos_dim);
 
   // Quantized identity values for non-rotary lanes.
   const uint16_t cos_one = quantize_rope_value(1.0, attention_factor);
@@ -104,9 +103,9 @@ get_cos_sin(int context_size, int pos_dim, const double theta,
     for (int j = 0; j < effective_dim; j++) {
       const double freq = i * inv_freq[j];
       cos_val[i * pos_dim + j] =
-          quantize_rope_value(std::cos(freq), attention_factor);
+        quantize_rope_value(std::cos(freq), attention_factor);
       sin_val[i * pos_dim + j] =
-          quantize_rope_value(std::sin(freq), attention_factor);
+        quantize_rope_value(std::sin(freq), attention_factor);
     }
     for (int j = effective_dim; j < pos_dim; j++) {
       cos_val[i * pos_dim + j] = cos_one;
@@ -163,7 +162,7 @@ void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
   const int copy_length = std::min(available_history, dest_row_length);
   const int src_start = available_history - copy_length;
   const bool align_to_tail =
-      history_length >= src_row_length && dest_row_length > copy_length;
+    history_length >= src_row_length && dest_row_length > copy_length;
   const int dest_start = align_to_tail ? dest_row_length - copy_length : 0;
 
   if (is_key) {
@@ -178,9 +177,9 @@ void copy_kv_cache_window(uint8_t *dest, int dest_row_length,
 }
 
 std::vector<QnnKvOutputBinding> build_kv_output_bindings(
-    const TensorInfoList &outputs,
-    const std::unordered_map<std::string, int> &generation_kv_index_by_name,
-    const std::string &graph_name, int kv_per_layer) {
+  const TensorInfoList &outputs,
+  const std::unordered_map<std::string, int> &generation_kv_index_by_name,
+  const std::string &graph_name, int kv_per_layer) {
   std::vector<QnnKvOutputBinding> bindings;
   for (size_t idx = 0; idx < outputs.size(); idx++) {
     const auto &name = outputs[idx].name;
@@ -229,7 +228,7 @@ void append_outputs_to_kv_cache(const std::vector<IO_TensorType> &step_outputs,
     const auto &binding = bindings[binding_idx];
     const int dest_row_length = kv_row_lengths[binding.layer_index];
     const int num_columns =
-        kv_columns ? (*kv_columns)[binding.layer_index] : kQnnKvNumColumns;
+      kv_columns ? (*kv_columns)[binding.layer_index] : kQnnKvNumColumns;
     auto output = std::get<uint8_t *>(step_outputs[binding.output_index]);
     auto dest = kvs[binding.kv_index];
 
@@ -311,17 +310,16 @@ uint16_t *get_zero_memory(int size, int zero_point) {
 }
 
 void fill_generation_inputs_common(
-    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
-    uint16_t *generation_sliding_attention_mask,
-    int generation_sliding_attention_mask_elements,
-    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
-    uint16_t *generation_position_ids_cos,
-    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
-    const uint16_t *position_ids_sin, int pos_dim,
-    uint16_t *generation_swa_position_ids_cos,
-    uint16_t *generation_swa_position_ids_sin,
-    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
-    int swa_pos_dim, int position, int rope_cache_seq_len) {
+  uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+  uint16_t *generation_sliding_attention_mask,
+  int generation_sliding_attention_mask_elements,
+  int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+  uint16_t *generation_position_ids_cos, uint16_t *generation_position_ids_sin,
+  const uint16_t *position_ids_cos, const uint16_t *position_ids_sin,
+  int pos_dim, uint16_t *generation_swa_position_ids_cos,
+  uint16_t *generation_swa_position_ids_sin,
+  const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+  int swa_pos_dim, int position, int rope_cache_seq_len) {
   if (position < 0 || position >= rope_cache_seq_len) {
     throw std::runtime_error("Generation position is out of rope cache");
   }
@@ -331,7 +329,7 @@ void fill_generation_inputs_common(
               generation_sliding_attention_mask_elements, 0);
 
   generation_attention_mask[generation_attention_mask_elements - 1] =
-      std::numeric_limits<uint16_t>::max();
+    std::numeric_limits<uint16_t>::max();
   generation_sliding_attention_mask[generation_sliding_attention_mask_elements -
                                     1] = std::numeric_limits<uint16_t>::max();
 
@@ -357,53 +355,49 @@ void fill_generation_inputs_common(
 }
 
 void fill_generation_inputs(
-    float *generation_sample, int current_token,
-    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
-    uint16_t *generation_sliding_attention_mask,
-    int generation_sliding_attention_mask_elements,
-    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
-    uint16_t *generation_position_ids_cos,
-    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
-    const uint16_t *position_ids_sin, int pos_dim,
-    uint16_t *generation_swa_position_ids_cos,
-    uint16_t *generation_swa_position_ids_sin,
-    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
-    int swa_pos_dim, int position, int rope_cache_seq_len) {
+  float *generation_sample, int current_token,
+  uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+  uint16_t *generation_sliding_attention_mask,
+  int generation_sliding_attention_mask_elements,
+  int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+  uint16_t *generation_position_ids_cos, uint16_t *generation_position_ids_sin,
+  const uint16_t *position_ids_cos, const uint16_t *position_ids_sin,
+  int pos_dim, uint16_t *generation_swa_position_ids_cos,
+  uint16_t *generation_swa_position_ids_sin,
+  const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+  int swa_pos_dim, int position, int rope_cache_seq_len) {
   generation_sample[0] = current_token;
   fill_generation_inputs_common(
-      generation_attention_mask, generation_attention_mask_elements,
-      generation_sliding_attention_mask,
-      generation_sliding_attention_mask_elements,
-      generation_full_kv_past_length, generation_sliding_kv_past_length,
-      generation_position_ids_cos, generation_position_ids_sin,
-      position_ids_cos, position_ids_sin, pos_dim,
-      generation_swa_position_ids_cos, generation_swa_position_ids_sin,
-      swa_position_ids_cos, swa_position_ids_sin, swa_pos_dim, position,
-      rope_cache_seq_len);
+    generation_attention_mask, generation_attention_mask_elements,
+    generation_sliding_attention_mask,
+    generation_sliding_attention_mask_elements, generation_full_kv_past_length,
+    generation_sliding_kv_past_length, generation_position_ids_cos,
+    generation_position_ids_sin, position_ids_cos, position_ids_sin, pos_dim,
+    generation_swa_position_ids_cos, generation_swa_position_ids_sin,
+    swa_position_ids_cos, swa_position_ids_sin, swa_pos_dim, position,
+    rope_cache_seq_len);
 }
 
 void fill_generation_inputs_u16(
-    uint16_t *generation_attention_mask, int generation_attention_mask_elements,
-    uint16_t *generation_sliding_attention_mask,
-    int generation_sliding_attention_mask_elements,
-    int generation_full_kv_past_length, int generation_sliding_kv_past_length,
-    uint16_t *generation_position_ids_cos,
-    uint16_t *generation_position_ids_sin, const uint16_t *position_ids_cos,
-    const uint16_t *position_ids_sin, int pos_dim,
-    uint16_t *generation_swa_position_ids_cos,
-    uint16_t *generation_swa_position_ids_sin,
-    const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
-    int swa_pos_dim, int position, int rope_cache_seq_len) {
+  uint16_t *generation_attention_mask, int generation_attention_mask_elements,
+  uint16_t *generation_sliding_attention_mask,
+  int generation_sliding_attention_mask_elements,
+  int generation_full_kv_past_length, int generation_sliding_kv_past_length,
+  uint16_t *generation_position_ids_cos, uint16_t *generation_position_ids_sin,
+  const uint16_t *position_ids_cos, const uint16_t *position_ids_sin,
+  int pos_dim, uint16_t *generation_swa_position_ids_cos,
+  uint16_t *generation_swa_position_ids_sin,
+  const uint16_t *swa_position_ids_cos, const uint16_t *swa_position_ids_sin,
+  int swa_pos_dim, int position, int rope_cache_seq_len) {
   fill_generation_inputs_common(
-      generation_attention_mask, generation_attention_mask_elements,
-      generation_sliding_attention_mask,
-      generation_sliding_attention_mask_elements,
-      generation_full_kv_past_length, generation_sliding_kv_past_length,
-      generation_position_ids_cos, generation_position_ids_sin,
-      position_ids_cos, position_ids_sin, pos_dim,
-      generation_swa_position_ids_cos, generation_swa_position_ids_sin,
-      swa_position_ids_cos, swa_position_ids_sin, swa_pos_dim, position,
-      rope_cache_seq_len);
+    generation_attention_mask, generation_attention_mask_elements,
+    generation_sliding_attention_mask,
+    generation_sliding_attention_mask_elements, generation_full_kv_past_length,
+    generation_sliding_kv_past_length, generation_position_ids_cos,
+    generation_position_ids_sin, position_ids_cos, position_ids_sin, pos_dim,
+    generation_swa_position_ids_cos, generation_swa_position_ids_sin,
+    swa_position_ids_cos, swa_position_ids_sin, swa_pos_dim, position,
+    rope_cache_seq_len);
 }
 
 int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
@@ -413,7 +407,7 @@ int sample(uint16_t *pointer, int length, int *tokens, int number_of_tokens,
   // Priority queue!
   std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>,
                       std::greater<std::pair<int, int>>>
-      top_k_elements;
+    top_k_elements;
   for (int i = 0; i < top_k && i < length; i++) {
     top_k_elements.push(std::make_pair(pointer[i], i));
   }

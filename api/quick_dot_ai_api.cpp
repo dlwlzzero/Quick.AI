@@ -13,8 +13,8 @@
 #include "quick_dot_ai_api.h"
 #include <algorithm>
 #include <chrono>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <cxxabi.h>
 #include <iostream>
 #include <map>
@@ -47,8 +47,8 @@
 #include "gauss3_6_qnn.h"
 #include "gauss3_8_qnn.h"
 #include "gauss3_8_vision_encoder_qnn.h"
-#include "quick_dot_ai_qnn.h"
 #include "gemma4_e2b_qnn.h"
+#include "quick_dot_ai_qnn.h"
 
 #endif
 #include <fstream>
@@ -625,28 +625,21 @@ static std::string resolve_model_path(const std::string &model_key,
  * Absolute values (leading '/') are left untouched so the caller can
  * override a specific file with a system-wide path if they want.
  */
-static bool is_absolute_path(const std::string &path)
-{
+static bool is_absolute_path(const std::string &path) {
   return !path.empty() && path[0] == '/';
 }
 
 static std::string rebase_path(const std::string &path,
-                               const std::string &base_dir)
-{
+                               const std::string &base_dir) {
   if (path.empty() || is_absolute_path(path))
     return path;
   return base_dir + "/" + path;
 }
 
-static void fix_paths(json &nntr_cfg, const std::string &sub_dir)
-{
+static void fix_paths(json &nntr_cfg, const std::string &sub_dir) {
   static const char *kKeys[] = {
-      "tokenizer_file",
-      "model_file_name",
-      "binary_config_path",
-      "image_newline_path",
-      "embedding_file_name",
-      "ple_file_name",
+    "tokenizer_file",     "model_file_name",     "binary_config_path",
+    "image_newline_path", "embedding_file_name", "ple_file_name",
   };
   for (const char *k : kKeys) {
     if (!nntr_cfg.contains(k) || !nntr_cfg[k].is_string())
@@ -889,7 +882,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       (model_base_path != nullptr && strlen(model_base_path) > 0)
         ? model_base_path
         : "/sdcard/Android/data/com.example.sampletestapp/files/models";
-        // : "/data/local/tmp/Quick.AI";
+    // : "/data/local/tmp/Quick.AI";
 
     // Snapshot registry entries under the registry mutex so concurrent
     // loads on different handles don't race with each other (or with
@@ -1208,10 +1201,11 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       weight_file_name = "pytorch_model.bin";
     }
 
-    const std::string weight_file = rebase_path(weight_file_name, abs_model_dir);
+    const std::string weight_file =
+      rebase_path(weight_file_name, abs_model_dir);
     LOGD("[DEBUG] load_into_handle: weight_file = %s", weight_file.c_str());
-    std::cout <<"-------------------"<< abs_model_dir << "/" <<std::endl;
-    
+    std::cout << "-------------------" << abs_model_dir << "/" << std::endl;
+
     nntr_cfg["model_file_name"] = weight_file;
     if (nntr_cfg.contains("binary_config_path")) {
       std::string str = nntr_cfg["binary_config_path"].get<std::string>();
@@ -1229,8 +1223,7 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
       std::string str = nntr_cfg["embedding_file_name"].get<std::string>();
       nntr_cfg["embedding_file_name"] = rebase_path(str, abs_model_dir);
     }
-    if (nntr_cfg.contains("ple_file_name"))
-    {
+    if (nntr_cfg.contains("ple_file_name")) {
       std::string str = nntr_cfg["ple_file_name"].get<std::string>();
       nntr_cfg["ple_file_name"] = rebase_path(str, abs_model_dir);
     }
@@ -1418,12 +1411,14 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
   }
 
   std::lock_guard<std::mutex> lock(h.mtx);
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  size_t metrics_model_idx = text_generation_model_index(h);
+  if (!h.initialized || h.models.size() <= metrics_model_idx ||
+      !h.models[metrics_model_idx]) {
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
   try {
-    auto *model = h.models[0].get();
+    auto *model = h.models[metrics_model_idx].get();
     if (!model->hasRun()) {
       return CAUSAL_LM_ERROR_INFERENCE_NOT_RUN;
     }
@@ -1860,9 +1855,8 @@ static ErrorCode run_model_streaming_on_handle(CausalLmModel &h,
   } detach_guard{m};
 
   try {
-    std::string input =
-      prepare_input_for_model(h, model_index, raw_input,
-                              input_already_formatted);
+    std::string input = prepare_input_for_model(h, model_index, raw_input,
+                                                input_already_formatted);
 
     LOGD("[DEBUG]   raw input length: %zu", raw_input.length());
     LOGD("[DEBUG]   g_use_chat_template: %d", g_use_chat_template);
@@ -2313,9 +2307,9 @@ ErrorCode runMultimodalHandleWithMessages(
   // Apply chat template
   auto chat_messages = convertMessages(messages, num_messages);
   const size_t llm_index = h.architectures.size() > 1 ? 1 : 0;
-  std::string arch =
-    h.architectures.size() > llm_index ? h.architectures[llm_index]
-                                       : std::string();
+  std::string arch = h.architectures.size() > llm_index
+                       ? h.architectures[llm_index]
+                       : std::string();
   std::string model_dir =
     h.model_dirs.size() > llm_index ? h.model_dirs[llm_index] : std::string();
   std::string prompt = apply_chat_template_messages(
@@ -2498,12 +2492,12 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
 
       auto chat_messages = convertMessages(messages, num_messages);
       const size_t llm_index = h.architectures.size() > 1 ? 1 : 0;
-      std::string arch =
-        h.architectures.size() > llm_index ? h.architectures[llm_index]
-                                           : std::string();
-      std::string model_dir =
-        h.model_dirs.size() > llm_index ? h.model_dirs[llm_index]
-                                        : std::string();
+      std::string arch = h.architectures.size() > llm_index
+                           ? h.architectures[llm_index]
+                           : std::string();
+      std::string model_dir = h.model_dirs.size() > llm_index
+                                ? h.model_dirs[llm_index]
+                                : std::string();
       formattedInput = apply_chat_template_messages(
         arch, chat_messages, add_generation_prompt, model_dir);
     }
@@ -2515,8 +2509,8 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
 
     LOGD("[DEBUG] runMultimodalHandleWithMessagesStreaming: Delegating to "
          "runMultimodalHandleStreaming...");
-    return runMultimodalHandleStreaming(handle, formattedInput.c_str(), pixelValues,
-                                        numPatches, originalHeight,
+    return runMultimodalHandleStreaming(handle, formattedInput.c_str(),
+                                        pixelValues, numPatches, originalHeight,
                                         originalWidth, callback, user_data);
   } catch (const std::exception &e) {
     LOGE(

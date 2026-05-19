@@ -100,7 +100,9 @@ static void print_usage(const char *prog) {
   print_kv("chat_tpl", "true | false  (default: true)", clr::yellow);
   print_kv("quant", "W4A32 | W16A16 | W8A16 | W32A32", clr::yellow);
   print_kv("verbose", "true | false  (default: true)", clr::yellow);
-  print_kv("model_base_path", "Base directory for models (or set QUICKAI_MODEL_BASE_PATH)", clr::yellow);
+  print_kv("model_base_path",
+           "Base directory for models (or set QUICKAI_MODEL_BASE_PATH)",
+           clr::yellow);
   print_section_end(clr::yellow);
 }
 
@@ -167,7 +169,8 @@ int main(int argc, char *argv[]) {
   print_kv("Chat Template", use_chat_template ? "Yes" : "No", clr::cyan);
   print_kv("Quantization", quant_str, clr::cyan);
   print_kv("Verbose", verbose ? "Yes" : "No", clr::cyan);
-  print_kv("Model Base Path", model_base_path ? model_base_path : "(C API default)", clr::cyan);
+  print_kv("Model Base Path",
+           model_base_path ? model_base_path : "(C API default)", clr::cyan);
   print_section_end(clr::cyan);
 
   // ── Set options ────────────────────────────────────────────────────────
@@ -221,8 +224,8 @@ int main(int argc, char *argv[]) {
 
   for (int i = 0; i < STRESS_CYCLES; ++i) {
     std::cout << clr::blue << "│" << clr::reset << "  " << clr::bold_white
-              << "Cycle " << (i + 1) << "/" << STRESS_CYCLES
-              << clr::reset << ": ";
+              << "Cycle " << (i + 1) << "/" << STRESS_CYCLES << clr::reset
+              << ": ";
 
     // Load
     CausalLmHandle cycle_handle = nullptr;
@@ -259,10 +262,11 @@ int main(int argc, char *argv[]) {
             << " (" << quant_str << ") ...\n";
 
   CausalLmHandle handle = nullptr;
-  err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
-                        nullptr, model_base_path, &handle);
+  err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type, nullptr,
+                        model_base_path, &handle);
   if (err != CAUSAL_LM_ERROR_NONE) {
-    print_error("Final loadModelHandle failed (code " + std::to_string(err) + ")");
+    print_error("Final loadModelHandle failed (code " + std::to_string(err) +
+                ")");
     return 1;
   }
 
@@ -285,7 +289,12 @@ int main(int argc, char *argv[]) {
 
   // XGrammar Test
   auto tool_name = "web_search";
-  auto schema = "{\"type\": \"object\",\"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Search query in the most effective language for results (use Korean for Korean local info, English for global topics)\"},\"count\": {\"type\": \"integer\", \"description\": \"Number of results to return (default 5, max 10)\"}},\"required\": [\"query\"]}";
+  auto schema =
+    "{\"type\": \"object\",\"properties\": {\"query\": {\"type\": \"string\", "
+    "\"description\": \"Search query in the most effective language for "
+    "results (use Korean for Korean local info, English for global "
+    "topics)\"},\"count\": {\"type\": \"integer\", \"description\": \"Number "
+    "of results to return (default 5, max 10)\"}},\"required\": [\"query\"]}";
   err = runModelHandleWithTool(handle, prompt, &outputText, tool_name, schema);
 
   if (err != CAUSAL_LM_ERROR_NONE) {
@@ -309,13 +318,13 @@ int main(int argc, char *argv[]) {
   err = getPerformanceMetricsHandle(handle, &metrics);
   if (err == CAUSAL_LM_ERROR_NONE) {
     double prefill_tps =
-        metrics.prefill_duration_ms > 0
-            ? metrics.prefill_tokens / metrics.prefill_duration_ms * 1000.0
-            : 0.0;
-    double gen_tps = metrics.generation_duration_ms > 0
-                         ? metrics.generation_tokens /
-                               metrics.generation_duration_ms * 1000.0
-                         : 0.0;
+      metrics.prefill_duration_ms > 0
+        ? metrics.prefill_tokens / metrics.prefill_duration_ms * 1000.0
+        : 0.0;
+    double gen_tps =
+      metrics.generation_duration_ms > 0
+        ? metrics.generation_tokens / metrics.generation_duration_ms * 1000.0
+        : 0.0;
 
     std::ostringstream oss;
 
@@ -341,6 +350,36 @@ int main(int argc, char *argv[]) {
     oss.str("");
     oss << metrics.peak_memory_kb << " KB";
     print_kv("Peak Memory", oss.str(), clr::magenta);
+
+    // ── Metric validation ────────────────────────────────────────────────
+    bool metrics_ok = true;
+    if (metrics.prefill_tokens == 0) {
+      std::cout << clr::magenta << "│" << clr::reset << "  " << clr::yellow
+                << "⚠ Warning: prefill_tokens is zero" << clr::reset << "\n";
+      metrics_ok = false;
+    }
+    if (metrics.generation_tokens == 0) {
+      std::cout << clr::magenta << "│" << clr::reset << "  " << clr::yellow
+                << "⚠ Warning: generation_tokens is zero" << clr::reset << "\n";
+      metrics_ok = false;
+    }
+    if (metrics.generation_duration_ms <= 0) {
+      std::cout << clr::magenta << "│" << clr::reset << "  " << clr::yellow
+                << "⚠ Warning: generation_duration_ms is zero/negative"
+                << clr::reset << "\n";
+      metrics_ok = false;
+    }
+    if (metrics.total_duration_ms <
+        metrics.prefill_duration_ms + metrics.generation_duration_ms - 0.001) {
+      std::cout << clr::magenta << "│" << clr::reset << "  " << clr::yellow
+                << "⚠ Warning: total_duration_ms < prefill + generation"
+                << clr::reset << "\n";
+      metrics_ok = false;
+    }
+    if (metrics_ok) {
+      std::cout << clr::magenta << "│" << clr::reset << "  " << clr::green
+                << "✓ All metric sanity checks passed" << clr::reset << "\n";
+    }
   } else {
     std::cout << clr::magenta << "│" << clr::reset << "  " << clr::dim
               << "(metrics not available)" << clr::reset << "\n";
