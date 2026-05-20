@@ -34,7 +34,12 @@ val loaded = engine.load(
         backend = BackendType.NPU,
         quantization = QuantizationType.W4A32,
         nativeLibDir = applicationInfo.nativeLibraryDir,
-        modelBasePath = "/sdcard/Android/data/com.example.app/files/models"
+        modelBasePath = "/sdcard/Android/data/com.example.app/files/models",
+        modelPath = null,               // LiteRT-LM model file path
+        visionBackend = null,           // Vision encoder backend
+        cacheDir = null,                // Engine cache directory
+        maxNumTokens = null,            // Maximum number of tokens
+        htpBackendConfigPath = null     // HTP backend extension config path
     )
 )
 ```
@@ -45,6 +50,11 @@ Streaming methods report deltas through `StreamSink`.
 val sink = object : StreamSink {
     override fun onDelta(text: String) {
         outputView.append(text)
+    }
+
+    override fun onReasoningDelta(text: String) {
+        // Called for thinking/reasoning model tokens
+        reasoningView.append(text)
     }
 
     override fun onDone() {
@@ -73,7 +83,9 @@ val config = QuickAiChatSessionConfig(
         temperature = 0.7,
         topK = 40,
         topP = 0.9,
-        seed = 42
+        seed = 42,
+        minP = null,         // Min-P sampling
+        maxTokens = null      // Maximum generation tokens
     ),
     chatTemplateKwargs = QuickAiChatTemplateKwargs(enableThinking = false)
 )

@@ -68,6 +68,12 @@ Important entry points:
 | `runModelHandleWithTool()` | Run XGrammar-constrained structured generation |
 | `runMultimodalHandle*()` | Run image + text paths when supported by the handle |
 | `cancelModelHandle()` | Request cooperative cancellation |
+| `destroyModelHandle()` | Release handle resources |
+| `unloadModelHandle()` | Unload model (handle remains valid) |
+| `getPerformanceMetricsHandle()` | Get per-handle performance metrics |
+| `saveQnnKvCacheHandle()` | Save QNN KV cache |
+| `loadQnnKvCacheHandle()` | Load QNN KV cache |
+| `resetQnnKvCacheHandle()` | Reset QNN KV cache |
 
 ## 🧰 Build System
 
