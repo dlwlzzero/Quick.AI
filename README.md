@@ -145,6 +145,7 @@ To build native libraries, copy them into `Android/QuickDotAI/prebuilt_libs/`,
 and install `SampleTestAPP`:
 
 ```bash
+export ANDROID_NDK=/path/to/android-ndk
 ./apk-build-install.sh
 ```
 

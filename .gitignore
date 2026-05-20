@@ -1,5 +1,5 @@
-# AI agent directories
-.opencode/plans
+# AI Agent directories
+.opencode/plans/
 
 # Build directories (meson)
 builddir/

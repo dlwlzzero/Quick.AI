@@ -21,10 +21,10 @@
 #endif
 
 #include "graph_parser.h"
-#include <transformer.h>
-#include <iostream>
 #include <atomic>
+#include <iostream>
 #include <set>
+#include <transformer.h>
 
 // Forward declaration for XGrammar
 namespace causallm {
@@ -209,6 +209,9 @@ protected:
    * cancel button handler in UI thread).
    */
   std::atomic<bool> stop_requested_{false};
+
+  /// Raw execution timing for console output (replaces global variable).
+  std::chrono::duration<double> raw_exec_seconds;
 
   // Tracked resource management: all allocate()'d pointers are recorded
   // here so that ~Quick_Dot_AI_QNN can free them in one pass without

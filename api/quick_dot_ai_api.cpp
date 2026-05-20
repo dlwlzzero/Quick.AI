@@ -1410,12 +1410,14 @@ static ErrorCode metrics_on_handle(CausalLmModel &h,
   }
 
   std::lock_guard<std::mutex> lock(h.mtx);
-  if (!h.initialized || h.models.empty() || !h.models[0]) {
+  size_t metrics_model_idx = text_generation_model_index(h);
+  if (!h.initialized || h.models.size() <= metrics_model_idx ||
+      !h.models[metrics_model_idx]) {
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
   }
 
   try {
-    auto *model = h.models[0].get();
+    auto *model = h.models[metrics_model_idx].get();
     if (!model->hasRun()) {
       return CAUSAL_LM_ERROR_INFERENCE_NOT_RUN;
     }

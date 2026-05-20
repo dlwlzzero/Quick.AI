@@ -10,8 +10,8 @@
 #ifndef __GAUSS_3_6_QNN_H__
 #define __GAUSS_3_6_QNN_H__
 
-#include "quick_dot_ai_qnn.h"
 #include "qnn_kv_cache_manager.h"
+#include "quick_dot_ai_qnn.h"
 
 #include <cstdint>
 
@@ -27,11 +27,11 @@ class Gauss3_6_QNN : public Quick_Dot_AI_QNN {
 public:
   static constexpr const char *architectures = "Gauss_3_6_QNN";
 
-  Gauss3_6_QNN(json &cfg, json &generation_cfg, json &nntr_cfg)
-      : Quick_Dot_AI_QNN(cfg, generation_cfg, nntr_cfg) {
-      LOGD("Gauss 3.6 parameters set up ");
-      setupParameters(cfg, generation_cfg, nntr_cfg);
-    }
+  Gauss3_6_QNN(json &cfg, json &generation_cfg, json &nntr_cfg) :
+    Quick_Dot_AI_QNN(cfg, generation_cfg, nntr_cfg) {
+    LOGD("Gauss 3.6 parameters set up ");
+    setupParameters(cfg, generation_cfg, nntr_cfg);
+  }
 
   virtual ~Gauss3_6_QNN() = default;
 
@@ -43,7 +43,8 @@ public:
 
   void sync_generation_kv_cache_to_prefill();
 
-  void setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) override;
+  void setupParameters(json &cfg, json &generation_cfg,
+                       json &nntr_cfg) override;
 
   void run(const WSTR prompt, bool do_sample = false,
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
@@ -55,7 +56,7 @@ public:
   void saveKvCache(const std::string &cache_path) const override;
   void loadKvCache(const std::string &cache_path) override;
 
- private:
+private:
   // Input/output tensors
   uint16_t *attention_mask;
   uint16_t *sliding_attention_mask;

@@ -548,6 +548,8 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     kv_cache_.advance(1);
   };
 
+  auto start_prefill = std::chrono::system_clock::now();
+
   for (unsigned int c = 0; c < n_chunks; c++) {
     const int chunk_offset = c * context_size;
     const int chunk_len = ((c + 1) * context_size < input_len)
@@ -609,6 +611,7 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
     kv_cache_.advance(chunk_len);
   }
 
+  auto end_prefill = std::chrono::system_clock::now();
   auto start = std::chrono::system_clock::now();
   int idx = kv_cache_.length();
   const int prefill_len = idx;
@@ -654,15 +657,33 @@ void causallm::Gauss3_8_QNN::run(const WSTR prompt, bool do_sample,
   has_run_ = true;
 
   auto end = std::chrono::system_clock::now();
-  raw_exec_seconds = end - start;
+  this->raw_exec_seconds = end - start;
+
+  auto prefill_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      end_prefill - start_prefill)
+                      .count();
+  auto gen_ms =
+    std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+  unsigned int generated_tokens =
+    (idx > prefill_len) ? static_cast<unsigned int>(idx - prefill_len) : 0U;
+
+  performance_metrics.prefill_tokens = static_cast<unsigned int>(input_len);
+  performance_metrics.prefill_duration_ms = static_cast<double>(prefill_ms);
+  performance_metrics.generation_tokens = generated_tokens;
+  performance_metrics.generation_duration_ms = static_cast<double>(gen_ms);
+  performance_metrics.total_duration_ms =
+    static_cast<double>(prefill_ms + gen_ms);
+  performance_metrics.peak_memory_kb = getPeakMemoryKb();
+
   if (log_output) {
-    const int generated = std::max(1, idx - prefill_len);
+    const int generated = std::max(1, static_cast<int>(generated_tokens));
     std::cout << std::endl;
     std::cout << std::endl;
-    std::cout << "Generation exec_time : " << raw_exec_seconds.count()
-              << ", token per second: " << generated / raw_exec_seconds.count()
+    std::cout << "Generation exec_time : " << this->raw_exec_seconds.count()
+              << ", token per second: "
+              << generated / this->raw_exec_seconds.count()
               << ", token generation time average: "
-              << raw_exec_seconds.count() / generated << std::endl;
+              << this->raw_exec_seconds.count() / generated << std::endl;
   }
 }
 
@@ -789,6 +810,8 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
                 pos_dim * sizeof(uint16_t));
   };
 
+  auto start_prefill = std::chrono::system_clock::now();
+
   for (unsigned int c = 0; c < n_chunks; c++) {
     const int chunk_offset = c * context_size;
     const int chunk_len = ((c + 1) * context_size < input_len)
@@ -857,6 +880,7 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
   LOGD("Generation start...");
 
+  auto end_prefill = std::chrono::system_clock::now();
   int token = 0;
   auto start = std::chrono::system_clock::now();
   int idx = kv_cache_.length();
@@ -914,14 +938,32 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
 
   has_run_ = true;
   auto end = std::chrono::system_clock::now();
-  raw_exec_seconds = end - start;
+  this->raw_exec_seconds = end - start;
+
+  auto prefill_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      end_prefill - start_prefill)
+                      .count();
+  auto gen_ms =
+    std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+  unsigned int generated_tokens =
+    (idx > prefill_len) ? static_cast<unsigned int>(idx - prefill_len) : 0U;
+
+  performance_metrics.prefill_tokens = static_cast<unsigned int>(input_len);
+  performance_metrics.prefill_duration_ms = static_cast<double>(prefill_ms);
+  performance_metrics.generation_tokens = generated_tokens;
+  performance_metrics.generation_duration_ms = static_cast<double>(gen_ms);
+  performance_metrics.total_duration_ms =
+    static_cast<double>(prefill_ms + gen_ms);
+  performance_metrics.peak_memory_kb = getPeakMemoryKb();
+
   if (log_output) {
-    const int generated = std::max(1, idx - prefill_len);
+    const int generated = std::max(1, static_cast<int>(generated_tokens));
     std::cout << std::endl;
     std::cout << std::endl;
-    std::cout << "Generation exec_time : " << raw_exec_seconds.count()
-              << ", token per second: " << generated / raw_exec_seconds.count()
+    std::cout << "Generation exec_time : " << this->raw_exec_seconds.count()
+              << ", token per second: "
+              << generated / this->raw_exec_seconds.count()
               << ", token generation time average: "
-              << raw_exec_seconds.count() / generated << std::endl;
+              << this->raw_exec_seconds.count() / generated << std::endl;
   }
 }
