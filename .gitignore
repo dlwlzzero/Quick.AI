@@ -1,3 +1,6 @@
+# AI agent directories
+.opencode/plans
+
 # Build directories (meson)
 builddir/
 builddir_x86/
