@@ -34,7 +34,7 @@ val loaded = engine.load(
         backend = BackendType.NPU,
         quantization = QuantizationType.W4A32,
         nativeLibDir = applicationInfo.nativeLibraryDir,
-        modelBasePath = "/sdcard/Android/data/com.example.app/files/models"
+        modelBasePath = "/sdcard/Download/aistudio-mobile/models"
     )
 )
 ```

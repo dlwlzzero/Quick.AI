@@ -114,7 +114,7 @@ engine.load(
         model = ModelId.GEMMA4,
         backend = BackendType.GPU,
         visionBackend = BackendType.GPU,
-        modelPath = "/sdcard/models/gemma-4-E2B-it.litertlm"
+        modelPath = "/sdcard/Download/aistudio-mobile/models/gemma-4-E2B-it/gemma-4-E2B-it.litertlm"
     )
 )
 
