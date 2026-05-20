@@ -33,6 +33,7 @@ XGrammar
   - CompiledGrammar
   - GrammarMatcher
   - bitmask of allowed next tokens
+  - (optional) own TokenizerInfo and GrammarCompiler
 
 Model sampler
   - asks XGrammar for the next-token mask
@@ -45,7 +46,7 @@ Model sampler
 | `XGrammarManager` | Owns shared tokenizer/compiler state and cached tool grammars. |
 | `TokenizerInfo` | Stores the model vocabulary in the format XGrammar needs. |
 | `GrammarCompiler` | Compiles JSON schemas, EBNF grammars, or regex patterns. |
-| `XGrammar` | Holds one compiled grammar and its matcher state. |
+| `XGrammar` | Holds one compiled grammar and its matcher state. May also own `TokenizerInfo` and `GrammarCompiler` for independent (non-shared) usage. |
 | `GrammarMatcher` | Tracks grammar progress and produces allowed-token masks. |
 
 ## 🔄 Runtime Flow
@@ -117,7 +118,18 @@ Direct C++ integrations can use `causallm::XGrammarManager::Instance()` from
 | `registerTool(name, schema)` | Compile and register a schema at runtime. |
 | `resetGrammar(name)` | Reset matcher state after a run. |
 | `getToolNames()` | List registered tool names. |
+| `isInitialized()` | Check whether the manager has been initialized. |
 | `clear()` | Drop compiled grammars and shared state. |
+
+### XGrammar Public Methods
+
+| Method | Purpose |
+|---|---|
+| `loadFromCache(serialized, tokenizer_info, vocab_size)` | Load a grammar from a serialized cache. |
+| `serialize()` | Serialize the compiled grammar to JSON. |
+| `applyGrammarMask(float*, int)` | Apply grammar mask to FP32 logits. |
+| `applyGrammarMask(uint16_t*, int, float, int)` | Apply grammar mask to quantized (FP16) logits. |
+| `initializeGrammar(type, schema, grammar_compiler, vocab_size)` | Initialize grammar using a shared `GrammarCompiler` (overload). |
 
 ## 🗂️ Cache Behavior
 

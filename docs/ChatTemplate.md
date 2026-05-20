@@ -28,6 +28,7 @@ Chat templates are used by these C API paths:
 | API | Input |
 |---|---|
 | `applyChatTemplate()` | `CausalLMChatMessage[]` |
+| `runModelHandleStreaming()` | Raw prompt string (uses chat template when `g_use_chat_template` is true and input is not already formatted) |
 | `runModelHandleWithMessages()` | `CausalLMChatMessage[]` |
 | `runModelHandleWithMessagesStreaming()` | `CausalLMChatMessage[]` |
 | `runModelHandleWithJsonStreaming()` | OpenAI-style JSON string |
@@ -81,7 +82,6 @@ live in [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md).
 
 ## 📎 Related Docs
 
-- [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md)
 - [Chat and OpenAI Usage Examples](ChatAndOpenAIUsage.md)
 - [C API Reference](../api/README.md)
 - [QuickDotAI AAR API](../Android/QuickDotAI/README.md)
