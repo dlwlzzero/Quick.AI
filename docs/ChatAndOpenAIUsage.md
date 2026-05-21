@@ -34,12 +34,7 @@ val loaded = engine.load(
         backend = BackendType.NPU,
         quantization = QuantizationType.W4A32,
         nativeLibDir = applicationInfo.nativeLibraryDir,
-        modelBasePath = "/sdcard/Android/data/com.example.app/files/models",
-        modelPath = null,               // LiteRT-LM model file path
-        visionBackend = null,           // Vision encoder backend
-        cacheDir = null,                // Engine cache directory
-        maxNumTokens = null,            // Maximum number of tokens
-        htpBackendConfigPath = null     // HTP backend extension config path
+        modelBasePath = "/sdcard/Download/aistudio-mobile/models"
     )
 )
 ```

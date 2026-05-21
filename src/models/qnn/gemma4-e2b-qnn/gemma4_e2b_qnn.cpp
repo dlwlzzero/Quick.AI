@@ -1166,6 +1166,9 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
                          const WSTR /*system_prompt*/,
                          const WSTR /*tail_prompt*/, bool log_output) {
   last_output_.clear();
+
+  resetKvCache();
+
   stop_requested_.store(false, std::memory_order_release);
 
   std::string prefill_graph = graphs_to_use[0];
@@ -1218,6 +1221,8 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
   };
 
   // ── Prefill ──
+  auto start_prefill = std::chrono::system_clock::now();
+
   for (int c = 0; c < (int)n_chunks; ++c) {
     int chunk_len = ((c + 1) * context_size < (int)input_len)
                       ? context_size
@@ -1357,6 +1362,7 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
   }
 
   // ── Generation ──
+  auto end_prefill = std::chrono::system_clock::now();
   auto start = std::chrono::system_clock::now();
   int idx;
   int prefill_len = kv_len;
@@ -1522,17 +1528,35 @@ void Gemma4_E2B_QNN::run(const WSTR prompt, bool /*do_sample*/,
 
   if (streamer_)
     streamer_end(streamer_);
+  auto end = std::chrono::system_clock::now();
+  this->raw_exec_seconds = end - start;
+
+  auto prefill_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      end_prefill - start_prefill)
+                      .count();
+  auto gen_ms =
+    std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+  unsigned int generated_tokens =
+    (idx > prefill_len) ? static_cast<unsigned int>(idx - prefill_len) : 0U;
+
+  performance_metrics.prefill_tokens = static_cast<unsigned int>(input_len);
+  performance_metrics.prefill_duration_ms = static_cast<double>(prefill_ms);
+  performance_metrics.generation_tokens = generated_tokens;
+  performance_metrics.generation_duration_ms = static_cast<double>(gen_ms);
+  performance_metrics.total_duration_ms =
+    static_cast<double>(prefill_ms + gen_ms);
+  performance_metrics.peak_memory_kb = getPeakMemoryKb();
+
   has_run_ = true;
   conversation_started_ = true;
 
-  auto end = std::chrono::system_clock::now();
-  raw_exec_seconds = end - start;
   if (log_output) {
-    std::cout << "\n\nGeneration exec_time : " << raw_exec_seconds.count()
+    std::cout << "\n\nGeneration exec_time : " << this->raw_exec_seconds.count()
               << ", token per second: "
-              << (idx - prefill_len) / raw_exec_seconds.count()
+              << generated_tokens / this->raw_exec_seconds.count()
               << ", token generation time average: "
-              << raw_exec_seconds.count() / std::max(1, idx - prefill_len)
+              << this->raw_exec_seconds.count() /
+                   std::max(1, static_cast<int>(generated_tokens))
               << std::endl;
   }
 }

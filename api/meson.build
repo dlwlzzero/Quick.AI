@@ -40,4 +40,5 @@ quick_dot_ai_api_lib = shared_library('quick_dot_ai_api',
 quick_dot_ai_api_dep = declare_dependency(
     link_with: quick_dot_ai_api_lib,
     include_directories: api_inc,
+    dependencies: [causallm_dep],
 )

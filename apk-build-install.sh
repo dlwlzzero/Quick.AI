@@ -9,7 +9,6 @@ set -e
 # ==========================================================
 # Configuration
 # ==========================================================
-NDK_ROOT="/home/suyeon/Android/Sdk/ndk/27.0.12077973"
 APK_APPLICATION="SampleTestApp"
 
 # ==========================================================
@@ -18,6 +17,13 @@ APK_APPLICATION="SampleTestApp"
 echo "[1/6] Configuring environment variables..."
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${NDK_ROOT}"
 export PATH="${PATH}:${NDK_ROOT}"
+
+if [ -z "$NDK_ROOT" ]; then
+    echo "Error: NDK_ROOT environment variable is not set"
+    echo "Please set NDK_ROOT to your Android NDK installation path"
+    echo "Example: export NDK_ROOT=/path/to/android-ndk"
+    exit 1
+fi
 export ANDROID_NDK="${NDK_ROOT}"
 echo "      ANDROID_NDK set to: ${ANDROID_NDK}"
 

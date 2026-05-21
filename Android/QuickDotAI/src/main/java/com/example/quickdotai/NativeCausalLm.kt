@@ -142,7 +142,7 @@ object NativeCausalLm {
      * @param nativeLibDir Native library directory path from
      *        ApplicationInfo.nativeLibraryDir. May be null.
      * @param modelBasePath Base directory for model files
-     *        (e.g. "/storage/emulated/0/Android/data/com.example.sampletestapp/files/models").
+     *        (e.g. "/sdcard/Download/aistudio-mobile/models/").
      *        May be null (uses C API default).
      */
     external fun loadModelHandleNative(

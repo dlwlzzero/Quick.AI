@@ -69,30 +69,53 @@ class NativeQuickDotAI(
                 )
             }
 
-        // modelBasePath is passed directly from the caller (e.g. SampleTestAPP
-        // sets it to ".../files/models"). The C API uses this as the base
-        // directory for resolving model directories
+        // modelBasePath is passed directly from the caller. The C API uses
+        // this as the base directory for resolving model directories
         // (e.g. "<model_base_path>/gauss-3.6-qnn").
         val modelBasePath = req.modelBasePath
-        if (modelBasePath != null) {
+        if (modelBasePath == null || modelBasePath.isBlank()) {
+            Log.w(
+                TAG,
+                "load(): modelBasePath is null/blank — C API will use its default " +
+                    "fallback path. Specify modelBasePath for shared model access."
+            )
+        } else {
             Log.i(TAG, "load(): modelBasePath=$modelBasePath")
         }
 
-        // HTP backend extension config path for QNN models. Relative values
-        // are resolved from the app external files dir so app/API callers can
-        // pass "configs/htp_backend_ext_config.json" portably.
+        // HTP backend extension config path for QNN models.
+        // Resolution priority:
+        //   1. req.htpBackendConfigPath (user-specified absolute or relative)
+        //   2. modelBasePath's parent dir (to align with C API logic)
+        //   3. app-private external files dir (final fallback)
         val externalFilesDir = appContext.getExternalFilesDir(null)
         val requestedHtpBackendConfigPath = req.htpBackendConfigPath
             ?.takeIf { it.isNotBlank() }
         val htpBackendConfigPath = when {
-            requestedHtpBackendConfigPath == null ->
+            requestedHtpBackendConfigPath != null -> {
+                if (File(requestedHtpBackendConfigPath).isAbsolute) {
+                    requestedHtpBackendConfigPath
+                } else {
+                    File(externalFilesDir, requestedHtpBackendConfigPath).absolutePath
+                }
+            }
+            !modelBasePath.isNullOrBlank() -> {
+                // Align with C API: C API strips "/models" suffix from base_dir
+                // and appends "/htp_backend_ext_config.json".
+                // When modelBasePath ends with "/models", resolve from parent dir.
+                val htpBaseDir = if (
+                    modelBasePath.endsWith("/models/") ||
+                    modelBasePath.endsWith("/models")
+                ) {
+                    File(modelBasePath).parentFile?.absolutePath ?: modelBasePath
+                } else {
+                    modelBasePath
+                }
+                File(htpBaseDir, "htp_backend_ext_config.json").absolutePath
+            }
+            else -> {
                 File(externalFilesDir, "htp_backend_ext_config.json").absolutePath
-            File(requestedHtpBackendConfigPath).isAbsolute ->
-                requestedHtpBackendConfigPath
-            externalFilesDir != null ->
-                File(externalFilesDir, requestedHtpBackendConfigPath).absolutePath
-            else ->
-                File(requestedHtpBackendConfigPath).absolutePath
+            }
         }
 
         return try {

@@ -819,15 +819,14 @@ class LiteRTLm(
     }
 
     /**
-     * @brief Build the test-mode fallback model file handle, rooted in
-     * the host app's external files dir (app-private, no permissions).
-     * Creates the parent directory so `adb push` can write directly
-     * without a separate `mkdir -p`.
+     * @brief Build the test-mode fallback model file handle from the shared
+     * model directory at `/sdcard/Download/aistudio-mobile/models/`.
+     * This ensures all team apps (AI Studio Mobile, SampleTestAPP, etc.)
+     * can share the same model file without duplication.
      */
     private fun testModelFile(): File {
-        val externalFiles = appContext.getExternalFilesDir(null)
-            ?: appContext.filesDir
-        val dir = File(externalFiles, TEST_GEMMA4_REL_DIR)
+        val baseDir = File("/sdcard/Download/aistudio-mobile/models/")
+        val dir = File(baseDir, TEST_GEMMA4_REL_DIR)
         if (!dir.exists()) dir.mkdirs()
         return File(dir, TEST_GEMMA4_FILE_NAME)
     }
@@ -837,16 +836,14 @@ class LiteRTLm(
 
         /**
          * @brief TEST ONLY — path components of the Gemma-4 E2B-IT
-         * `.litertlm` model, relative to the host app's external files
-         * dir. The absolute path is resolved at runtime via
-         * [testModelFile] so it always reflects the actual host package.
+         * `.litertlm` model, relative to the shared model directory.
+         * The absolute path is resolved at runtime via [testModelFile].
          *
-         * Push the file with adb before installing the app (note that
-         * the app id depends on which host is using the AAR):
+         * Push the file with adb before running:
          *   adb push gemma-4-E2B-it.litertlm \
-         *       /sdcard/Android/data/<app-id>/files/models/gemma-4-E2B-it/
+         *       /sdcard/Download/aistudio-mobile/models/gemma-4-E2B-it/
          */
-        const val TEST_GEMMA4_REL_DIR: String = "models/gemma-4-E2B-it"
+        const val TEST_GEMMA4_REL_DIR: String = "gemma-4-E2B-it"
         const val TEST_GEMMA4_FILE_NAME: String = "gemma-4-E2B-it.litertlm"
     }
 }

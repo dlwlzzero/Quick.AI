@@ -11,6 +11,12 @@
       manifest and merged in automatically.
     -->
 
+    <!-- All-files access is required so that the native engine can open
+         models under /sdcard/Download/ on Android 11+.  This is an
+         internal/enterprise build, so Google Play’s sensitive-permission
+         policy does not apply. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
     <application
         android:allowBackup="false"
         android:icon="@android:drawable/sym_def_app_icon"

@@ -35,8 +35,11 @@ import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -275,6 +278,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        checkAllFilesAccess()
         // Seed the path field so a single Load tap works without typing.
         modelPathText = defaultModelPathFor(selectedModel, selectedQuant)
         rebuildUi()
@@ -1813,7 +1817,7 @@ class MainActivity : AppCompatActivity() {
                           else modelPathText).trim().ifEmpty { null }
         val visionBackend = if (model == ModelId.GEMMA4 || model == ModelId.GAUSS3_8_VISION_QNN) backend else null
         val nativeLibDir = applicationContext.applicationInfo.nativeLibraryDir
-        val modelBasePath = "${applicationContext.getExternalFilesDir(null)?.absolutePath}/models"
+        val modelBasePath = "/sdcard/Download/aistudio-mobile/models/"
         return LoadModelRequest(
             backend = backend,
             model = model,
@@ -1832,7 +1836,7 @@ class MainActivity : AppCompatActivity() {
         val modelPath = defaultModelPathFor(model, quant)
         val visionBackend = if (supportsMultimodalInput(model)) backend else null
         val nativeLibDir = applicationContext.applicationInfo.nativeLibraryDir
-        val modelBasePath = "${applicationContext.getExternalFilesDir(null)?.absolutePath}/models"
+        val modelBasePath = "/sdcard/Download/aistudio-mobile/models/"
         return LoadModelRequest(
             backend = backend,
             model = model,
@@ -2585,7 +2589,7 @@ class MainActivity : AppCompatActivity() {
     private fun defaultModelPathFor(model: ModelId, quant: QuantizationType): String {
         val externalFiles = applicationContext.getExternalFilesDir(null)
         val base = externalFiles?.absolutePath
-            ?: "/sdcard/Android/data/$packageName/files"
+            ?: "/sdcard/Download/aistudio-mobile"
         return when (model) {
             ModelId.GEMMA4 ->
                 "$base/models/gemma-4-E2B-it/gemma-4-E2B-it.litertlm"
@@ -2613,6 +2617,15 @@ class MainActivity : AppCompatActivity() {
                 "$base/models/gemma-4-e2b-qnn"
 
         }
+    }
+
+    private fun checkAllFilesAccess() {
+        if (Environment.isExternalStorageManager()) return
+        val intent = Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse("package:${packageName}")
+        )
+        startActivity(intent)
     }
 
     private fun quantizationSuffix(quant: QuantizationType): String = when (quant) {

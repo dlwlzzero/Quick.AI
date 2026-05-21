@@ -79,13 +79,13 @@ static std::string resolve_quick_dot_ai_base_dir() {
     return resolved;
   }
 
-  std::string fallback = "/sdcard/Android/data/com.example.sampletestapp/files";
+  std::string fallback = "/sdcard/Download/aistudio-mobile/";
   LOGD("resolve_quick_dot_ai_base_dir: using fallback=%s", fallback.c_str());
   return fallback;
 }
 
-static std::string resolve_backend_extensions_config_value(
-  const std::string &path) {
+static std::string
+resolve_backend_extensions_config_value(const std::string &path) {
   if (path.empty() || is_absolute_path(path)) {
     return path;
   }
