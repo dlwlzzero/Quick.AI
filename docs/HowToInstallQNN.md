@@ -2,10 +2,10 @@
 :last update 2025-03-25:
 
 There are various ways to install qnn.
-In this doc, we recomend you to use qpm-cli.
+In this doc, we recommend you to use qpm-cli.
 If you install the QNN and Hexagon SDK for NNtrainer usage, please follow the versions of:
 
-- QNN (a.k.a., Qualcoomm Neuarl Processing SDK) version 2.31.0.250130
+- QNN (a.k.a., Qualcomm Neural Processing SDK) version 2.31.0.250130
 - HexagonSDK version 5.5.2.0
 
 ## Prepare QPM CLI

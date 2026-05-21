@@ -23,7 +23,9 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -158,6 +160,36 @@ inline bool ends_with(const std::string &s, const std::string &suf) {
   return s.size() >= suf.size() &&
          0 == s.compare(s.size() - suf.size(), suf.size(), suf);
 }
+
+// ── PLE sfixed4 binary sidecar cache ──────────────────────────────
+// The PLE scale array is shape [vocab, num_layers] (e.g. 262144*35 ≈
+// 9.1M floats); re-parsing it from JSON with nlohmann on every cold
+// start dominates load time. After the first parse we dump a compact
+// binary next to the manifest and skip JSON entirely on later loads.
+// Invalidated when the manifest's mtime changes.
+constexpr char kPleSf4Magic[4] = {'P', 'S', '4', 'C'};
+constexpr uint32_t kPleSf4Version = 1;
+
+#pragma pack(push, 1)
+struct PleSf4CacheHeader {
+  char magic[4];
+  uint32_t version;
+  int64_t manifest_mtime;
+  uint64_t row_elems;   // ple_row_elems_
+  uint64_t layers;      // ple_layers_
+  uint64_t scale_count; // ple_row_layer_scales_.size()
+  uint32_t lut_path_len;
+};
+#pragma pack(pop)
+
+inline int64_t ple_file_mtime_(const std::string &p) {
+  struct stat st {};
+  return (::stat(p.c_str(), &st) == 0) ? static_cast<int64_t>(st.st_mtime) : -1;
+}
+
+inline std::string ple_sf4_cache_path_(const std::string &manifest_path) {
+  return manifest_path + ".sf4cache";
+}
 } // namespace
 
 void Gemma4_E2B_QNN::open_ple_file_() {
@@ -168,6 +200,69 @@ void Gemma4_E2B_QNN::open_ple_file_() {
   ple_per_layer_ = 256;
 
   if (ple_is_4bit_) {
+    // ── Fast path: sfixed4 binary sidecar cache (skips JSON parse) ──
+    {
+      const std::string cpath = ple_sf4_cache_path_(ple_file_name);
+      std::ifstream cf(cpath, std::ios::binary);
+      if (cf.is_open()) {
+        PleSf4CacheHeader h{};
+        cf.read(reinterpret_cast<char *>(&h), sizeof(h));
+        const bool hdr_ok = static_cast<bool>(cf) &&
+                            std::memcmp(h.magic, kPleSf4Magic, 4) == 0 &&
+                            h.version == kPleSf4Version &&
+                            h.manifest_mtime == ple_file_mtime_(ple_file_name);
+        if (hdr_ok) {
+          std::string lut_abs(h.lut_path_len, '\0');
+          cf.read(&lut_abs[0], h.lut_path_len);
+          ple_is_signed4_ = true;
+          ple_row_elems_ = h.row_elems;
+          ple_layers_ = h.layers;
+          ple_row_bytes_ = (ple_row_elems_ + 1) / 2;
+          ple_scale_ = 1.0f;
+          ple_offset_ = 0;
+          ple_row_layer_scales_.resize(h.scale_count);
+          cf.read(reinterpret_cast<char *>(ple_row_layer_scales_.data()),
+                  static_cast<std::streamsize>(h.scale_count * sizeof(float)));
+          if (static_cast<bool>(cf) && ple_layers_ != 0 &&
+              ple_layers_ * ple_per_layer_ == ple_row_elems_ &&
+              generation_per_layer_dst_.size() <= ple_layers_) {
+            ple_fd_ = open(lut_abs.c_str(), O_RDONLY);
+            struct stat st;
+            if (ple_fd_ >= 0 && fstat(ple_fd_, &st) == 0) {
+              ple_file_size_ = static_cast<size_t>(st.st_size);
+              const size_t exp_vocab = ple_file_size_ / ple_row_bytes_;
+              const size_t scl_vocab =
+                ple_row_layer_scales_.size() / ple_layers_;
+              if (ple_file_size_ % ple_row_bytes_ == 0 &&
+                  scl_vocab == exp_vocab) {
+                void *m = mmap(nullptr, ple_file_size_, PROT_READ, MAP_PRIVATE,
+                               ple_fd_, 0);
+                if (m != MAP_FAILED) {
+                  ple_mmap_ = static_cast<const uint8_t *>(m);
+#ifdef POSIX_MADV_RANDOM
+                  posix_madvise((void *)ple_mmap_, ple_file_size_,
+                                POSIX_MADV_RANDOM);
+#endif
+                  std::cout << "[PLE] sfixed4 from binary cache " << cpath
+                            << " rows=" << exp_vocab
+                            << " layers=" << ple_layers_
+                            << " per_layer=" << ple_per_layer_
+                            << " scales=" << ple_row_layer_scales_.size()
+                            << " (JSON parse skipped)" << std::endl;
+                  return;
+                }
+              }
+            }
+            if (ple_fd_ >= 0) {
+              ::close(ple_fd_);
+              ple_fd_ = -1;
+            }
+          }
+          // any validation failure → fall through to the JSON path
+        }
+      }
+    }
+
     // ── 4-bit manifest: dispatch by `datatype` (ufixed8 / sfixed4) ──
     std::ifstream mf(ple_file_name);
     if (!mf.is_open())
@@ -265,6 +360,56 @@ void Gemma4_E2B_QNN::open_ple_file_() {
                 << " layers=" << ple_layers_ << " per_layer=" << ple_per_layer_
                 << " scale=" << ple_scale_ << " offset=" << ple_offset_
                 << std::endl;
+    }
+
+    if (ple_is_signed4_) {
+      // Persist a binary sidecar so the next cold start skips the
+      // multi-million-float JSON scale parse. Best-effort + atomic
+      // rename; a read-only model dir simply keeps using JSON.
+      const std::string cpath = ple_sf4_cache_path_(ple_file_name);
+      const std::string tmp = cpath + ".tmp";
+      std::cout << "[PLE-CACHE-DBG] writing sidecar: " << cpath
+                << " scales=" << ple_row_layer_scales_.size() << " ("
+                << (ple_row_layer_scales_.size() * sizeof(float)) << " bytes)"
+                << std::endl;
+      std::ofstream wf(tmp, std::ios::binary | std::ios::trunc);
+      if (!wf.is_open()) {
+        std::cout << "[PLE-CACHE-DBG] FAILED to open temp for write: " << tmp
+                  << " (errno=" << errno << " " << std::strerror(errno)
+                  << ") — keeping JSON path" << std::endl;
+      } else {
+        PleSf4CacheHeader h{};
+        std::memcpy(h.magic, kPleSf4Magic, 4);
+        h.version = kPleSf4Version;
+        h.manifest_mtime = ple_file_mtime_(ple_file_name);
+        h.row_elems = ple_row_elems_;
+        h.layers = ple_layers_;
+        h.scale_count = ple_row_layer_scales_.size();
+        h.lut_path_len = static_cast<uint32_t>(lut_abs.size());
+        wf.write(reinterpret_cast<const char *>(&h), sizeof(h));
+        wf.write(lut_abs.data(), static_cast<std::streamsize>(lut_abs.size()));
+        wf.write(reinterpret_cast<const char *>(ple_row_layer_scales_.data()),
+                 static_cast<std::streamsize>(ple_row_layer_scales_.size() *
+                                              sizeof(float)));
+        const bool ok = static_cast<bool>(wf);
+        wf.close();
+        if (ok && wf) {
+          if (std::rename(tmp.c_str(), cpath.c_str()) == 0) {
+            std::cout << "[PLE-CACHE-DBG] sidecar written OK: " << cpath
+                      << std::endl;
+          } else {
+            std::cout << "[PLE-CACHE-DBG] rename failed (errno=" << errno << " "
+                      << std::strerror(errno) << "): " << tmp << " -> " << cpath
+                      << std::endl;
+            std::remove(tmp.c_str());
+          }
+        } else {
+          std::cout << "[PLE-CACHE-DBG] write stream bad after "
+                    << (ok ? "close" : "write") << " (errno=" << errno << " "
+                    << std::strerror(errno) << ") — removing temp" << std::endl;
+          std::remove(tmp.c_str());
+        }
+      }
     }
     return;
   }

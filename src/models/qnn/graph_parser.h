@@ -12,7 +12,7 @@ struct TensorInfo {
   std::string name;
   std::vector<int> dimensions;
   std::string data_type;
-  double scale;
+  float scale;
   int offset;
 };
 

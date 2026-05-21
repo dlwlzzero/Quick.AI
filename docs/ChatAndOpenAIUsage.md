@@ -47,6 +47,11 @@ val sink = object : StreamSink {
         outputView.append(text)
     }
 
+    override fun onReasoningDelta(text: String) {
+        // Called for thinking/reasoning model tokens
+        reasoningView.append(text)
+    }
+
     override fun onDone() {
         setStatus("Done.")
     }
@@ -73,7 +78,9 @@ val config = QuickAiChatSessionConfig(
         temperature = 0.7,
         topK = 40,
         topP = 0.9,
-        seed = 42
+        seed = 42,
+        minP = null,         // Min-P sampling
+        maxTokens = null      // Maximum generation tokens
     ),
     chatTemplateKwargs = QuickAiChatTemplateKwargs(enableThinking = false)
 )

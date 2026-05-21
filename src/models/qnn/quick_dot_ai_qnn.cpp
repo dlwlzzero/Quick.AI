@@ -84,18 +84,14 @@ int read_token_id_or_default(const json &cfg, const char *key,
                               " must be an integer or array");
 }
 
-// Format a scale value with enough precision for the float that QNN
-// will eventually use (`Qnn_QuantizeParams_t::scaleOffsetEncoding::scale`
-// is float, parsed with std::stof on the property side). TensorInfo
-// stores scale as double, so we round-trip via float — std::to_string
+// Format a scale value with enough precision. std::to_string
 // silently caps at 6 fractional digits and mangles tiny QNN scales
 // (e.g. 0.0004169851... → "0.000417"). Across 70+ tensors × 35 layers
 // × every token the dequant drift compounds into representation
 // collapse after a few dozen tokens.
-inline std::string format_float_precise(double v) {
+inline std::string format_float_precise(float v) {
   std::ostringstream os;
-  os << std::setprecision(std::numeric_limits<float>::max_digits10)
-     << static_cast<float>(v);
+  os << std::setprecision(std::numeric_limits<float>::max_digits10) << v;
   return os.str();
 }
 
@@ -130,9 +126,9 @@ std::vector<uint16_t> dequantize_4bit_packed(const uint8_t *packed_data,
 
     // Clamp to UINT16 range and convert
     uint16_t lower_uint16 =
-        static_cast<uint16_t>(std::max(0.0f, std::min(65535.0f, lower_float)));
+      static_cast<uint16_t>(std::max(0.0f, std::min(65535.0f, lower_float)));
     uint16_t upper_uint16 =
-        static_cast<uint16_t>(std::max(0.0f, std::min(65535.0f, upper_float)));
+      static_cast<uint16_t>(std::max(0.0f, std::min(65535.0f, upper_float)));
 
     result.push_back(lower_uint16);
     result.push_back(upper_uint16);
@@ -169,7 +165,7 @@ parse_scale_offset_from_json(const std::string &json_file_path) {
         size_t value_end = json_str.find_first_of(",}", value_start);
         if (value_end != std::string::npos) {
           std::string scale_str =
-              json_str.substr(value_start, value_end - value_start);
+            json_str.substr(value_start, value_end - value_start);
           scale = std::stof(scale_str);
         }
       }
@@ -185,7 +181,7 @@ parse_scale_offset_from_json(const std::string &json_file_path) {
         size_t value_end = json_str.find_first_of(",}", value_start);
         if (value_end != std::string::npos) {
           std::string offset_str =
-              json_str.substr(value_start, value_end - value_start);
+            json_str.substr(value_start, value_end - value_start);
           offset = std::stoi(offset_str);
         }
       }
@@ -348,25 +344,25 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
         // 4-bit packed LUT, the layer loads the table once via a
         // path-keyed shared cache so peer graphs share one in-memory copy.
         std::vector<std::string> emb_props = {
-            withKey("name", tensor_name),
-            withKey("in_dim", vocab_size),
-            withKey("input_shape", input_shape_string),
-            withKey("out_dim", input_shape.back()),
+          withKey("name", tensor_name),
+          withKey("in_dim", vocab_size),
+          withKey("input_shape", input_shape_string),
+          withKey("out_dim", input_shape.back()),
         };
         if (uses_embedding && !embedding_file_name.empty()) {
           emb_props.push_back(
-              withKey("quantized_lut_path", embedding_file_name));
+            withKey("quantized_lut_path", embedding_file_name));
           // Round-trip-precise float string so the layer's requant uses
           // the exact same scale QNN sees on the input_embeds tensor.
           emb_props.push_back(withKey(
-              "output_quant_scale", format_float_precise(tensor_object.scale)));
+            "output_quant_scale", format_float_precise(tensor_object.scale)));
           emb_props.push_back(withKey("output_quant_offset",
                                       std::to_string(tensor_object.offset)));
         }
 
         current_model->addLayer(createLayer("embedding_layer", emb_props));
         model_inputs.push_back(
-            (float *)tracked_allocate(sizeof(float) * input_size));
+          (float *)tracked_allocate(sizeof(float) * input_size));
       } else {
         auto input_shape = tensor_object.dimensions;
         std::string input_shape_string = std::to_string(input_shape[0]);
@@ -500,7 +496,7 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   LOGD("----------------binary_config_path : %s", model_file_name.c_str());
   binary_config_path = nntr_cfg["binary_config_path"].get<std::string>();
   binary_config_path =
-      rebase_relative_to_model_file(binary_config_path, model_file_name);
+    rebase_relative_to_model_file(binary_config_path, model_file_name);
   LOGD("----------------binary_config_path : %s", binary_config_path.c_str());
   graphs_to_use = nntr_cfg["graphs_to_use"].get<std::vector<std::string>>();
   for (auto s : graphs_to_use) {
@@ -522,17 +518,16 @@ void causallm::Quick_Dot_AI_QNN::setupParameters(json &cfg,
   if (nntr_cfg.contains("embedding_file_name")) {
     embedding_file_name = nntr_cfg["embedding_file_name"].get<std::string>();
     embedding_file_name =
-        rebase_relative_to_model_file(embedding_file_name, model_file_name);
+      rebase_relative_to_model_file(embedding_file_name, model_file_name);
     LOGD("---------------- embedding_file_name : %s",
          embedding_file_name.c_str());
   }
 
   // Read generation_config parameters
-  padding_token = generation_cfg.contains("padding_token")
-                    ? read_token_id_or_default(generation_cfg,
-                                               "padding_token", 0)
-                    : read_token_id_or_default(generation_cfg,
-                                               "pad_token_id", 0);
+  padding_token =
+    generation_cfg.contains("padding_token")
+      ? read_token_id_or_default(generation_cfg, "padding_token", 0)
+      : read_token_id_or_default(generation_cfg, "pad_token_id", 0);
   eos_token = read_token_id_or_default(generation_cfg, "eos_token_id", 0);
   temperature = generation_cfg.value("temperature", 1.0f);
   top_k = generation_cfg.value("top_k", 50);
@@ -616,12 +611,9 @@ void causallm::Quick_Dot_AI_QNN::quantize_uint16_memcpy(float *src,
                                                         int offset) {
   for (int i = 0; i < count; i++) {
     if (std::isfinite(src[i])) {
-      int quantized_value = src[i] / scale - offset;
-      if (quantized_value > 65535)
-        quantized_value = 65535;
-      if (quantized_value < 0)
-        quantized_value = 0;
-      dest[i] = quantized_value;
+      float quantized_value = src[i] / scale - offset;
+      dest[i] = static_cast<uint16_t>(
+        std::max(0.0f, std::min(65535.0f, quantized_value)));
     } else {
       // Warning message?
       dest[i] = 0;
