@@ -1,138 +1,170 @@
-project('quick_dot_ai', 'c', 'cpp',
-  version: '0.1.0',
+project('quick-dot-ai', 'c', 'cpp',
+  version: '0.2.0',
   license: ['apache-2.0'],
   meson_version: '>=0.55.0',
   default_options: [
+    'werror=false',
     'warning_level=1',
     'c_std=gnu89',
     'cpp_std=c++17',
-    'buildtype=release',
-  ],
+    'buildtype=release'
+  ]
 )
 
-# Pull in nntrainer via the bundled submodule as a meson subproject.
-# We disable Applications so that nntrainer's own (now legacy) in-tree
-# Applications/CausalLM is not built alongside this standalone one, and
-# we skip tests to keep the dependency build lean.
-nntrainer_proj = subproject('nntrainer',
-  default_options: [
-    'enable-app=false',
-    'enable-test=false',
-    'enable-tflite-backbone=false',
-    'enable-tflite-interpreter=false',
-    'werror=false',
-  ],
-)
+# ── Compiler setup ──────────────────────────────────────────────────────
+cc = meson.get_compiler('c')
+cxx = meson.get_compiler('cpp')
 
-nntrainer_dep       = nntrainer_proj.get_variable('nntrainer_dep')
-nntrainer_ccapi_dep = nntrainer_proj.get_variable('nntrainer_ccapi_dep')
-application_install_dir = get_option('prefix') / get_option('libdir') / 'quick_dot_ai'
-
-openmp_dep = dependency('openmp')
-powershell_prog = find_program('powershell', required: (build_machine.system() == 'windows'))
-
-quick_dot_ai_src = [
-    meson.current_source_dir() / 'chat_template.cpp',
-    meson.current_source_dir() / 'huggingface_tokenizer.cpp',
-    meson.current_source_dir() / 'llm_util.cpp',
-    meson.current_source_dir() / 'api' / 'causal_lm_api.cpp',
-    meson.current_source_dir() / 'api' / 'model_config.cpp',
-]
-
-executable_src = [
-    meson.current_source_dir() / 'main.cpp',
-]
-
-quick_dot_ai_inc_abs = [meson.current_source_dir()]
-quick_dot_ai_inc = [include_directories('.')]
-
-# Build layer dependency
-quick_dot_ai_layer_dependencies = []
-subdir('layers')
-
-# Add common layers to dependencies
-quick_dot_ai_layer_dependencies += [
-    quick_dot_ai_rms_norm_dep,
-    quick_dot_ai_tie_word_embedding_dep,
-    quick_dot_ai_lm_head_dep,
-    quick_dot_ai_swiglu_dep,
-    quick_dot_ai_mha_core_dep,
-    quick_dot_ai_embedding_layer_dep,
-    quick_dot_ai_lm_head_dep,
-    quick_dot_ai_reshaped_rms_norm_dep,
-    quick_dot_ai_qkv_layer_dep,
-    quick_dot_ai_embedding_pooling_layer_dep,
-    quick_dot_ai_embedding_normalize_layer_dep,
-]
-
-subdir('models')
-
-if (get_option('platform') == 'windows') and (build_machine.system() == 'windows')
-    run_command(powershell_prog, '-ExecutionPolicy', 'Bypass', '-File', join_paths(meson.current_source_dir(), 'jni', 'prepare_encoder.ps1'), meson.build_root(), '0.2', check: true)
-elif get_option('platform') != 'tizen'
-    run_command([meson.current_source_dir() / 'jni' / 'prepare_encoder.sh', meson.build_root(), '0.2'], check: true)
+# ── Platform detection ──────────────────────────────────────────────────
+_platform_opt = get_option('platform')
+if _platform_opt == 'auto'
+  is_android = host_machine.system() == 'android'
+elif _platform_opt == 'android'
+  is_android = true
+else
+  is_android = false
 endif
 
-tokenizer_dependencies = []
-tokenizer_path = meson.current_source_dir() / 'lib' / 'libtokenizers_c.a'
-
-cpp_args = []
-
-if get_option('default_library') == 'shared'
-    cpp_args += [ '-DPLUGGABLE' ]
+# ── QNN guard: android only ─────────────────────────────────────────────
+enable_qnn = get_option('enable-qnn')
+if enable_qnn and not is_android
+  warning('enable-qnn is only supported on android. Disabling QNN.')
+  enable_qnn = false
 endif
 
-quick_dot_ai = shared_library('quick_dot_ai',
-    quick_dot_ai_src,
-    dependencies: [
-        nntrainer_dep,
-        nntrainer_ccapi_dep,
-        quick_dot_ai_layer_dependencies,
-        tokenizer_dependencies,
-        openmp_dep
-    ],
-    include_directories: quick_dot_ai_inc,
-    install: true,
-    install_dir: application_install_dir,
-    link_args: [tokenizer_path],
-    cpp_args: cpp_args
-)
+# ── Path configuration ─────────────────────────────────────────────────
+project_root   = meson.current_source_dir()
+nntrainer_root = project_root / 'nntrainer'
+causallm_root  = nntrainer_root / 'Applications' / 'CausalLM'
 
-quick_dot_ai_dep = declare_dependency(
-    link_with: [quick_dot_ai],
-    include_directories: quick_dot_ai_inc
-)
+# ── Find pre-built nntrainer libraries ──────────────────────────────────
+if is_android
+  _nntr_result = nntrainer_root / 'builddir' / 'android_build_result'
+  _nntr_libdir = _nntr_result / 'lib' / 'arm64-v8a'
+  _nntr_incdir = _nntr_result / 'include' / 'nntrainer'
 
-e = executable('quick_dot_ai_run',
-    executable_src,
-    include_directories: quick_dot_ai_inc,
-    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, quick_dot_ai_layer_dependencies, quick_dot_ai_dep],
-)
+  libnntrainer = cxx.find_library('nntrainer', dirs: [_nntr_libdir])
+  libccapi     = cxx.find_library('ccapi-nntrainer', dirs: [_nntr_libdir])
 
+  nntrainer_inc_args = ['-I' + _nntr_incdir]
+else
+  _nntr_builddir = nntrainer_root / get_option('nntrainer_builddir')
 
-quantize_src = [
-    meson.current_source_dir() / 'quantize.cpp',
-]
+  libnntrainer = cxx.find_library('nntrainer',
+    dirs: [_nntr_builddir / 'nntrainer'])
+  libccapi     = cxx.find_library('ccapi-nntrainer',
+    dirs: [_nntr_builddir / 'api' / 'ccapi'])
 
-e_quantize = executable('quick_dot_ai_quantize',
-    quantize_src,
-    include_directories: quick_dot_ai_inc,
-    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, quick_dot_ai_layer_dependencies, quick_dot_ai_dep],
-)
-
-
-test_api_src = [
-    meson.current_source_dir() / 'api' / 'test_api.cpp',
-]
-
-test_api = executable('quick_dot_ai_test_api',
-    test_api_src,
-    include_directories: quick_dot_ai_inc,
-    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, quick_dot_ai_layer_dependencies, quick_dot_ai_dep],
-    build_by_default: true,
-    install: false,
-)
-
-if get_option('enable-test')
-    subdir('test')
+  # nntrainer source-tree includes (x86 build)
+  # NOTE: Do NOT include the builddir itself — ruy/time.h shadows system <time.h>
+  nntrainer_inc_args = []
+  foreach p : [
+    nntrainer_root / 'api' / 'ccapi' / 'include',
+    nntrainer_root / 'api',
+    nntrainer_root / 'nntrainer',
+    nntrainer_root / 'nntrainer' / 'layers',
+    nntrainer_root / 'nntrainer' / 'layers' / 'loss',
+    nntrainer_root / 'nntrainer' / 'models',
+    nntrainer_root / 'nntrainer' / 'graph',
+    nntrainer_root / 'nntrainer' / 'compiler',
+    nntrainer_root / 'nntrainer' / 'optimizers',
+    nntrainer_root / 'nntrainer' / 'tensor',
+    nntrainer_root / 'nntrainer' / 'tensor' / 'cpu_backend',
+    nntrainer_root / 'nntrainer' / 'tensor' / 'cpu_backend' / 'fallback',
+    nntrainer_root / 'nntrainer' / 'tensor' / 'cpu_backend' / 'cblas_interface',
+    nntrainer_root / 'nntrainer' / 'tensor' / 'cpu_backend' / 'x86',
+    nntrainer_root / 'nntrainer' / 'tensor' / 'cpu_backend' / 'ggml_interface',
+    nntrainer_root / 'nntrainer' / 'tensor' / 'cpu_backend' / 'ggml_interface' / 'nntr_ggml_impl',
+    nntrainer_root / 'nntrainer' / 'utils',
+    nntrainer_root / 'nntrainer' / 'dataset',
+    nntrainer_root / 'nntrainer' / 'schema',
+  ]
+    nntrainer_inc_args += ['-I' + p]
+  endforeach
 endif
+
+nntrainer_dep = declare_dependency(
+  dependencies: [libnntrainer, libccapi],
+  compile_args: nntrainer_inc_args,
+)
+
+# ── OpenMP / threads ────────────────────────────────────────────────────
+openmp_dep = dependency('openmp', required: false)
+thread_dep = dependency('threads')
+
+# ── Android log library ─────────────────────────────────────────────────
+if is_android
+  log_dep = cxx.find_library('log', required: true)
+else
+  log_dep = dependency('', required: false)
+endif
+
+# ── CausalLM includes ──────────────────────────────────────────────────
+causallm_auto_inc_dirs = run_command('find',
+  causallm_root / 'layers',
+  causallm_root / 'models',
+  causallm_root / 'res',
+  '-type', 'd',
+  check: true).stdout().strip().split('\n')
+
+causallm_inc_args = ['-I' + causallm_root]
+foreach d : causallm_auto_inc_dirs
+  causallm_inc_args += ['-I' + d]
+endforeach
+
+# Add minja include path for chat template support
+causallm_inc_args += ['-I' + causallm_root / 'third_party' / 'minja' / 'include']
+
+# ── XGrammar ──────────────────────────────────────────────────
+causallm_inc_args += ['-I' + project_root / 'src' / 'xgrammar']
+# Add xgrammar library include paths
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / 'include']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'picojson']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'dlpack' / 'include']
+
+# ── XGrammar ──────────────────────────────────────────────────
+causallm_inc_args += ['-I' + project_root / 'src' / 'xgrammar']
+# Add xgrammar library include paths
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / 'include']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'picojson']
+causallm_inc_args += ['-I' + project_root / 'xgrammar' / '3rdparty' / 'dlpack' / 'include']
+
+# ── Tokenizer: platform-specific ────────────────────────────────────────
+if is_android
+  tokenizer_path = causallm_root / 'lib' / 'libtokenizers_android_c.a'
+else
+  tokenizer_path = causallm_root / 'lib' / 'libtokenizers_c.a'
+endif
+
+# ── Extra defines ───────────────────────────────────────────────────────
+extra_defines = []
+if enable_qnn
+  extra_defines += '-DENABLE_QNN=1'
+endif
+
+# FP16 is ARM-only (__fp16 type not available on x86)
+if get_option('enable-fp16') and is_android
+  extra_defines += ['-DENABLE_FP16=1', '-DUSE__FP16=1']
+endif
+
+foreach d : extra_defines
+  add_project_arguments(d, language: ['c', 'cpp'])
+endforeach
+
+# Android-specific ARM flags
+if is_android
+  _arm_args = [
+    '-D__ARM_NEON__=1',
+    '-DUSE_NEON=1',
+  ]
+  foreach a : _arm_args
+    add_project_arguments(a, language: ['c', 'cpp'])
+  endforeach
+endif
+
+# ── Build components ────────────────────────────────────────────────────
+# Each subdir guards itself with its own enable option.
+subdir('src')
+subdir('qnn')
+subdir('api')
+subdir('api-app')

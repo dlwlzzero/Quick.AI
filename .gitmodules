@@ -1,3 +1,6 @@
-[submodule "subprojects/nntrainer"]
-	path = subprojects/nntrainer
-	url = https://github.com/eunjuyang/nntrainer.git
+[submodule "nntrainer"]
+	path = nntrainer
+	url = https://github.sec.samsung.net/j2z0-lee/nntrainer
+[submodule "xgrammar"]
+	path = xgrammar
+	url = https://github.com/mlc-ai/xgrammar.git

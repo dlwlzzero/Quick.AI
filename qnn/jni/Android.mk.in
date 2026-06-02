@@ -1,0 +1,45 @@
+LOCAL_PATH := $(call my-dir)
+
+include $(CLEAR_VARS)
+
+# ndk path
+ifndef ANDROID_NDK
+$(error ANDROID_NDK is not defined!)
+endif
+
+NNTRAINER_ROOT := $(LOCAL_PATH)/../../../nntrainer/builddir/android_build_result/
+
+NNTRAINER_INCLUDES := $(NNTRAINER_ROOT)/include/nntrainer
+
+LOCAL_MODULE := nntrainer
+LOCAL_SRC_FILES := $(NNTRAINER_ROOT)/lib/$(TARGET_ARCH_ABI)/libnntrainer.so
+LOCAL_EXPORT_C_INCLUDES := $(NNTRAINER_INCLUDES)
+
+include $(PREBUILT_SHARED_LIBRARY)
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := ccapi-nntrainer
+LOCAL_SRC_FILES := $(NNTRAINER_ROOT)/lib/$(TARGET_ARCH_ABI)/libccapi-nntrainer.so
+LOCAL_EXPORT_C_INCLUDES := $(NNTRAINER_INCLUDES) $(NNTRAINER_INCLUDES)/nntrainer
+
+include $(PREBUILT_SHARED_LIBRARY)
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE        := qnn_context
+LOCAL_SRC_FILES     := @MESON_QNN_CONTEXT_SRCS@
+LOCAL_C_INCLUDES    := $(NNTRAINER_INCLUDES) @MESON_QNN_CONTEXT_INC@
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+
+LOCAL_ARM_NEON      := true
+LOCAL_CFLAGS        += -pthread -fexceptions -fopenmp -static-openmp @MESON_CFLAGS@
+LOCAL_CXXFLAGS      += -std=c++17 -frtti -fexceptions @MESON_CXXFLAGS@ -DENABLE_FP16=1 -DUSE__PF16=1 -DENABLE_QNN=1 -DPLUGGABLE=1
+LOCAL_MODULE_TAGS   := optional
+
+LOCAL_LDLIBS        := -llog -landroid -fopenmp -static-openmp
+LOCAL_LDFLAGS 	    += "-Wl,-z,max-page-size=16384"
+
+LOCAL_SHARED_LIBRARIES += nntrainer ccapi-nntrainer
+
+include $(BUILD_SHARED_LIBRARY)

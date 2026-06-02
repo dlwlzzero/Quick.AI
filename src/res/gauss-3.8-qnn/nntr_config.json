@@ -1,0 +1,17 @@
+{
+  "batch_size": 1,
+  "model_tensor_type": "FP16",
+  "init_seq_len": 256,
+  "max_seq_len": 4096,
+  "num_to_generate": 128,
+  "fsu": false,
+  "fsu_lookahead": 1,
+  "embedding_dtype": "FP16",
+  "fc_layer_dtype": "FP16",
+  "model_file_name": "/data/local/tmp/Quick.AI/models/gauss-3.8-qnn/e4h4w4_2502rel_qnn_2_38_0_exp_2502.serialized.bin",
+  "binary_config_path": "e4h4w4_2502rel_qnn_2_38_0_exp_2502.serialized.json",
+  "embedding_file_name": "/data/local/tmp/Quick.AI/models/gauss-3.8-qnn/gauss_3b_embed_quantized.bin",
+  "graphs_to_use": ["prefill_export_8k", "generation_ar1_export_8k"],
+  "sample_input": "<|begin_of_text|><|turn_start|>System\n<|turn_end|>\n<|turn_start|>User\nWhat is 1/3 + 1/4?\n<|turn_end|>\n<|turn_start|>Assistant\n",
+  "tokenizer_file": "/data/local/tmp/Quick.AI/models/gauss-3.8-qnn/tokenizer.json"
+}

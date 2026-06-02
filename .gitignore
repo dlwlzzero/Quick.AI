@@ -1,43 +1,30 @@
-# Build outputs
-build/
+# AI Agent directories
+.opencode/plans/
+
+# Build directories (meson)
 builddir/
-*.o
-*.a
+builddir_x86/
+builddir_android/
+
+# NDK build outputs
+src/jni/libs/
+src/jni/obj/
+api/jni/libs/
+api/jni/obj/
+api-app/jni/libs/
+api-app/jni/obj/
+
+# Copied headers
+include/
+!qnn/jni/qnn/PAL/include/
+
+# res
+res/
+
+cross/android-aarch64.cross
+
+*.dex
+*.bin
+*.json
 *.so
-*.dylib
-*.dll
-*.exe
-
-# Meson subproject cache / auto-generated wrap redirects
-subprojects/packagecache/
-subprojects/.wraplock
-subprojects/*.wrap
-!subprojects/gtest.wrap
-# Wrap-extracted source trees (fetched by `meson setup`, never checked in)
-subprojects/googletest-*/
-
-# Test staging (download_qwen3_0.6b.sh)
-.test_cache/
-models/qwen3-0.6b-w16a16/
-
-# NNTrainer runtime log directory, created at test time
-logs/
-
-# Encoder staging
-encoder/
-encoder-*.tar.gz
-json.hpp
-
-# Android build outputs
-jni/libs/
-jni/obj/
-
-# Editor junk
-.vscode/
-.idea/
-.DS_Store
-*.swp
-
-# Python
-__pycache__/
-*.pyc
+*.log
