@@ -28,7 +28,9 @@ endif
 
 quick_dot_ai_api_lib = shared_library('quick_dot_ai_api',
     'quick_dot_ai_api.cpp',
+    'model_callbacks.cpp',
     'model_config.cpp',
+    'model_descriptors_public.cpp',
     'streamer.cpp',
     'callback_streamer.cpp',
     include_directories: [api_inc],

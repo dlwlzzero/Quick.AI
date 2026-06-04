@@ -553,6 +553,12 @@ internal class LiteRTLmChatSession(
                     imageStore.store(p.bytes)
                     Content.ImageBytes(p.bytes)
                 }
+                is PromptPart.PreprocessedPixels -> {
+                    throw UnsupportedOperationException(
+                        "PromptPart.PreprocessedPixels is not supported by LiteRTLm. " +
+                        "Use NativeQuickDotAI for V-JEPA multi-image inference."
+                    )
+                }
             }
         }
         return Contents.of(mapped)
@@ -578,6 +584,7 @@ internal class LiteRTLmChatSession(
                             hashes.add(ImageStore.sha256Hex(part.bytes))
                         }
                     }
+                    is PromptPart.PreprocessedPixels -> { /* not supported by LiteRTLm */ }
                     is PromptPart.Text -> { /* no image */ }
                 }
             }

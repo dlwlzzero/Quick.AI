@@ -66,10 +66,14 @@ import android.content.ClipboardManager
 import android.content.Context
 import com.example.quickdotai.BackendResult
 import com.example.quickdotai.BackendType
-import com.example.quickdotai.LiteRTLm
+import com.example.quickdotai.Capability
 import com.example.quickdotai.LoadModelRequest
-import com.example.quickdotai.ModelId
+import com.example.quickdotai.ModelCatalog
+import com.example.quickdotai.ModelDescriptor
+import com.example.quickdotai.ModelIds
 import com.example.quickdotai.NativeQuickDotAI
+import com.example.quickdotai.RuntimeKind
+import com.example.quickdotai.createEngine
 import com.example.quickdotai.PerformanceMetrics
 import com.example.quickdotai.PromptPart
 import com.example.quickdotai.QuickAiChatMessage
@@ -163,23 +167,6 @@ private val DARK = M3Tokens(
     codeFg = 0xFFCFBCFF.toInt(),
 )
 
-/**
- * Models that must use the messages-based API for OpenAI streaming.
- *
- * - Gauss models need messages-based API for proper Gauss
- *   <|turn_start|>/ <|turn_end|> markers in incremental prompts.
- * - LiteRT-LM (GEMMA4) only supports messages-based API.
- */
-private val MESSAGES_API_MODELS = setOf(
-    ModelId.GAUSS3_6_QNN,
-    ModelId.GAUSS3_8_QNN,
-    ModelId.GAUSS3_8_VISION_QNN,
-    ModelId.GAUSS3_8,
-    ModelId.GAUSS3_6,
-    ModelId.GEMMA4,
-    ModelId.GEMMA4_E2B_QNN,
-)
-
 class MainActivity : AppCompatActivity() {
 
     /* ───── Engine plumbing (unchanged from the original sample) ───── */
@@ -192,7 +179,11 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile private var engine: QuickDotAI? = null
     @Volatile private var loadedKey: String? = null
-    @Volatile private var selectedImageBytes: ByteArray? = null
+    @Volatile private var selectedImageBytesList: MutableList<ByteArray> = mutableListOf()
+
+    /** Convenience: first selected image (or null) — for single-image code paths. */
+    private val selectedImageBytes: ByteArray?
+        get() = selectedImageBytesList.firstOrNull()
 
     /* ───── UI state (preserved across light/dark theme rebuilds) ───── */
 
@@ -201,12 +192,18 @@ class MainActivity : AppCompatActivity() {
     private var modelExpanded = true
     private var samplingExpanded = false
 
-    private var selectedModel: ModelId = ModelId.GEMMA4
-    private var selectedBackend: BackendType = BackendType.GPU
+    private var selFamily: String = ModelIds.GEMMA4
+    private var selRuntime: RuntimeKind = RuntimeKind.LITERT
+    private var selBackend: BackendType = BackendType.GPU
+    private val selDescriptor: ModelDescriptor?
+        get() = ModelCatalog.resolve(selFamily, selRuntime, selBackend)
     private var selectedQuant: QuantizationType = QuantizationType.W4A32
 
-    private var chatSelectedModel: ModelId = ModelId.GEMMA4
-    private var chatSelectedBackend: BackendType = BackendType.GPU
+    private var chatSelFamily: String = ModelIds.GEMMA4
+    private var chatSelRuntime: RuntimeKind = RuntimeKind.LITERT
+    private var chatSelBackend: BackendType = BackendType.GPU
+    private val chatSelDescriptor: ModelDescriptor?
+        get() = ModelCatalog.resolve(chatSelFamily, chatSelRuntime, chatSelBackend)
     private var chatSelectedQuant: QuantizationType = QuantizationType.W4A32
 
     private var modelPathText: String = ""
@@ -259,12 +256,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chatSessionStatusView: TextView
 
     /**
-     * @brief ActivityResult launcher for the Android system photo picker.
-     * Uses [ActivityResultContracts.PickVisualMedia] which does NOT
-     * require any runtime permissions — the system photo picker grants a
-     * one-shot URI read grant. We immediately drain the bytes on a
-     * background thread so we do not depend on that grant beyond
-     * [readImageBytesAsync].
+     * @brief ActivityResult launcher for the Android system photo picker
+     * (single image). Uses [ActivityResultContracts.PickVisualMedia] which
+     * does NOT require any runtime permissions.
      */
     private val imagePickerLauncher = registerForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -273,14 +267,31 @@ class MainActivity : AppCompatActivity() {
             setStatus("Image pick cancelled.")
             return@registerForActivityResult
         }
-        readImageBytesAsync(uri)
+        selectedImageBytesList.clear()
+        readImageBytesAsync(listOf(uri))
+    }
+
+    /**
+     * @brief ActivityResult launcher for multi-image photo picker.
+     * Uses [ActivityResultContracts.PickMultipleVisualMedia] which allows
+     * selecting multiple images for V-JEPA multi-image inference.
+     */
+    private val multiImagePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris: List<Uri> ->
+        if (uris.isEmpty()) {
+            setStatus("Image pick cancelled.")
+            return@registerForActivityResult
+        }
+        selectedImageBytesList.clear()
+        readImageBytesAsync(uris)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         checkAllFilesAccess()
         // Seed the path field so a single Load tap works without typing.
-        modelPathText = defaultModelPathFor(selectedModel, selectedQuant)
+        modelPathText = defaultModelPathFor(selDescriptor, selectedQuant) ?: ""
         rebuildUi()
     }
 
@@ -523,9 +534,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildModelSection(t: M3Tokens): View {
         val subtitle = if (loadStatus == "loaded")
-            "$loadedLabel  ·  ${selectedBackend.name}"
+            "$loadedLabel  ·  ${selBackend.name}"
         else
-            "${selectedModel.name}  ·  ${selectedBackend.name}  ·  ${selectedQuant.name}"
+            "${selDescriptor?.displayName ?: selFamily}  ·  ${selRuntime.name}  ·  ${selBackend.name}"
         val statusDotColor = when (loadStatus) {
             "loaded"  -> t.success
             "loading" -> t.primary
@@ -550,37 +561,31 @@ class MainActivity : AppCompatActivity() {
                 rebuildUi()
             }
         ) { body ->
-            // MODEL select.
-            body.addView(labelView(t, "MODEL"))
-            val modelRow = TextView(this).apply {
-                text = badgePlusLabel(selectedModel)
-                setTextColor(t.onSurface)
-                textSize = 14f
-                typeface = Typeface.MONOSPACE
-                background = solid(t.surfaceContainer, 12)
-                setPadding(dp(14), dp(12), dp(14), dp(12))
-                gravity = Gravity.CENTER_VERTICAL
-                setCompoundDrawablesWithIntrinsicBounds(null, null, null, null)
-                setOnClickListener {
-                    val popup = PopupMenu(this@MainActivity, this)
-                    ModelId.values().forEachIndexed { i, m -> popup.menu.add(0, i, i, badgePlusLabel(m)) }
-                    popup.setOnMenuItemClickListener { item ->
-                        selectedModel = ModelId.values()[item.itemId]
-                        modelPathText = defaultModelPathFor(selectedModel, selectedQuant)
-                        rebuildUi(resetModelPath = true); true
-                    }
-                    popup.show()
-                }
-            }
-            body.addView(modelRow)
+            // MODEL select — 3-axis cascading
+            body.addView(labelView(t, "FAMILY"))
+            body.addView(dropdownField(t, ModelCatalog.selectableFamilies(), selFamily) { picked ->
+                selFamily = picked
+                selRuntime = ModelCatalog.runtimesFor(selFamily).firstOrNull() ?: selRuntime
+                selBackend = ModelCatalog.backendsFor(selFamily, selRuntime).firstOrNull() ?: selBackend
+                modelPathText = defaultModelPathFor(selDescriptor, selectedQuant) ?: ""
+                rebuildUi(resetModelPath = true)
+            })
             spacer(body, 12)
 
-            // BACKEND chip group.
-            body.addView(labelView(t, "COMPUTE BACKEND"))
-            body.addView(chipRow(t, BackendType.values().map { it.name },
-                selectedBackend.name) { picked ->
-                selectedBackend = BackendType.valueOf(picked)
-                rebuildUi()
+            body.addView(labelView(t, "RUNTIME"))
+            body.addView(chipRow(t, ModelCatalog.runtimesFor(selFamily).map { it.name }, selRuntime.name) { picked ->
+                selRuntime = RuntimeKind.valueOf(picked)
+                selBackend = ModelCatalog.backendsFor(selFamily, selRuntime).firstOrNull() ?: selBackend
+                modelPathText = defaultModelPathFor(selDescriptor, selectedQuant) ?: ""
+                rebuildUi(resetModelPath = true)
+            })
+            spacer(body, 12)
+
+            body.addView(labelView(t, "BACKEND"))
+            body.addView(chipRow(t, ModelCatalog.backendsFor(selFamily, selRuntime).map { it.name }, selBackend.name) { picked ->
+                selBackend = BackendType.valueOf(picked)
+                modelPathText = defaultModelPathFor(selDescriptor, selectedQuant) ?: ""
+                rebuildUi(resetModelPath = true)
             })
             spacer(body, 12)
 
@@ -589,7 +594,7 @@ class MainActivity : AppCompatActivity() {
             body.addView(chipRow(t, QuantizationType.values().map { it.name },
                 selectedQuant.name) { picked ->
                 selectedQuant = QuantizationType.valueOf(picked)
-                modelPathText = defaultModelPathFor(selectedModel, selectedQuant)
+                modelPathText = defaultModelPathFor(selDescriptor, selectedQuant) ?: ""
                 rebuildUi(resetModelPath = true)
             })
             spacer(body, 12)
@@ -636,7 +641,7 @@ class MainActivity : AppCompatActivity() {
         imgLabelRow.addView(labelView(t, "IMAGE INPUT").also {
             it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
         })
-        if (selectedModel != ModelId.GEMMA4) {
+        if (selDescriptor?.let { isMultimodal(it) } != true) {
             spacerH(imgLabelRow, 6)
             val badge = TextView(this).apply {
                 text = "GEMMA4 only"
@@ -681,8 +686,10 @@ class MainActivity : AppCompatActivity() {
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
             })
+            val totalBytes = selectedImageBytesList.sumOf { it.size }
+            val modeLabel = if (selectedImageBytesList.size > 1) "  ·  multi-image mode" else ""
             info.addView(TextView(this).apply {
-                text = "${selectedImageBytes!!.size} bytes  ·  raw bytes ready"
+                text = "${totalBytes} bytes  ·  raw bytes ready$modeLabel"
                 setTextColor(t.onSurfaceVar)
                 textSize = 11f
                 typeface = Typeface.MONOSPACE
@@ -702,8 +709,10 @@ class MainActivity : AppCompatActivity() {
             // touched by onClearImageClicked / readImageBytesAsync.
             imageStatusView = TextView(this).apply { visibility = View.GONE }
         } else {
+            val pickLabel = if (isMultiImageModel(selDescriptor))
+                "+  Pick images for V-JEPA" else "+  Pick image for multimodal run"
             val dropzone = TextView(this).apply {
-                text = "+  Pick image for multimodal run"
+                text = pickLabel
                 setTextColor(t.onSurfaceVar)
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
@@ -736,12 +745,17 @@ class MainActivity : AppCompatActivity() {
 
         // ── Model Selection Card ──
         val modelCard = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.VERTICAL
             background = solid(t.surfaceContainer, 20)
             setPadding(dp(14), dp(14), dp(14), dp(14))
         }
         val active = sessionIdText != null && activeSessionKey == loadedKey
+
+        // Top row: status icon + session controls.
+        val modelHeaderRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val modelIcon = TextView(this).apply {
             text = "▦"
             gravity = Gravity.CENTER
@@ -750,35 +764,15 @@ class MainActivity : AppCompatActivity() {
             background = solid(if (active) t.successContainer else t.surfaceContainerHigh, 10)
             layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
         }
-        modelCard.addView(modelIcon)
-        spacerH(modelCard, 12)
-
-        val modelDropdown = TextView(this).apply {
-            text = badgePlusLabel(chatSelectedModel)
+        modelHeaderRow.addView(modelIcon)
+        spacerH(modelHeaderRow, 12)
+        modelHeaderRow.addView(TextView(this).apply {
+            text = chatSelDescriptor?.let { badgeLabel(it) } ?: chatSelFamily
             setTextColor(t.onSurface)
-            textSize = 14f
+            textSize = 13f
             typeface = Typeface.MONOSPACE
-            background = solid(t.surfaceContainerHigh, 12)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
             layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-            setOnClickListener {
-                val popup = PopupMenu(this@MainActivity, this)
-                ModelId.values().forEachIndexed { i, m ->
-                    popup.menu.add(0, i, i, badgePlusLabel(m))
-                }
-                popup.setOnMenuItemClickListener { item ->
-                    chatSelectedModel = ModelId.values()[item.itemId]
-                    clearChatSessionState()
-                    if (chatSelectedModel == ModelId.GAUSS3_8_VISION_QNN) {
-                        chatPromptText = defaultVisionPrompt()
-                    }
-                    rebuildUi()
-                    true
-                }
-                popup.show()
-            }
-        }
-        modelCard.addView(modelDropdown)
+        })
 
         if (active) {
             chatSessionStatusView = TextView(this).apply {
@@ -787,20 +781,51 @@ class MainActivity : AppCompatActivity() {
                 textSize = 12f
                 typeface = Typeface.MONOSPACE
             }
-            spacerH(modelCard, 8)
-            modelCard.addView(chatSessionStatusView)
-            spacerH(modelCard, 6)
-            modelCard.addView(tonalButton(t, "✕ Close", danger = true) { onChatCloseClicked() })
+            spacerH(modelHeaderRow, 8)
+            modelHeaderRow.addView(chatSessionStatusView)
+            spacerH(modelHeaderRow, 6)
+            modelHeaderRow.addView(tonalButton(t, "✕ Close", danger = true) { onChatCloseClicked() })
         } else {
-            spacerH(modelCard, 8)
-            modelCard.addView(filledButton(t, "+ Open") { onChatOpenClicked() })
+            spacerH(modelHeaderRow, 8)
+            modelHeaderRow.addView(filledButton(t, "+ Open") { onChatOpenClicked() })
         }
+        modelCard.addView(modelHeaderRow)
+        spacer(modelCard, 12)
+
+        // 3-axis cascading selection.
+        modelCard.addView(labelView(t, "FAMILY"))
+        modelCard.addView(dropdownField(t, ModelCatalog.selectableFamilies(), chatSelFamily) { picked ->
+            chatSelFamily = picked
+            chatSelRuntime = ModelCatalog.runtimesFor(chatSelFamily).firstOrNull() ?: chatSelRuntime
+            chatSelBackend = ModelCatalog.backendsFor(chatSelFamily, chatSelRuntime).firstOrNull() ?: chatSelBackend
+            clearChatSessionState()
+            rebuildUi()
+        })
+        spacer(modelCard, 12)
+
+        modelCard.addView(labelView(t, "RUNTIME"))
+        modelCard.addView(chipRow(t, ModelCatalog.runtimesFor(chatSelFamily).map { it.name }, chatSelRuntime.name) { picked ->
+            chatSelRuntime = RuntimeKind.valueOf(picked)
+            chatSelBackend = ModelCatalog.backendsFor(chatSelFamily, chatSelRuntime).firstOrNull() ?: chatSelBackend
+            clearChatSessionState()
+            rebuildUi()
+        })
+        spacer(modelCard, 12)
+
+        modelCard.addView(labelView(t, "BACKEND"))
+        modelCard.addView(chipRow(t, ModelCatalog.backendsFor(chatSelFamily, chatSelRuntime).map { it.name }, chatSelBackend.name) { picked ->
+            chatSelBackend = BackendType.valueOf(picked)
+            clearChatSessionState()
+            rebuildUi()
+        })
         container.addView(modelCard)
         spacer(container, 10)
 
         val chatImageCard = roundedCard(t, t.surfaceContainer)
+        val imgSubtitle = if (isMultiImageModel(chatSelDescriptor))
+            "Select multiple images for V-JEPA" else "Attach one image to the next chat message"
         chatImageCard.addView(sectionHeader(t, "[ ]", t.secondaryContainer, t.onSurface,
-            "Image input", "Attach one image to the next chat message"))
+            "Image input", imgSubtitle))
         spacer(chatImageCard, 12)
 
         val chatImgLabelRow = LinearLayout(this).apply {
@@ -810,7 +835,7 @@ class MainActivity : AppCompatActivity() {
         chatImgLabelRow.addView(labelView(t, "IMAGE INPUT").also {
             it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
         })
-        if (!supportsMultimodalInput(chatSelectedModel)) {
+        if (chatSelDescriptor?.let { isMultimodal(it) } != true) {
             spacerH(chatImgLabelRow, 6)
             val badge = TextView(this).apply {
                 text = "Vision model only"
@@ -825,7 +850,7 @@ class MainActivity : AppCompatActivity() {
         chatImageCard.addView(chatImgLabelRow)
         spacer(chatImageCard, 6)
 
-        if (selectedImageBytes != null) {
+        if (selectedImageBytesList.isNotEmpty()) {
             val attached = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -833,9 +858,9 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(12), dp(12), dp(12), dp(12))
             }
             val thumb = TextView(this).apply {
-                text = "[ ]"
+                text = if (selectedImageBytesList.size > 1) "[${selectedImageBytesList.size}]" else "[ ]"
                 setTextColor(t.onSurface)
-                textSize = 22f
+                textSize = if (selectedImageBytesList.size > 1) 16f else 22f
                 gravity = Gravity.CENTER
                 background = gradient(
                     blendAlpha(t.primary, 0x55),
@@ -849,14 +874,16 @@ class MainActivity : AppCompatActivity() {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
             }
+            val totalBytes = selectedImageBytesList.sumOf { it.size }
             info.addView(TextView(this).apply {
-                text = "Selected image"
+                text = if (selectedImageBytesList.size == 1) "Selected image" else "${selectedImageBytesList.size} images selected"
                 setTextColor(t.onSurface)
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
             })
             info.addView(TextView(this).apply {
-                text = "${selectedImageBytes!!.size} bytes  raw bytes ready"
+                val modeLabel = if (selectedImageBytesList.size > 1) "  ·  multi-image mode" else ""
+                text = "${totalBytes} bytes  raw bytes ready$modeLabel"
                 setTextColor(t.onSurfaceVar)
                 textSize = 11f
                 typeface = Typeface.MONOSPACE
@@ -874,8 +901,10 @@ class MainActivity : AppCompatActivity() {
             chatImageCard.addView(attached)
             imageStatusView = TextView(this).apply { visibility = View.GONE }
         } else {
+            val pickLabel = if (isMultiImageModel(chatSelDescriptor))
+                "+  Pick images for V-JEPA" else "+  Pick image for multimodal chat"
             val dropzone = TextView(this).apply {
-                text = "+  Pick image for multimodal chat"
+                text = pickLabel
                 setTextColor(t.onSurfaceVar)
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
@@ -1075,7 +1104,7 @@ class MainActivity : AppCompatActivity() {
         imageLabelRow.addView(labelView(t, "IMAGE INPUT").also {
             it.layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
         })
-        if (!supportsMultimodalInput(selectedModel)) {
+        if (selDescriptor?.let { isMultimodal(it) } != true) {
             spacerH(imageLabelRow, 6)
             imageLabelRow.addView(TextView(this).apply {
                 text = "Vision model only"
@@ -1089,7 +1118,7 @@ class MainActivity : AppCompatActivity() {
         openAiImageCard.addView(imageLabelRow)
         spacer(openAiImageCard, 6)
 
-        if (selectedImageBytes != null) {
+        if (selectedImageBytesList.isNotEmpty()) {
             val attached = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -1097,9 +1126,9 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(12), dp(12), dp(12), dp(12))
             }
             attached.addView(TextView(this).apply {
-                text = "[ ]"
+                text = if (selectedImageBytesList.size > 1) "[${selectedImageBytesList.size}]" else "[ ]"
                 setTextColor(t.onSurface)
-                textSize = 22f
+                textSize = if (selectedImageBytesList.size > 1) 16f else 22f
                 gravity = Gravity.CENTER
                 background = gradient(
                     blendAlpha(t.primary, 0x55),
@@ -1112,14 +1141,16 @@ class MainActivity : AppCompatActivity() {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
             }
+            val totalBytes = selectedImageBytesList.sumOf { it.size }
             info.addView(TextView(this).apply {
-                text = "Selected image"
+                text = if (selectedImageBytesList.size == 1) "Selected image" else "${selectedImageBytesList.size} images selected"
                 setTextColor(t.onSurface)
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
             })
             info.addView(TextView(this).apply {
-                text = "${selectedImageBytes!!.size} bytes  raw bytes ready"
+                val modeLabel = if (selectedImageBytesList.size > 1) "  ·  multi-image mode" else ""
+                text = "${totalBytes} bytes  raw bytes ready$modeLabel"
                 setTextColor(t.onSurfaceVar)
                 textSize = 11f
                 typeface = Typeface.MONOSPACE
@@ -1136,8 +1167,10 @@ class MainActivity : AppCompatActivity() {
             openAiImageCard.addView(attached)
             imageStatusView = TextView(this).apply { visibility = View.GONE }
         } else {
+            val pickLabel = if (isMultiImageModel(selDescriptor))
+                "+  Pick images for V-JEPA" else "+  Pick image for OpenAI multimodal"
             openAiImageCard.addView(TextView(this).apply {
-                text = "+  Pick image for OpenAI multimodal"
+                text = pickLabel
                 setTextColor(t.onSurfaceVar)
                 textSize = 13f
                 typeface = Typeface.DEFAULT_BOLD
@@ -1584,6 +1617,50 @@ class MainActivity : AppCompatActivity() {
         return scroll
     }
 
+    private fun dropdownField(t: M3Tokens, options: List<String>, selected: String,
+                             onPick: (String) -> Unit): View {
+        val enabled = options.isNotEmpty()
+        val field = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = strokedSolid(
+                if (enabled) t.surfaceContainer else Color.TRANSPARENT, 8, t.outline, 1)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        val valueView = TextView(this).apply {
+            text = if (enabled) selected else "—"
+            setTextColor(if (enabled) t.onSurface else t.onSurfaceVar)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        }
+        val arrow = TextView(this).apply {
+            text = "▾"
+            setTextColor(t.onSurfaceVar)
+            textSize = 14f
+        }
+        field.addView(valueView)
+        field.addView(arrow)
+        if (enabled) {
+            field.setOnClickListener { anchor ->
+                val menu = PopupMenu(this, anchor)
+                options.forEachIndexed { i, opt ->
+                    menu.menu.add(0, i, i, opt).apply {
+                        isCheckable = true
+                        isChecked = opt == selected
+                    }
+                }
+                menu.setOnMenuItemClickListener { item ->
+                    onPick(options[item.itemId])
+                    true
+                }
+                menu.show()
+            }
+        }
+        return field
+    }
+
     private fun filledButton(t: M3Tokens, label: String, fill: String? = null,
                              danger: Boolean = false, onClick: () -> Unit): Button {
         return Button(this).apply {
@@ -1749,20 +1826,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Pretty label including the design's "MULTIMODAL/TEXT/QNN" tag. */
-    private fun badgePlusLabel(m: ModelId): String = when (m) {
-        ModelId.GEMMA4         -> "[MULTIMODAL]  ${m.name}"
-        ModelId.QWEN3_0_6B     -> "[TEXT]        ${m.name}"
-        ModelId.GAUSS3_8_QNN   -> "[QNN]         ${m.name}"
-        ModelId.GAUSS3_6_QNN   -> "[QNN]         ${m.name}"
-        ModelId.QWEN3_1_7B_Q40 -> "[TEXT]        ${m.name}"
-        ModelId.GAUSS3_8_VISION_QNN -> "[VISION-QNN]  ${m.name}"
-        ModelId.GAUSS3_8 -> "[TEXT]        ${m.name}"
-        ModelId.GAUSS3_6 -> "[TEXT]        ${m.name}"
-        ModelId.TINY_BERT -> "[EMBEDDING]   ${m.name}"
-        ModelId.FUNCTION_GEMMA -> "[TEXT]   ${m.name}"
-        ModelId.GEMMA4_CPU -> "[TEXT]   ${m.name}"
-        ModelId.GEMMA4_E2B_QNN -> "[QNN]         ${m.name}"
+    private fun badgeLabel(d: ModelDescriptor): String = when {
+        Capability.MULTIMODAL in d.capabilities -> "[MULTIMODAL]  ${d.displayName}"
+        Capability.EMBEDDING in d.capabilities  -> "[EMBEDDING]   ${d.displayName}"
+        d.backends == setOf(BackendType.NPU)    -> "[QNN]         ${d.displayName}"
+        else -> "[TEXT]        ${d.displayName}"
     }
+
+    private fun isMultimodal(d: ModelDescriptor) = Capability.MULTIMODAL in d.capabilities
+    private fun usesMessagesApi(d: ModelDescriptor) = Capability.MESSAGES_API in d.capabilities
+
+    private fun visionBackendFor(d: ModelDescriptor, backend: BackendType): BackendType? =
+        if (isMultimodal(d)) backend else null
 
     /* ════════════════════════════════════════════════════════════════
      * Engine handlers (logic preserved from the original sample)
@@ -1810,39 +1885,37 @@ class MainActivity : AppCompatActivity() {
      * be called on the main thread.
      */
     private fun buildLoadRequest(): LoadModelRequest {
-        val model = selectedModel
-        val backend = selectedBackend
+        val d = selDescriptor
+        val backend = selBackend
         val quant = selectedQuant
         val modelPath = (if (::modelPathField.isInitialized) modelPathField.text.toString()
                           else modelPathText).trim().ifEmpty { null }
-        val visionBackend = if (model == ModelId.GEMMA4 || model == ModelId.GAUSS3_8_VISION_QNN) backend else null
         val nativeLibDir = applicationContext.applicationInfo.nativeLibraryDir
         val modelBasePath = "/sdcard/Download/aistudio-mobile/models/"
         return LoadModelRequest(
             backend = backend,
-            model = model,
+            modelId = d?.id ?: selFamily,
             quantization = quant,
             modelPath = modelPath,
-            visionBackend = visionBackend,
+            visionBackend = d?.let { visionBackendFor(it, backend) },
             nativeLibDir = nativeLibDir,
             modelBasePath = modelBasePath,
         )
     }
 
     private fun buildChatLoadRequest(): LoadModelRequest {
-        val model = chatSelectedModel
-        val backend = chatSelectedBackend
+        val d = chatSelDescriptor
+        val backend = chatSelBackend
         val quant = chatSelectedQuant
-        val modelPath = defaultModelPathFor(model, quant)
-        val visionBackend = if (supportsMultimodalInput(model)) backend else null
+        val modelPath = defaultModelPathFor(d, quant)
         val nativeLibDir = applicationContext.applicationInfo.nativeLibraryDir
         val modelBasePath = "/sdcard/Download/aistudio-mobile/models/"
         return LoadModelRequest(
             backend = backend,
-            model = model,
+            modelId = d?.id ?: chatSelFamily,
             quantization = quant,
             modelPath = modelPath,
-            visionBackend = visionBackend,
+            visionBackend = d?.let { visionBackendFor(it, backend) },
             nativeLibDir = nativeLibDir,
             modelBasePath = modelBasePath,
         )
@@ -1863,7 +1936,7 @@ class MainActivity : AppCompatActivity() {
             if (activeSessionKey != null && activeSessionKey != req.modelKey) {
                 clearChatSessionState()
             }
-            loadDefaultOpenAIExampleFor(req.model)
+            loadDefaultOpenAIExampleFor(req.modelId)
             loadStatus = "loaded"
             loadedLabel = req.modelKey
             setStatus("Already loaded: ${req.modelKey}")
@@ -1871,16 +1944,18 @@ class MainActivity : AppCompatActivity() {
             return engine
         }
 
-        val newEngine: QuickDotAI = when (req.model) {
-            ModelId.GEMMA4 -> LiteRTLm(applicationContext)
-            else -> NativeQuickDotAI(applicationContext)
+        val descriptor = ModelCatalog.byId(req.modelId)
+        val newEngine: QuickDotAI = if (descriptor != null) {
+            createEngine(applicationContext, descriptor)
+        } else {
+            NativeQuickDotAI(applicationContext)  // fallback
         }
         return when (val r = newEngine.load(req)) {
             is BackendResult.Ok -> {
                 engine = newEngine
                 loadedKey = req.modelKey
                 clearChatSessionState()
-                loadDefaultOpenAIExampleFor(req.model)
+                loadDefaultOpenAIExampleFor(req.modelId)
                 loadStatus = "loaded"
                 loadedLabel = req.modelKey
                 setStatus("Loaded ${req.modelKey} (${newEngine.kind}, arch=${newEngine.architecture ?: "?"})")
@@ -1904,12 +1979,14 @@ class MainActivity : AppCompatActivity() {
             setStatus("Prompt is empty.")
             return
         }
-        val imgBytes = selectedImageBytes
+        val imgBytesList = selectedImageBytesList.toList()
         outputText = ""
         mainHandler.post { outputView.text = "" }
         streaming = true
-        setStatus(if (imgBytes != null) "Running multimodal (${imgBytes.size}B image)…"
-                  else "Running…")
+        val imgStatus = if (imgBytesList.isEmpty()) ""
+            else if (imgBytesList.size == 1) "Running multimodal (${imgBytesList[0].size}B image)…"
+            else "Running multimodal (${imgBytesList.size} images)…"
+        setStatus(if (imgStatus.isNotEmpty()) imgStatus else "Running…")
         mainHandler.post { rebuildUi() }
 
         engineExecutor.execute {
@@ -1937,11 +2014,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             try {
-                if (imgBytes != null) {
-                    val parts = listOf(
-                        PromptPart.ImageBytes(imgBytes),
-                        PromptPart.Text(prompt),
-                    )
+                if (imgBytesList.isNotEmpty()) {
+                    val parts = imgBytesList.map { PromptPart.ImageBytes(it) } +
+                        listOf(PromptPart.Text(prompt))
                     e.runMultimodalHandleStreaming(parts, sink)
                 } else {
                     // Run tab removed - use Chat or OpenAI tab instead
@@ -2065,15 +2140,18 @@ class MainActivity : AppCompatActivity() {
     private fun onChatRunStreamingClicked() {
         val prompt = normalizeVisionPromptText(chatPromptField.text.toString())
         if (prompt.isBlank()) { setStatus("Chat message is empty."); return }
-        val imgBytes = selectedImageBytes
-        if (imgBytes != null && !supportsMultimodalInput(chatSelectedModel)) {
+        val imgBytesList = selectedImageBytesList.toList()
+        if (imgBytesList.isNotEmpty() && chatSelDescriptor?.let { isMultimodal(it) } != true) {
             setStatus("Selected chat model does not support image input.")
             return
         }
         outputText = ""
         outputView.text = ""
         streaming = true
-        setStatus(if (imgBytes != null) "Chat multimodal streaming..." else "Chat streaming...")
+        val imgStatus = if (imgBytesList.isEmpty()) ""
+            else if (imgBytesList.size == 1) "Chat multimodal streaming..."
+            else "Chat multimodal streaming (${imgBytesList.size} images)..."
+        setStatus(if (imgStatus.isNotEmpty()) imgStatus else "Chat streaming...")
         mainHandler.post { rebuildUi() }
 
         engineExecutor.execute {
@@ -2084,7 +2162,7 @@ class MainActivity : AppCompatActivity() {
                 mainHandler.post { rebuildUi() }
                 return@execute
             }
-            if (imgBytes == null && (e.chatSessionId == null || activeSessionKey != loadedKey)) {
+            if (imgBytesList.isEmpty() && (e.chatSessionId == null || activeSessionKey != loadedKey)) {
                 clearChatSessionState()
                 streaming = false
                 setStatus("No chat session - tap Open first.")
@@ -2107,8 +2185,8 @@ class MainActivity : AppCompatActivity() {
                     mainHandler.post { rebuildUi() }
                 }
             }
-            val parts = buildChatParts(prompt, imgBytes)
-            if (imgBytes != null) {
+            val parts = buildChatParts(prompt, imgBytesList)
+            if (imgBytesList.isNotEmpty()) {
                 try {
                     when (val r = e.runMultimodalHandleStreaming(parts, sink)) {
                         is BackendResult.Ok -> {
@@ -2160,7 +2238,7 @@ class MainActivity : AppCompatActivity() {
         val prompt = normalizeVisionPromptText(chatPromptField.text.toString())
         if (prompt.isBlank()) { setStatus("Chat message is empty."); return }
         val imgBytes = selectedImageBytes
-        if (imgBytes != null && !supportsMultimodalInput(chatSelectedModel)) {
+        if (imgBytes != null && chatSelDescriptor?.let { isMultimodal(it) } != true) {
             setStatus("Selected chat model does not support image input.")
             return
         }
@@ -2218,16 +2296,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildChatParts(prompt: String, imgBytes: ByteArray?): List<PromptPart> {
-        return if (imgBytes != null) {
-            listOf(PromptPart.ImageBytes(imgBytes), PromptPart.Text(prompt))
+    private fun buildChatParts(prompt: String, imgBytesList: List<ByteArray>): List<PromptPart> {
+        return if (imgBytesList.isNotEmpty()) {
+            imgBytesList.map { PromptPart.ImageBytes(it) } + listOf(PromptPart.Text(prompt))
         } else {
             listOf(PromptPart.Text(prompt))
         }
-    }
-
-    private fun supportsMultimodalInput(model: ModelId): Boolean {
-        return model == ModelId.GEMMA4 || model == ModelId.GAUSS3_8_VISION_QNN
     }
 
     /* ───── OpenAI-style messages handlers ───── */
@@ -2261,7 +2335,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun parseOpenAIMessages(
         jsonString: String,
-        attachedImageBytes: ByteArray? = null
+        attachedImageBytesList: List<ByteArray> = emptyList()
     ): List<QuickAiChatMessage>? {
         return try {
             val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -2290,7 +2364,7 @@ class MainActivity : AppCompatActivity() {
                     parts = parseOpenAIContentParts(obj["content"])
                 ))
             }
-            if (attachedImageBytes != null) {
+            if (attachedImageBytesList.isNotEmpty()) {
                 val lastUserIndex = messages.indexOfLast { it.role == QuickAiChatRole.USER }
                 if (lastUserIndex < 0) return null
                 val lastUser = messages[lastUserIndex]
@@ -2298,8 +2372,10 @@ class MainActivity : AppCompatActivity() {
                     it is PromptPart.ImageBytes || it is PromptPart.ImageFile
                 }
                 if (!hasImage) {
+                    // Attach all images as PromptPart.ImageBytes before existing parts
+                    val imageParts = attachedImageBytesList.map { PromptPart.ImageBytes(it) }
                     messages[lastUserIndex] = lastUser.copy(
-                        parts = listOf(PromptPart.ImageBytes(attachedImageBytes)) + lastUser.parts
+                        parts = imageParts + lastUser.parts
                     )
                 }
             }
@@ -2310,15 +2386,18 @@ class MainActivity : AppCompatActivity() {
     private fun onOpenAIMessagesRunClicked() {
         val jsonText = openAIMessagesField.text.toString().trim()
         if (jsonText.isBlank()) { setStatus("Messages JSON is empty."); return }
-        val imgBytes = selectedImageBytes
-        if (imgBytes != null && !supportsMultimodalInput(selectedModel)) {
+        val imgBytesList = selectedImageBytesList.toList()
+        if (imgBytesList.isNotEmpty() && selDescriptor?.let { isMultimodal(it) } != true) {
             setStatus("Selected model does not support OpenAI image input.")
             return
         }
         outputText = ""
         outputView.text = ""
         streaming = true
-        setStatus(if (imgBytes != null) "Running OpenAI multimodal (streaming)..." else "Running OpenAI JSON (streaming)...")
+        val imgStatus = if (imgBytesList.isEmpty()) ""
+            else if (imgBytesList.size == 1) "Running OpenAI multimodal (streaming)..."
+            else "Running OpenAI multimodal (${imgBytesList.size} images, streaming)..."
+        setStatus(if (imgStatus.isNotEmpty()) imgStatus else "Running OpenAI JSON (streaming)...")
         mainHandler.post { rebuildUi() }
 
         val req = buildLoadRequest()
@@ -2357,12 +2436,11 @@ class MainActivity : AppCompatActivity() {
             }
             try {
                 // Route based on model type:
-                // - Gauss models need messages-based API for Gauss <|turn_start|>/
-                //   <|turn_end|> markers in incremental prompts.
                 // - LiteRT-LM (GEMMA4) only supports messages-based API.
                 // - All others use JSON streaming for full OpenAI format support.
-                if (imgBytes != null) {
-                    val messages = parseOpenAIMessages(jsonText, attachedImageBytes = imgBytes)
+                if (imgBytesList.isNotEmpty()) {
+                    // Attach all selected images to the last user message
+                    val messages = parseOpenAIMessages(jsonText, attachedImageBytesList = imgBytesList)
                     if (messages == null) {
                         streaming = false
                         setStatus("Failed to parse messages JSON for multimodal API.")
@@ -2381,7 +2459,7 @@ class MainActivity : AppCompatActivity() {
                             mainHandler.post { rebuildUi() }
                         }
                     }
-                } else if (selectedModel in MESSAGES_API_MODELS) {
+                } else if (selDescriptor?.let { usesMessagesApi(it) } == true) {
                     val messages = parseOpenAIMessages(jsonText)
                     if (messages == null) {
                         streaming = false
@@ -2456,33 +2534,56 @@ class MainActivity : AppCompatActivity() {
         // }
     }
 
+    /** Whether the currently selected model supports multi-image (V-JEPA). */
+    private fun isMultiImageModel(d: ModelDescriptor?): Boolean =
+        d != null && Capability.MULTI_IMAGE in d.capabilities
+
     /* ───── Image picker handlers ───── */
 
     private fun onPickImageClicked() {
-        imagePickerLauncher.launch(
-            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-        )
+        // Use multi-image picker for V-JEPA models, single for others
+        if (isMultiImageModel(selDescriptor) || isMultiImageModel(chatSelDescriptor)) {
+            multiImagePickerLauncher.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        } else {
+            imagePickerLauncher.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        }
         setStatus("Opening photo picker…")
     }
 
     private fun onClearImageClicked() {
-        selectedImageBytes = null
+        selectedImageBytesList.clear()
         if (::imageStatusView.isInitialized) {
             mainHandler.post { imageStatusView.text = "Image: none" }
         }
         setStatus("Image cleared.")
     }
 
-    private fun readImageBytesAsync(uri: Uri) {
-        setStatus("Reading image…")
+    private fun readImageBytesAsync(uris: List<Uri>) {
+        val total = uris.size
+        setStatus(if (total == 1) "Reading image…" else "Reading $total images…")
         Thread({
             try {
-                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                if (bytes == null || bytes.isEmpty()) {
-                    setStatus("Image read failed or empty."); return@Thread
+                val bytesRead = mutableListOf<ByteArray>()
+                for ((i, uri) in uris.withIndex()) {
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    if (bytes == null || bytes.isEmpty()) {
+                        setStatus("Image ${i + 1} read failed or empty."); return@Thread
+                    }
+                    bytesRead.add(bytes)
                 }
-                selectedImageBytes = bytes
-                setStatus("Image loaded (${bytes.size} bytes). Ready for Run or Send.")
+                selectedImageBytesList.clear()
+                selectedImageBytesList.addAll(bytesRead)
+                val totalBytes = bytesRead.sumOf { it.size }
+                val statusMsg = if (bytesRead.size == 1) {
+                    "Image loaded ($totalBytes bytes). Ready for Run or Send."
+                } else {
+                    "${bytesRead.size} images loaded ($totalBytes bytes total). Multi-image mode."
+                }
+                setStatus(statusMsg)
                 mainHandler.post { rebuildUi() }
             } catch (t: Throwable) {
                 setStatus("Failed to read image: ${t.message}")
@@ -2498,65 +2599,45 @@ class MainActivity : AppCompatActivity() {
     private fun normalizeVisionPromptText(text: String): String =
         text.replace("<|image_strart|>", "<|image_start|>")
 
-    private fun defaultOpenAIExampleFor(model: ModelId): String = when (model) {
-        ModelId.GEMMA4, ModelId.GAUSS3_8_VISION_QNN -> """[
+    private val exampleByModelId: Map<String, String> = mapOf(
+        ModelIds.GEMMA4 to """[
   {"role": "system", "content": "You are a concise vision assistant."},
-  {
-    "role": "user",
-    "content": [
-      {"type": "text", "text": "${defaultVisionPrompt()}"},
-      {"type": "image_url", "image_url": {"url": "sampletestapp://selected-image"}}
-    ]
-  }
-]"""
-        ModelId.GAUSS3_6_QNN,
-        ModelId.GAUSS3_8_QNN,
-        ModelId.GAUSS3_8,
-        ModelId.GAUSS3_6,
-        ModelId.GEMMA4_E2B_QNN -> """[
-  {"role": "system", "content": "You are a helpful assistant. Answer briefly."},
-  {"role": "user", "content": "Summarize why on-device language models are useful."}
-]"""
-        ModelId.FUNCTION_GEMMA -> """{
+  {"role": "user", "content": [{"type": "text", "text": "Describe this image."}, {"type": "image_url", "image_url": {"url": "sampletestapp://selected-image"}}]}
+]""",
+        ModelIds.FUNCTION_GEMMA to """{
   "messages": [
     {"role": "system", "content": "You can call tools when they are useful."},
     {"role": "user", "content": "01012345678 번호로 상담 예약 확인 문자를 보내줘."}
   ],
-  "tools": [
-    {
-      "type": "function",
-      "function": {
-        "name": "send_sms",
-        "description": "Send a text message to a phone number.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "phone_number": {"type": "string"},
-            "message": {"type": "string"}
-          },
-          "required": ["phone_number", "message"]
-        }
-      }
-    }
-  ]
-}"""
-        ModelId.QWEN3_0_6B,
-        ModelId.QWEN3_1_7B_Q40,
-        ModelId.GEMMA4_CPU -> """{
+  "tools": [{"type": "function", "function": {"name": "send_sms", "description": "Send a text message to a phone number.", "parameters": {"type": "object", "properties": {"phone_number": {"type": "string"}, "message": {"type": "string"}}, "required": ["phone_number", "message"]}}}]
+}""",
+        ModelIds.TINY_BERT to """{
+  "messages": [{"role": "user", "content": "Explain what text embeddings are in one sentence."}]
+}""",
+    )
+    // Shared template for MESSAGES_API models
+    private val messagesApiExample = """[
+  {"role": "system", "content": "You are a helpful assistant. Answer briefly."},
+  {"role": "user", "content": "Summarize why on-device language models are useful."}
+]"""
+    private val defaultToolExample = """{
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Write a short checklist for testing an Android API wrapper."}
   ]
 }"""
-        ModelId.TINY_BERT -> """{
-  "messages": [
-    {"role": "user", "content": "Explain what text embeddings are in one sentence."}
-  ]
-}"""
+
+    private fun defaultOpenAIExampleForId(modelId: String): String {
+        exampleByModelId[modelId]?.let { return it }
+        val d = ModelCatalog.byId(modelId)
+        return when {
+            d != null && Capability.MESSAGES_API in d.capabilities -> messagesApiExample
+            else -> defaultToolExample
+        }
     }
 
-    private fun loadDefaultOpenAIExampleFor(model: ModelId) {
-        openAiJsonText = defaultOpenAIExampleFor(model)
+    private fun loadDefaultOpenAIExampleFor(modelId: String) {
+        openAiJsonText = defaultOpenAIExampleForId(modelId)
         if (::openAIMessagesField.isInitialized) {
             mainHandler.post { openAIMessagesField.setText(openAiJsonText) }
         }
@@ -2586,38 +2667,24 @@ class MainActivity : AppCompatActivity() {
      * `./models/<name>-<quant>` prefix (resolve_model_path() in
      * quick_dot_ai_api.cpp).
      */
-    private fun defaultModelPathFor(model: ModelId, quant: QuantizationType): String {
+    private fun defaultModelPathFor(d: ModelDescriptor?, quant: QuantizationType): String? {
+        if (d == null) return null
         val externalFiles = applicationContext.getExternalFilesDir(null)
-        val base = externalFiles?.absolutePath
-            ?: "/sdcard/Download/aistudio-mobile"
-        return when (model) {
-            ModelId.GEMMA4 ->
-                "$base/models/gemma-4-E2B-it/gemma-4-E2B-it.litertlm"
-            ModelId.QWEN3_0_6B ->
-                "$base/models/qwen3-0.6b"
-            ModelId.GAUSS3_6_QNN ->
-                "$base/models/gauss-3.6-qnn"
-            ModelId.GAUSS3_8_QNN ->
-                "$base/models/gauss-3.8-qnn"
-            ModelId.QWEN3_1_7B_Q40 ->
-                "$base/models/qwen3-1.7b-q40-arm"
-            ModelId.GAUSS3_8_VISION_QNN ->
-                "$base/models/gauss-3.8-vsion-qnn"
-            ModelId.GAUSS3_8 ->
-                "$base/models/gauss-3.8"
-            ModelId.GAUSS3_6 ->
-                "$base/models/gauss-3.6"
-            ModelId.TINY_BERT ->
-                "$base/models/tiny-bert"
-            ModelId.FUNCTION_GEMMA ->
-                "$base/models/function_gemma"
-            ModelId.GEMMA4_CPU ->
-                "$base/models/gemma4_cpu"
-            ModelId.GEMMA4_E2B_QNN ->
-                "$base/models/gemma-4-e2b-qnn"
-
-        }
+        val base = externalFiles?.absolutePath ?: "/sdcard/Download/aistudio-mobile"
+        return modelPathById[d.id]?.let { "$base/$it" }
+            ?: "$base/models/${d.id}"
     }
+
+    private val modelPathById: Map<String, String> = mapOf(
+        ModelIds.GEMMA4         to "models/gemma-4-E2B-it/gemma-4-E2B-it.litertlm",
+        ModelIds.QWEN3_0_6B     to "models/qwen3-0.6b",
+        ModelIds.QWEN3_1_7B_Q40 to "models/qwen3-1.7b-q40-arm",
+        ModelIds.TINY_BERT      to "models/tiny-bert",
+        ModelIds.FUNCTION_GEMMA to "models/function_gemma",
+        ModelIds.GEMMA4_CPU     to "models/gemma4_cpu",
+        ModelIds.GEMMA4_E2B_QNN to "models/gemma-4-e2b-qnn",
+        ModelIds.VJEPA_QNN      to "models/vjepa-qnn",
+    )
 
     private fun checkAllFilesAccess() {
         if (Environment.isExternalStorageManager()) return

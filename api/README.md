@@ -7,6 +7,7 @@ helpers, chat templates, and XGrammar structured generation.
 
 ## 📚 Contents
 
+- [Model Catalog (T4)](#-model-catalog-t4)
 - [Model Enums](#-model-enums)
 - [Core Types](#-core-types)
 - [Global Options](#-global-options)
@@ -18,7 +19,86 @@ helpers, chat templates, and XGrammar structured generation.
 - [OpenAI JSON Streaming](#-openai-json-streaming)
 - [Error Codes](#-error-codes)
 
+## Model Catalog (T4)
+
+As of T4, the preferred model identification mechanism is a **string model id**
+routed through a self-registering descriptor catalog.
+
+### loadModelHandleByName
+
+```c
+ErrorCode loadModelHandleByName(BackendType compute,
+                                const char *model_id,
+                                ModelQuantizationType quant_type,
+                                const char *native_lib_dir,
+                                const char *model_base_path,
+                                CausalLmHandle *out_handle);
+```
+
+`model_id` is a string such as `"qwen3-0.6b"` or `"gemma4-cpu"`. The function
+looks up the descriptor in the process-global registry, resolves the config,
+and loads the model. This is the **preferred T4 load path** for all new code.
+
+### getModelCatalogJson
+
+```c
+const char *getModelCatalogJson(void);
+```
+
+Returns a JSON array of all model descriptors registered in the current
+process. The returned pointer is valid for the lifetime of the process. Example
+output:
+
+```json
+[
+  {
+    "id": "qwen3-0.6b",
+    "family": "qwen3-0.6b",
+    "display_name": "Qwen3 0.6B",
+    "runtime": 0,
+    "backend_mask": 3,
+    "capabilities": 5,
+    "config_name": "qwen3_0_6b",
+    "arch_string": "Qwen3ForCausalLM"
+  },
+  {
+    "id": "gemma4-cpu",
+    "family": "gemma4-cpu",
+    "display_name": "Gemma4 CPU",
+    "runtime": 0,
+    "backend_mask": 1,
+    "capabilities": 1,
+    "config_name": "gemma4_cpu",
+    "arch_string": "Gemma3ForCausalLM"
+  }
+]
+```
+
+`runtime` is `0` for `NATIVE` and `1` for `LITERT`. `backend_mask` is a
+bitmask where bit 0 = CPU, bit 1 = GPU, bit 2 = NPU/QNN. `capabilities` is a
+bitmask using the `Capability` enum flags (bit 0 = STREAMING, bit 1 =
+MESSAGES_API, bit 2 = MULTIMODAL, bit 3 = TOOL_USE, bit 4 = EMBEDDING).
+
+### ModelDescriptor struct
+
+```c
+typedef struct {
+  const char *id;
+  const char *family;
+  const char *display_name;
+  int         runtime;       // 0 = NATIVE, 1 = LITERT
+  uint32_t    backend_mask;
+  uint32_t    capabilities;
+  const char *config_name;
+  const char *arch_string;
+} ModelDescriptor;
+```
+
 ## 🤖 Model Enums
+
+> **Deprecated.** The `ModelType` enum is a compatibility shim maintained for
+> ABI stability. Gauss entries have been removed. All new code should use
+> string model ids with `loadModelHandleByName()` instead.
 
 | Enum | Value | Notes |
 |---|---:|---|

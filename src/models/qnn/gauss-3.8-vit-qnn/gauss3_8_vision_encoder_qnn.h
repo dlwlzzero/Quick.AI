@@ -90,8 +90,8 @@ public:
                                bool do_sample = false,
                                const WSTR system_prompt = "",
                                const WSTR tail_prompt = "",
-                               bool log_output = true);
-  void set_quant_param(float scale, int offset);
+                               bool log_output = true) override;
+  void set_quant_param(float scale, int offset) override;
 
 private:
   // Also hard-coded in Goka's genie

@@ -75,6 +75,77 @@ Important entry points:
 | `loadQnnKvCacheHandle()` | Load QNN KV cache |
 | `resetQnnKvCacheHandle()` | Reset QNN KV cache |
 
+## Model Registry (T4)
+
+Starting with T4, the API layer maintains a **string-keyed self-registering
+model descriptor catalog** separate from the nntrainer CausalLM factory.
+
+### Self-registration
+
+Each model descriptor translation unit (`src/model_descriptors_<name>.cpp`)
+declares a `quick_dot_ai::ModelDescriptor` struct and registers it at load
+time:
+
+```cpp
+static quick_dot_ai::ModelDescriptor desc = {
+  .id          = "qwen3-0.6b",
+  .family      = "qwen3-0.6b",
+  .display_name = "Qwen3 0.6B",
+  .runtime     = 0,               // 0 = NATIVE, 1 = LITERT
+  .backend_mask = /* CPU|GPU bitmask */,
+  .capabilities = /* STREAMING|TOOL_USE bitmask */,
+  .config_name = "qwen3_0_6b",
+  .arch_string = "Qwen3ForCausalLM",
+};
+
+__attribute__((constructor)) static void register_descriptors() {
+  quick_dot_ai::register_model_descriptor(&desc);
+}
+```
+
+This runs before `main()` / API first-call, adding the descriptor to a
+process-global registry. No central switch statement or header change is
+needed — just link in the TU.
+
+### Catalog API
+
+| Function | Purpose |
+|---|---|
+| `loadModelHandleByName(backend, model_id, quant, lib_dir, base_path, out)` | Preferred T4 load path — routes through the descriptor registry |
+| `getModelCatalogJson()` | Returns a JSON array of all registered descriptors |
+
+`getModelCatalogJson()` returns a JSON array in this shape:
+
+```json
+[
+  {
+    "id": "qwen3-0.6b",
+    "family": "qwen3-0.6b",
+    "display_name": "Qwen3 0.6B",
+    "runtime": 0,
+    "backend_mask": 3,
+    "capabilities": 5,
+    "config_name": "qwen3_0_6b",
+    "arch_string": "Qwen3ForCausalLM"
+  }
+]
+```
+
+### ModelType enum status
+
+The `CAUSAL_LM_MODEL_*` C enum is a **deprecated compatibility shim**.
+Original non-gauss ordinals are preserved for ABI compatibility.
+Gauss entries have been removed from the enum. All new code should use
+string model ids and `loadModelHandleByName()`.
+
+### gauss models
+
+Gauss model implementations use the same `register_model_descriptor` path
+but are **not** linked into the public descriptor TU
+(`src/model_descriptors_public.cpp`). They remain internal (gauss-0
+readiness) and do not appear in `getModelCatalogJson()` output from the
+public library.
+
 ## 🧰 Build System
 
 The root `build.sh` prepares nntrainer, tokenizer assets, Android cross files,

@@ -68,9 +68,27 @@ if [ ! -f "$NNTRAINER_ROOT/meson.build" ]; then
     git -C "$SCRIPT_DIR" submodule update --init --recursive --depth 1
 fi
 
-if [ ! -f "$NNTRAINER_ROOT/meson.build" ]; then
+# xgrammar submodule: src/meson.build compiles xgrammar/cpp/*.cc and the root
+# meson.build adds xgrammar/include + 3rdparty/dlpack/include to the include
+# path. A missing xgrammar checkout makes meson configuration fail with:
+#   "ERROR: File .../xgrammar/cpp/compiled_grammar.cc does not exist."
+# NOTE: init from the superproject ($SCRIPT_DIR) targeting the xgrammar path,
+# not `git -C "$XGRAMMAR_ROOT"` (that dir is empty until checkout, so it is
+# not a git repo). Also do NOT check $NNTRAINER_ROOT/meson.build here — that
+# is the nntrainer guard and is unrelated to xgrammar.
+if [ ! -f "$XGRAMMAR_ROOT/cpp/compiled_grammar.cc" ]; then
     echo "[0] Initializing xgrammar submodule..."
-    git -C "$XGRAMMAR_ROOT" submodule update --init --recursive --depth 1
+    git -C "$SCRIPT_DIR" submodule update --init xgrammar
+fi
+
+# xgrammar nested submodule: only dlpack is required by the build
+# (xgrammar/3rdparty/dlpack/include, used e.g. by grammar_matcher.cc).
+# cpptrace is compiled out (guarded by XGRAMMAR_ENABLE_CPPTRACE != 1) and
+# googletest is test-only, so we deliberately avoid --recursive to skip those
+# large, unnecessary clones.
+if [ ! -d "$XGRAMMAR_ROOT/3rdparty/dlpack/include" ]; then
+    echo "[0] Initializing xgrammar nested submodule (dlpack)..."
+    git -C "$XGRAMMAR_ROOT" submodule update --init 3rdparty/dlpack
 fi
 
 # Check iniparser submodule

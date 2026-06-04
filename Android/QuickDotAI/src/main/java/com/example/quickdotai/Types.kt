@@ -7,8 +7,8 @@
  *          implementations.
  *
  * The enums mirror the C enums in Applications/CausalLM/api/quick_dot_ai_api.h.
- * Kotlin-only values (ModelId.GEMMA4) are additionally defined so the host
- * app can route to LiteRT-LM without crossing the JNI boundary.
+ * Model identifiers are plain Strings (see [ModelIds] in ModelCatalog.kt)
+ * so the AAR is not re-compiled whenever the model list changes.
  *
  * Every public class in this file carries `@Serializable` so host apps
  * that want to JSON-ify requests/responses (for example QuickAIService's
@@ -28,29 +28,6 @@ enum class BackendType {
     CPU,
     GPU,
     NPU
-}
-
-/**
- * @brief Model identifier.
- *
- * The first entries mirror the C enum `ModelType` in quick_dot_ai_api.h.
- * [GEMMA4] is a Kotlin-only value that triggers the [LiteRTLm] code
- * path; it never crosses the JNI boundary.
- */
-@Serializable
-enum class ModelId {
-    QWEN3_0_6B,
-    GEMMA4,
-    GAUSS3_6_QNN,
-    GAUSS3_8_QNN,
-    QWEN3_1_7B_Q40,
-    GAUSS3_8_VISION_QNN,
-    GAUSS3_8,
-    GAUSS3_6,
-    TINY_BERT,
-    FUNCTION_GEMMA,
-    GEMMA4_CPU,
-    GEMMA4_E2B_QNN
 }
 
 
@@ -111,7 +88,7 @@ enum class QuickAiError(val code: Int) {
 @Serializable
 data class LoadModelRequest(
     val backend: BackendType = BackendType.GPU,
-    val model: ModelId,
+    @SerialName("model_id") val modelId: String,
     val quantization: QuantizationType = QuantizationType.W4A32,
     @SerialName("model_path") val modelPath: String? = null,
 
@@ -184,7 +161,7 @@ data class LoadModelRequest(
      * Canonical key shared across the stack: one worker/handle per
      * (model, quantization) pair.
      */
-    val modelKey: String get() = "${model.name}:${quantization.name}"
+    val modelKey: String get() = "$modelId:${quantization.name}"
 }
 
 /**
@@ -241,6 +218,37 @@ sealed class PromptPart {
             return bytes.contentEquals(other.bytes)
         }
         override fun hashCode(): Int = bytes.contentHashCode()
+    }
+
+    /**
+     * Pre-processed pixel values already in CHW float format.
+     * Used by models like V-JEPA where the caller has already performed
+     * image preprocessing externally and wants to pass the result
+     * directly to the native vision encoder without any further
+     * transformation on the Kotlin side.
+     *
+     * @param pixelValues  Flattened pixel values in CHW format
+     *                     (all images concatenated)
+     * @param numPatches   Total number of patches across all images
+     * @param numImages    Number of images (e.g. video frames)
+     * @param patchesPerImage Number of patches per image
+     * @param imageHeights Original height of each image before preprocessing
+     * @param imageWidths  Original width of each image before preprocessing
+     */
+    data class PreprocessedPixels(
+        val pixelValues: FloatArray,
+        val numPatches: Int,
+        val numImages: Int,
+        val patchesPerImage: IntArray,
+        val imageHeights: IntArray,
+        val imageWidths: IntArray
+    ) : PromptPart() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is PreprocessedPixels) return false
+            return pixelValues.contentEquals(other.pixelValues)
+        }
+        override fun hashCode(): Int = pixelValues.contentHashCode()
     }
 }
 

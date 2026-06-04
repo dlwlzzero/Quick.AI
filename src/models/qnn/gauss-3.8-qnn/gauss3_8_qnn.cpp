@@ -15,6 +15,7 @@
 #include <app_context.h>
 #include <engine.h>
 #include <factory.h>
+#include <model_descriptor.h>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -38,6 +39,13 @@ __attribute__((constructor)) static void register_custom_models() {
       return std::make_unique<causallm::Gauss3_8_QNN>(cfg, generation_cfg,
                                                       nntr_cfg);
     });
+
+  static const ModelDescriptor d = {
+    "gauss-3.8-qnn",   "gauss-3.8",
+    "Gauss 3.8 (QNN)", QDA_RUNTIME_NATIVE,
+    (1u << 2),         QDA_CAP_STREAMING | QDA_CAP_MESSAGES_API,
+    "gauss-3.8-qnn",   "Gauss_3_8_QNN"};
+  quick_dot_ai::register_model_descriptor(&d);
 }
 
 causallm::Gauss3_8_QNN::~Gauss3_8_QNN() {
@@ -967,3 +975,62 @@ void causallm::Gauss3_8_QNN::run_with_embeddings(const void *prefill_embeds,
               << this->raw_exec_seconds.count() / generated << std::endl;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Self-registration: Gauss_3_8_QNN callbacks
+// ---------------------------------------------------------------------------
+#include "model_callbacks.h"
+
+namespace {
+
+static std::string extract_latest_gauss_user_content(const std::string &prompt) {
+  static constexpr const char *kStart = "<|turn_start|>";
+  static constexpr const char *kEnd = "<|turn_end|>";
+  size_t latest_start = std::string::npos, latest_end = std::string::npos;
+  for (size_t pos = prompt.find(kStart); pos != std::string::npos;
+       pos = prompt.find(kStart, pos + std::strlen(kStart))) {
+    const size_t role = pos + std::strlen(kStart);
+    if (prompt.compare(role, 4, "User") != 0 && prompt.compare(role, 4, "user") != 0)
+      continue;
+    size_t cs = role + 4;
+    if (cs < prompt.size() && prompt[cs] == '\r') cs++;
+    if (cs < prompt.size() && prompt[cs] == '\n') cs++;
+    size_t ce = prompt.find(kEnd, cs);
+    if (ce == std::string::npos) ce = prompt.size();
+    latest_start = cs; latest_end = ce;
+  }
+  if (latest_start == std::string::npos) return prompt;
+  auto s = prompt.substr(latest_start, latest_end - latest_start);
+  while (!s.empty() && (s.front() == '\n' || s.front() == '\r')) s.erase(s.begin());
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+  return s;
+}
+
+static int gauss_qnn_read_kv_len(causallm::Transformer *model) {
+  if (auto *m = dynamic_cast<Quick_Dot_AI_QNN *>(model)) {
+    if (m->supportsKvCachePersistence()) return m->getKvLen();
+  }
+  return 0;
+}
+
+struct Gauss38Registrar {
+  Gauss38Registrar() {
+    ModelCallbackRegistry::instance().register_for("Gauss_3_8_QNN", {
+      .format_prompt = [](const std::string &input) -> std::string {
+        return "<|begin_of_text|><|turn_start|>System\n<|turn_end|>\n"
+               "<|turn_start|>User\n" + input +
+               "\n<|turn_end|>\n<|turn_start|>Assistant\n";
+      },
+      .requires_htp = true,
+      .read_kv_len = gauss_qnn_read_kv_len,
+      .incremental_prompt = [](const std::string &full) -> std::string {
+        const auto user = extract_latest_gauss_user_content(full);
+        return "<|turn_start|>User\n" + user +
+               "\n<|turn_end|>\n<|turn_start|>Assistant\n";
+      },
+    });
+  }
+};
+static Gauss38Registrar g_gauss38_registrar;
+
+}  // namespace

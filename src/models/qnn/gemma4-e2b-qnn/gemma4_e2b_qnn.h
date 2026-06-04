@@ -38,6 +38,14 @@ public:
            const WSTR system_prompt = "", const WSTR tail_prompt = "",
            bool log_output = true) override;
 
+  // Gemma4 E2B implements the full QNN KV-cache machinery
+  // (initialize_kv_cache / fresh_kvs). run() resets the cache at the start of
+  // every generation via resetKvCache(); route that base hook to the real
+  // implementation instead of inheriting the stub that throws
+  // "QNN KV cache is not supported by this model".
+  void resetKvCache() override { initialize_kv_cache(); }
+  int getKvLen() const override { return kv_len; }
+
 private:
   // -------------------------------------------------------------------
   // PLE: tri-mode (auto-detected from `ple_file_name` + manifest

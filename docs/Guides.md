@@ -44,6 +44,28 @@ Extend Quick.AI with a new CausalLM architecture or QNN model.
 | [Native Architecture](Architecture.md) | Plugin system and build artifacts |
 | [QNN Context Guide](../qnn/README.md) | QNN backend/context extension details |
 
+## Adding a New Model (T4+)
+
+Starting with T4, adding a model requires only a new translation unit — no
+changes to the `ModelType` enum, `loadModelHandle`, or UI code are needed.
+
+1. Create `src/model_descriptors_<name>.cpp` with a `ModelDescriptor` struct
+   and an `__attribute__((constructor))` that calls
+   `quick_dot_ai::register_model_descriptor(&desc)`. The descriptor fields
+   include `id` (string), `family`, `display_name`, `runtime` (0=NATIVE or
+   1=LITERT), `backend_mask`, `capabilities`, `config_name`, and
+   `arch_string`.
+2. Add the new TU to `src/meson.build` so it is linked into
+   `libquick_dot_ai_api.so`.
+3. The C API catalog (`getModelCatalogJson()`) and the Android `ModelCatalog`
+   singleton will automatically reflect the new model after the library is
+   rebuilt — no additional registration steps are required.
+4. If the model needs a new nntrainer architecture, register it with the
+   CausalLM factory as described in the [Custom Model Guide](../README.md#-how-to-create-a-custom-model).
+
+See [Native Architecture](Architecture.md) for the full descriptor struct
+layout and the `register_model_descriptor` call convention.
+
 ## 🧩 Feature Guides
 
 | Feature | Guide |

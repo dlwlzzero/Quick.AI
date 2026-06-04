@@ -1,10 +1,23 @@
 # AI Agent directories
 .opencode/plans/
 
+# Gauss model sources — internal only; must not be committed to origin/main.
+# Already-tracked gauss files on internal/* branches are unaffected by this
+# entry (gitignore never hides tracked files). This guard prevents accidental
+# `git add` of any NEW gauss directories that might appear in the working tree.
+
+#src/models/gauss-*/
+#src/models/qnn/gauss-*/
+
 # Build directories (meson)
 builddir/
 builddir_x86/
 builddir_android/
+
+
+# Docs that can be used by AI Agents - need to be ignored
+docs/superpowers
+docs/tasks
 
 # NDK build outputs
 src/jni/libs/
@@ -18,8 +31,9 @@ api-app/jni/obj/
 include/
 !qnn/jni/qnn/PAL/include/
 
-# res
+# res (model/QNN resource dirs)
 res/
+!Android/SampleTestAPP/src/main/res/
 
 cross/android-aarch64.cross
 

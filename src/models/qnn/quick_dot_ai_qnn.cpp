@@ -373,10 +373,17 @@ void causallm::Quick_Dot_AI_QNN::initialize() {
         }
         std::cout << tensor_name << " : " << input_shape_string << std::endl;
         current_model->addLayer(createLayer(
-          "input", {withKey("name", tensor_name),
-                    //  withKey("input_dtype",
-                    //  qnn_to_nntrainer_datatype(tensor_object.data_type)),
-                    withKey("input_shape", input_shape_string)}));
+          "input",
+          {withKey("name", tensor_name),
+           // Give each input layer the QNN tensor's real dtype. Without it the
+           // layer defaults to the model tensor type (UINT16), so e.g. the
+           // UINT8 KV-cache inputs get a tensor that claims 2x the bytes the
+           // fed buffer actually holds — any copy into the QNN-read output
+           // then over-reads the source. Correct dtypes also keep the
+           // input/output tensors the same size so the InputLayer copy is safe.
+           withKey("input_dtype",
+                   qnn_to_nntrainer_datatype(tensor_object.data_type)),
+           withKey("input_shape", input_shape_string)}));
         model_inputs.push_back(
           get_qnn_input_data(tensor_object, allocated_ptrs_));
       }
@@ -576,29 +583,35 @@ void causallm::Quick_Dot_AI_QNN::resetXGrammar() {
   }
 }
 
-void causallm::Quick_Dot_AI_QNN::constructModel() {
-  // Unimplemented.
+// Note: this TU has both `using namespace ml::train;` and `using namespace
+// nntrainer;`, so unqualified `Tensor` is ambiguous. The base virtual uses
+// ml::train::Tensor, so qualify explicitly here.
+std::pair<ml::train::Tensor, ml::train::Tensor>
+causallm::Quick_Dot_AI_QNN::constructModel() {
+  // Unimplemented: QNN executes a precompiled binary graph rather than an
+  // nntrainer symbolic graph, so the graph-builder overrides are inert. Return
+  // empty tensors to satisfy the symbolic-graph base interface.
+  return {ml::train::Tensor(), ml::train::Tensor()};
 }
 
-std::vector<LayerHandle>
-causallm::Quick_Dot_AI_QNN::createTransformerDecoderBlock(
-  const int layer_id, std::string input_name) {
-  // Unimplemented.
-  return std::vector<LayerHandle>();
+ml::train::Tensor causallm::Quick_Dot_AI_QNN::createTransformerDecoderBlock(
+  const int layer_id, ml::train::Tensor input) {
+  // Unimplemented (see constructModel).
+  return ml::train::Tensor();
 }
 
-std::vector<LayerHandle> causallm::Quick_Dot_AI_QNN::createAttention(
+ml::train::Tensor causallm::Quick_Dot_AI_QNN::createAttention(
   const int layer_id, int seq_len, int n_heads, int head_dim,
-  std::string query_name, std::string key_name, std::string value_name) {
-  // Unimplemented.
-  return std::vector<LayerHandle>();
+  ml::train::Tensor query, ml::train::Tensor key, ml::train::Tensor value) {
+  // Unimplemented (see constructModel).
+  return ml::train::Tensor();
 }
 
-std::vector<LayerHandle>
+ml::train::Tensor
 causallm::Quick_Dot_AI_QNN::createMlp(const int layer_id, int dim,
-                                      int hidden_dim, std::string input_name) {
-  // Unimplemented.
-  return std::vector<LayerHandle>();
+                                      int hidden_dim, ml::train::Tensor input) {
+  // Unimplemented (see constructModel).
+  return ml::train::Tensor();
 }
 
 void causallm::Quick_Dot_AI_QNN::registerCustomLayers() {

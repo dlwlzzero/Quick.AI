@@ -85,76 +85,8 @@ static void register_qwen3_0_6b() {
   register_model("Qwen3-0.6B", "Qwen3-0.6B-Arch", rc);
 }
 
-static void register_gauss2_5_1b() {
-  // 1. Architecture Config
-  ModelArchConfig ac;
-  memset(&ac, 0, sizeof(ModelArchConfig));
-
-  ac.vocab_size = 105900;
-  ac.hidden_size = 1536;
-  ac.intermediate_size = 6144;
-  ac.num_hidden_layers = 28;
-  ac.num_attention_heads = 12;
-  ac.head_dim = 1536 / 12;
-  ac.num_key_value_heads = 2;
-  ac.max_position_embeddings = 262144;
-  ac.rope_theta = 500000.0f;
-  ac.rms_norm_eps = 1e-05f;
-  ac.tie_word_embeddings = true;
-  ac.sliding_window = 1024;
-  ac.sliding_window_pattern = 5;
-  strncpy(ac.architecture, "GaussForCausalLM", sizeof(ac.architecture) - 1);
-
-  ac.bos_token_id = 1;
-  ac.eos_token_ids[0] = 0;
-  ac.eos_token_ids[1] = 37;
-  ac.num_eos_token_ids = 2;
-
-  register_arch("Gauss2.5-1B-Arch", ac);
-
-  // 2. Runtime Config
-  ModelRuntimeConfig rc;
-  memset(&rc, 0, sizeof(ModelRuntimeConfig));
-
-  rc.batch_size = 1;
-  strncpy(rc.model_type, "CausalLM", sizeof(rc.model_type) - 1);
-  strncpy(rc.model_tensor_type, "Q4_0-FP32", sizeof(rc.model_tensor_type) - 1);
-  rc.init_seq_len = 1024;
-  rc.max_seq_len = 2048;
-  rc.num_to_generate = 512;
-  rc.fsu = false;
-  rc.fsu_lookahead = 2;
-  strncpy(rc.embedding_dtype, "Q6_K", sizeof(rc.embedding_dtype) - 1);
-  strncpy(rc.fc_layer_dtype, "Q4_0", sizeof(rc.fc_layer_dtype) - 1);
-  strncpy(rc.model_file_name,
-          "nntr_gauss2.5_summarization_q6k_q40_fp32_1b_arm.bin",
-          sizeof(rc.model_file_name) - 1);
-  strncpy(rc.tokenizer_file, "tokenizer.json", sizeof(rc.tokenizer_file) - 1);
-  rc.num_bad_word_ids = 0;
-
-  rc.top_k = 40;
-  rc.top_p = 0.95f;
-  rc.temperature = 0.5f;
-
-  register_model("Gauss2.5-1B-W4A32", "Gauss2.5-1B-Arch", rc);
-
-  // Example for W32A32 (FP32)
-  ModelRuntimeConfig rc_fp32 = rc;
-  strncpy(rc_fp32.model_tensor_type, "FP32-FP32",
-          sizeof(rc_fp32.model_tensor_type) - 1);
-  strncpy(rc_fp32.fc_layer_dtype, "FP32", sizeof(rc_fp32.fc_layer_dtype) - 1);
-  strncpy(rc_fp32.embedding_dtype, "FP32", sizeof(rc_fp32.embedding_dtype) - 1);
-  strncpy(rc_fp32.model_file_name, "nntr_gauss2.5_summarization_fp32_1b.bin",
-          sizeof(rc_fp32.model_file_name) - 1);
-  register_model("Gauss2.5-1B-W32A32", "Gauss2.5-1B-Arch", rc_fp32);
-
-  // Register default alias
-  register_model("Gauss2.5-1B", "Gauss2.5-1B-Arch", rc);
-}
-
 void register_builtin_configs() {
   register_qwen3_0_6b();
-  register_gauss2_5_1b();
   // Add more models here...
 }
 

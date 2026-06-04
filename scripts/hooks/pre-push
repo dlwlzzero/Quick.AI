@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# pre-push hook — blocks gauss source paths from reaching the public remote.
+#
+# Install: ln -sf ../../scripts/hooks/pre-push .git/hooks/pre-push
+#
+# Gauss is an internal Samsung product. Gauss source files must never land
+# on the public `origin` remote. This hook intercepts every `git push` and
+# aborts if:
+#   1. The target remote is `origin`, AND
+#   2. The commits being pushed contain files matching gauss path patterns.
+#
+# Usage with multiple remotes:
+#   git push ecode ...    → allowed (internal remote, no restriction)
+#   git push origin ...   → blocked if gauss paths are present in new commits
+
+set -euo pipefail
+
+REMOTE="$1"
+# REMOTE_URL="$2"  # unused but available
+
+GAUSS_PATTERNS=(
+    'src/models/gauss-'
+    'src/models/qnn/gauss-'
+    'nntrainer/Applications/CausalLM/models/Gauss'
+)
+
+# Only enforce on the public remote
+if [[ "$REMOTE" != "origin" ]]; then
+    exit 0
+fi
+
+while read local_ref local_sha remote_ref remote_sha; do
+    # Skip branch deletions
+    if [[ "$local_sha" == "0000000000000000000000000000000000000000" ]]; then
+        continue
+    fi
+
+    # Range: everything not yet on the remote
+    if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]]; then
+        range="$local_sha"
+    else
+        range="$remote_sha..$local_sha"
+    fi
+
+    for pattern in "${GAUSS_PATTERNS[@]}"; do
+        hits=$(git diff-tree --no-commit-id -r --name-only "$range" 2>/dev/null \
+               | grep "$pattern" || true)
+        if [[ -n "$hits" ]]; then
+            echo "ERROR: pre-push blocked — gauss paths detected in commits" \
+                 "being pushed to '$REMOTE':" >&2
+            echo "$hits" | sed 's/^/  /' >&2
+            echo "" >&2
+            echo "Push to 'ecode' remote for internal builds." >&2
+            exit 1
+        fi
+    done
+done
+
+exit 0

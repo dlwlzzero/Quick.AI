@@ -53,9 +53,9 @@ public:
 
   void run_with_embeddings(const void *prefill_embeds, size_t n_tokens,
                            std::vector<int> seed_tokens, bool do_sample,
-                           bool log_output);
+                           bool log_output) override;
 
-  const void *lookupEmbedding(int token_id) const;
+  const void *lookupEmbedding(int token_id) const override;
 
   bool supportsKvCachePersistence() const override { return true; }
   int getKvLen() const override { return kv_cache_.length(); }
@@ -63,8 +63,10 @@ public:
   void saveKvCache(const std::string &cache_path) const override;
   void loadKvCache(const std::string &cache_path) override;
 
-  size_t embeddingBytesPerToken() const { return embedding_bytes_per_token; }
-  std::pair<float, int> get_embedding_info();
+  size_t embeddingBytesPerToken() const override {
+    return embedding_bytes_per_token;
+  }
+  std::pair<float, int> get_embedding_info() override;
 
 private:
   // Input/output tensors

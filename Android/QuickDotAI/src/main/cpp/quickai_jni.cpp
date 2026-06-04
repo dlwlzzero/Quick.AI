@@ -172,14 +172,13 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
     previous_htp_backend_config_path != nullptr;
   std::string previous_htp_backend_config_path_value;
   if (had_previous_htp_backend_config_path) {
-    previous_htp_backend_config_path_value =
-      previous_htp_backend_config_path;
+    previous_htp_backend_config_path_value = previous_htp_backend_config_path;
   }
   const bool has_htp_backend_config_path =
     htp_backend_config_path != nullptr && htp_backend_config_path[0] != '\0';
   if (has_htp_backend_config_path) {
-    setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH",
-           htp_backend_config_path, 1);
+    setenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH", htp_backend_config_path,
+           1);
   }
 
   CausalLmHandle handle = nullptr;
@@ -213,6 +212,40 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleNative(
   }
   return env->NewObject(g_cache.loadResultCls, g_cache.loadResultCtor,
                         static_cast<jint>(ec), reinterpret_cast<jlong>(handle));
+}
+
+// ---- loadModelHandleByName (T4 string-id path) ----------------------------
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_quickdotai_NativeCausalLm_loadModelHandleByNameNative(
+  JNIEnv *env, jobject /*thiz*/, jint backend, jstring modelIdJ, jint quant,
+  jstring nativeLibDirJ, jstring modelBasePathJ) {
+  const char *id = env->GetStringUTFChars(modelIdJ, nullptr);
+  const char *nld =
+    nativeLibDirJ ? env->GetStringUTFChars(nativeLibDirJ, nullptr) : nullptr;
+  const char *mbp =
+    modelBasePathJ ? env->GetStringUTFChars(modelBasePathJ, nullptr) : nullptr;
+
+  CausalLmHandle h = nullptr;
+  ErrorCode ec = loadModelHandleByName(
+    static_cast<BackendType>(backend), id,
+    static_cast<ModelQuantizationType>(quant), nld, mbp, &h);
+
+  env->ReleaseStringUTFChars(modelIdJ, id);
+  if (nld)
+    env->ReleaseStringUTFChars(nativeLibDirJ, nld);
+  if (mbp)
+    env->ReleaseStringUTFChars(modelBasePathJ, mbp);
+
+  return (ec == CAUSAL_LM_ERROR_NONE)
+           ? static_cast<jlong>(reinterpret_cast<uintptr_t>(h))
+           : 0L;
+}
+
+// ---- nativeQueryCatalog ---------------------------------------------------
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_quickdotai_NativeCausalLm_nativeQueryCatalog(
+  JNIEnv *env, jobject /*thiz*/) {
+  return env->NewStringUTF(getModelCatalogJson());
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +774,242 @@ Java_com_example_quickdotai_NativeCausalLm_runModelHandleWithJsonStreamingNative
                                                  &stream_trampoline, &ctx);
 
   env->ReleaseStringUTFChars(jsonRequestJ, jsonRequest);
+
+  return static_cast<jint>(ec);
+}
+
+// ---------------------------------------------------------------------------
+// runMultimodalMultiImageStreamingNative
+//
+// Multimodal streaming inference with multi-image support (V-JEPA).
+// Accepts preprocessed pixel values for multiple images along with
+// per-image metadata (patches per image, heights, widths).
+// ---------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_quickdotai_NativeCausalLm_runMultimodalMultiImageStreamingNative(
+  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jstring promptJ,
+  jfloatArray pixelValuesJ, jint numPatches, jint numImages,
+  jintArray patchesPerImageJ, jintArray originalHeightsJ,
+  jintArray originalWidthsJ, jobject listenerObj) {
+
+  if (promptJ == nullptr || pixelValuesJ == nullptr ||
+      patchesPerImageJ == nullptr || originalHeightsJ == nullptr ||
+      originalWidthsJ == nullptr || listenerObj == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Resolve listener method
+  jclass listenerCls = env->GetObjectClass(listenerObj);
+  if (listenerCls == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+  jmethodID onDelta =
+    env->GetMethodID(listenerCls, "onDelta", "(Ljava/lang/String;)V");
+  env->DeleteLocalRef(listenerCls);
+  if (onDelta == nullptr) {
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  const char *prompt = env->GetStringUTFChars(promptJ, nullptr);
+  if (prompt == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Get float* from FloatArray
+  float *pixels = env->GetFloatArrayElements(pixelValuesJ, nullptr);
+  if (pixels == nullptr) {
+    env->ReleaseStringUTFChars(promptJ, prompt);
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Get int* from IntArrays
+  jint *patchesPerImage = env->GetIntArrayElements(patchesPerImageJ, nullptr);
+  if (patchesPerImage == nullptr) {
+    env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+    env->ReleaseStringUTFChars(promptJ, prompt);
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  jint *originalHeights = env->GetIntArrayElements(originalHeightsJ, nullptr);
+  if (originalHeights == nullptr) {
+    env->ReleaseIntArrayElements(patchesPerImageJ, patchesPerImage, JNI_ABORT);
+    env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+    env->ReleaseStringUTFChars(promptJ, prompt);
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  jint *originalWidths = env->GetIntArrayElements(originalWidthsJ, nullptr);
+  if (originalWidths == nullptr) {
+    env->ReleaseIntArrayElements(originalHeightsJ, originalHeights, JNI_ABORT);
+    env->ReleaseIntArrayElements(patchesPerImageJ, patchesPerImage, JNI_ABORT);
+    env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+    env->ReleaseStringUTFChars(promptJ, prompt);
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
+  StreamCtx ctx{env, listenerObj, onDelta};
+
+  // Debug: log multi-image metadata
+  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
+    "runMultimodalMultiImageStreamingNative: handle=%p, numPatches=%d, "
+    "numImages=%d, pixelValues[0..4]=%f,%f,%f,%f,%f",
+    (void *)handle, numPatches, numImages,
+    pixels[0], (numPatches > 1 ? pixels[1] : 0.0f),
+    (numPatches > 2 ? pixels[2] : 0.0f),
+    (numPatches > 3 ? pixels[3] : 0.0f),
+    (numPatches > 4 ? pixels[4] : 0.0f));
+  for (int i = 0; i < numImages; ++i) {
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
+      "  image[%d]: patches=%d, height=%d, width=%d",
+      i, patchesPerImage[i], originalHeights[i], originalWidths[i]);
+  }
+
+  ErrorCode ec = runMultimodalMultiImageHandleStreaming(
+    handle, prompt, pixels, numPatches, numImages,
+    reinterpret_cast<int *>(patchesPerImage),
+    reinterpret_cast<int *>(originalHeights),
+    reinterpret_cast<int *>(originalWidths),
+    &stream_trampoline, &ctx);
+
+  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
+    "runMultimodalMultiImageStreamingNative: returned ec=%d", (int)ec);
+
+  // Release resources
+  env->ReleaseIntArrayElements(originalWidthsJ, originalWidths, JNI_ABORT);
+  env->ReleaseIntArrayElements(originalHeightsJ, originalHeights, JNI_ABORT);
+  env->ReleaseIntArrayElements(patchesPerImageJ, patchesPerImage, JNI_ABORT);
+  env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+  env->ReleaseStringUTFChars(promptJ, prompt);
+
+  return static_cast<jint>(ec);
+}
+
+// ---------------------------------------------------------------------------
+// runMultimodalMultiImageWithMessagesStreamingNative
+//
+// Streaming multimodal inference with multi-image + messages (V-JEPA).
+// ---------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_quickdotai_NativeCausalLm_runMultimodalMultiImageWithMessagesStreamingNative(
+  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jobjectArray messagesJ,
+  jboolean addGenerationPrompt, jfloatArray pixelValuesJ, jint numPatches,
+  jint numImages, jintArray patchesPerImageJ, jintArray originalHeightsJ,
+  jintArray originalWidthsJ, jobject listenerObj) {
+
+  if (messagesJ == nullptr || pixelValuesJ == nullptr ||
+      patchesPerImageJ == nullptr || originalHeightsJ == nullptr ||
+      originalWidthsJ == nullptr || listenerObj == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Resolve listener method
+  jclass listenerCls = env->GetObjectClass(listenerObj);
+  if (listenerCls == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+  jmethodID onDelta =
+    env->GetMethodID(listenerCls, "onDelta", "(Ljava/lang/String;)V");
+  env->DeleteLocalRef(listenerCls);
+  if (onDelta == nullptr) {
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Convert messages
+  jsize len = env->GetArrayLength(messagesJ);
+  std::vector<CausalLMChatMessage> msgs;
+  msgs.reserve(len);
+  std::vector<std::string> roleStorage;
+  std::vector<std::string> contentStorage;
+  roleStorage.reserve(len);
+  contentStorage.reserve(len);
+
+  for (jsize i = 0; i < len; ++i) {
+    jobject msgObj = env->GetObjectArrayElement(messagesJ, i);
+    std::string roleStr, contentStr;
+    if (msgObj != nullptr &&
+        convertQuickAiChatMessage(env, msgObj, roleStr, contentStr)) {
+      roleStorage.push_back(std::move(roleStr));
+      contentStorage.push_back(std::move(contentStr));
+      msgs.push_back(
+        {roleStorage.back().c_str(), contentStorage.back().c_str()});
+    }
+    if (msgObj != nullptr)
+      env->DeleteLocalRef(msgObj);
+  }
+
+  // Get float* from FloatArray
+  float *pixels = env->GetFloatArrayElements(pixelValuesJ, nullptr);
+  if (pixels == nullptr) {
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  // Get int* from IntArrays
+  jint *patchesPerImage = env->GetIntArrayElements(patchesPerImageJ, nullptr);
+  if (patchesPerImage == nullptr) {
+    env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  jint *originalHeights = env->GetIntArrayElements(originalHeightsJ, nullptr);
+  if (originalHeights == nullptr) {
+    env->ReleaseIntArrayElements(patchesPerImageJ, patchesPerImage, JNI_ABORT);
+    env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  jint *originalWidths = env->GetIntArrayElements(originalWidthsJ, nullptr);
+  if (originalWidths == nullptr) {
+    env->ReleaseIntArrayElements(originalHeightsJ, originalHeights, JNI_ABORT);
+    env->ReleaseIntArrayElements(patchesPerImageJ, patchesPerImage, JNI_ABORT);
+    env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
+    return static_cast<jint>(CAUSAL_LM_ERROR_INVALID_PARAMETER);
+  }
+
+  auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
+  StreamCtx ctx{env, listenerObj, onDelta};
+
+  // Debug: log multi-image + messages metadata
+  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
+    "runMultimodalMultiImageWithMessagesStreamingNative: handle=%p, "
+    "numMessages=%zu, numPatches=%d, numImages=%d, "
+    "pixelValues[0..4]=%f,%f,%f,%f,%f",
+    (void *)handle, msgs.size(), numPatches, numImages,
+    pixels[0], (numPatches > 1 ? pixels[1] : 0.0f),
+    (numPatches > 2 ? pixels[2] : 0.0f),
+    (numPatches > 3 ? pixels[3] : 0.0f),
+    (numPatches > 4 ? pixels[4] : 0.0f));
+  for (int i = 0; i < numImages; ++i) {
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
+      "  image[%d]: patches=%d, height=%d, width=%d",
+      i, patchesPerImage[i], originalHeights[i], originalWidths[i]);
+  }
+  for (size_t i = 0; i < msgs.size(); ++i) {
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
+      "  msg[%zu]: role='%s' contentLen=%zu",
+      i, msgs[i].role, strlen(msgs[i].content));
+  }
+
+  ErrorCode ec = runMultimodalMultiImageHandleWithMessagesStreaming(
+    handle, msgs.data(), msgs.size(), addGenerationPrompt == JNI_TRUE, pixels,
+    numPatches, numImages,
+    reinterpret_cast<int *>(patchesPerImage),
+    reinterpret_cast<int *>(originalHeights),
+    reinterpret_cast<int *>(originalWidths),
+    &stream_trampoline, &ctx);
+
+  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG,
+    "runMultimodalMultiImageWithMessagesStreamingNative: returned ec=%d", (int)ec);
+
+  // Release resources
+  env->ReleaseIntArrayElements(originalWidthsJ, originalWidths, JNI_ABORT);
+  env->ReleaseIntArrayElements(originalHeightsJ, originalHeights, JNI_ABORT);
+  env->ReleaseIntArrayElements(patchesPerImageJ, patchesPerImage, JNI_ABORT);
+  env->ReleaseFloatArrayElements(pixelValuesJ, pixels, JNI_ABORT);
 
   return static_cast<jint>(ec);
 }

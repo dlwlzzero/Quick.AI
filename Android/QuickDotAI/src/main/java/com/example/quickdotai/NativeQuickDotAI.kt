@@ -41,15 +41,24 @@ class NativeQuickDotAI(
     // Vision backend type (null = text-only mode)
     private var visionBackend: BackendType? = null
 
+    // Currently loaded model ID — used to route multi-image vs single-image paths
+    private var currentModelId: String? = null
+
     override fun load(req: LoadModelRequest): BackendResult<Unit> {
         Log.i(
             TAG,
-            "load() entered: model=${req.model} backend=${req.backend} " +
+            "load() entered: modelId=${req.modelId} backend=${req.backend} " +
                 "quant=${req.quantization}"
         )
         if (loaded) {
             Log.i(TAG, "load(): already loaded, returning Ok")
             return BackendResult.Ok(Unit)
+        }
+
+        if (!req.htpBackendConfigPath.isNullOrBlank()) {
+            Log.w(TAG, "load(): htpBackendConfigPath='${req.htpBackendConfigPath}' " +
+                "is not forwarded by the byName load path; " +
+                "C layer will derive HTP config from modelBasePath.")
         }
 
         if (!NativeCausalLm.ensureLoaded()) {
@@ -60,18 +69,9 @@ class NativeQuickDotAI(
             )
         }
 
-        val nativeModelOrdinal = mapModelId(req.model)
-            ?: run {
-                Log.e(TAG, "load(): model ${req.model} has no native ordinal")
-                return BackendResult.Err(
-                    QuickAiError.UNSUPPORTED,
-                    "Model ${req.model} is not supported by NativeQuickDotAI"
-                )
-            }
-
         // modelBasePath is passed directly from the caller. The C API uses
         // this as the base directory for resolving model directories
-        // (e.g. "<model_base_path>/gauss-3.6-qnn").
+        // (e.g. "<model_base_path>/qwen3-0.6b").
         val modelBasePath = req.modelBasePath
         if (modelBasePath == null || modelBasePath.isBlank()) {
             Log.w(
@@ -83,92 +83,38 @@ class NativeQuickDotAI(
             Log.i(TAG, "load(): modelBasePath=$modelBasePath")
         }
 
-        // HTP backend extension config path for QNN models.
-        // Resolution priority:
-        //   1. req.htpBackendConfigPath (user-specified absolute or relative)
-        //   2. modelBasePath's parent dir (to align with C API logic)
-        //   3. app-private external files dir (final fallback)
-        val externalFilesDir = appContext.getExternalFilesDir(null)
-        val requestedHtpBackendConfigPath = req.htpBackendConfigPath
-            ?.takeIf { it.isNotBlank() }
-        val htpBackendConfigPath = when {
-            requestedHtpBackendConfigPath != null -> {
-                if (File(requestedHtpBackendConfigPath).isAbsolute) {
-                    requestedHtpBackendConfigPath
-                } else {
-                    File(externalFilesDir, requestedHtpBackendConfigPath).absolutePath
-                }
-            }
-            !modelBasePath.isNullOrBlank() -> {
-                // Align with C API: C API strips "/models" suffix from base_dir
-                // and appends "/htp_backend_ext_config.json".
-                // When modelBasePath ends with "/models", resolve from parent dir.
-                val htpBaseDir = if (
-                    modelBasePath.endsWith("/models/") ||
-                    modelBasePath.endsWith("/models")
-                ) {
-                    File(modelBasePath).parentFile?.absolutePath ?: modelBasePath
-                } else {
-                    modelBasePath
-                }
-                File(htpBaseDir, "htp_backend_ext_config.json").absolutePath
-            }
-            else -> {
-                File(externalFilesDir, "htp_backend_ext_config.json").absolutePath
-            }
-        }
-
         return try {
-            Log.i(
-                TAG,
-                "load(): calling loadModelHandleNative(backend=${req.backend.ordinal}, " +
-                    "model=$nativeModelOrdinal, quant=${req.quantization.ordinal}, " +
-                    "nativeLibDir=${req.nativeLibDir}, modelBasePath=$modelBasePath, " +
-                    "htpBackendConfigPath=$htpBackendConfigPath)"
-            )
-            val result = NativeCausalLm.loadModelHandleNative(
-                backendOrdinal = mapBackend(req.backend),
-                modelOrdinal = nativeModelOrdinal,
-                quantOrdinal = mapQuant(req.quantization),
+            Log.i(TAG, "load(): calling loadModelHandleByNameNative(backend=${req.backend.ordinal}, " +
+                "modelId=${req.modelId}, quant=${req.quantization.ordinal}, " +
+                "nativeLibDir=${req.nativeLibDir}, modelBasePath=$modelBasePath)")
+            val h = NativeCausalLm.loadModelHandleByNameNative(
+                backend = mapBackend(req.backend),
+                modelId = req.modelId,
+                quant = mapQuant(req.quantization),
                 nativeLibDir = req.nativeLibDir,
                 modelBasePath = modelBasePath,
-                htpBackendConfigPath = htpBackendConfigPath
             )
-            Log.i(
-                TAG,
-                "load(): loadModelHandleNative returned " +
-                    "errorCode=${result.errorCode} handle=0x${result.handle.toString(16)}"
-            )
-            if (result.errorCode != 0 || result.handle == 0L) {
-                Log.e(
-                    TAG,
-                    "load(): loadModelHandle FAILED — errorCode=${result.errorCode} " +
-                        "(this is the NATIVE engine; for Gemma4 you want LiteRTLm " +
-                        "— check that ModelId.GEMMA4 was NOT requested)"
-                )
+            if (h == 0L) {
+                Log.e(TAG, "load(): loadModelHandleByNameNative returned 0 for '${req.modelId}'")
                 BackendResult.Err(
-                    QuickAiError.fromNativeCode(result.errorCode),
-                    "loadModelHandle failed (errorCode=${result.errorCode})"
+                    QuickAiError.MODEL_LOAD_FAILED,
+                    "loadModelHandleByName failed for '${req.modelId}'"
                 )
             } else {
-                handle = result.handle
+                handle = h
                 loaded = true
-                // Architecture is resolved native-side; we report the
-                // model key until we add a dedicated native getter.
-                architecture = req.model.name
-
-                // Initialize image processor if visionBackend is set
+                architecture = req.modelId
+                currentModelId = req.modelId
                 visionBackend = req.visionBackend
                 if (req.visionBackend != null) {
                     imageProcessor = LlavaNextImageProcessor(appContext)
                     Log.i(TAG, "load(): visionBackend=${req.visionBackend}, image processor initialized")
                 }
-
-                Log.i(TAG, "load(): SUCCESS, handle=0x${handle.toString(16)}")
+                Log.i(TAG, "load(): SUCCESS, handle=0x${h.toString(16)}")
                 BackendResult.Ok(Unit)
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "load(): loadModelHandleNative threw", t)
+            Log.e(TAG, "load(): loadModelHandleByNameNative threw", t)
             BackendResult.Err(QuickAiError.MODEL_LOAD_FAILED, t.message)
         }
     }
@@ -491,20 +437,12 @@ class NativeQuickDotAI(
 
         // Extract image from messages
         val allParts = messages.flatMap { it.parts }
-        val imageParts = allParts.filterIsInstance<PromptPart.ImageBytes>()
+        val imageParts = allParts.filter { it is PromptPart.ImageBytes || it is PromptPart.ImageFile || it is PromptPart.PreprocessedPixels }
 
         if (imageParts.isEmpty()) {
             val err = BackendResult.Err(
                 QuickAiError.INVALID_PARAMETER,
                 "No image found. Expected parts: [Text, ImageBytes]"
-            )
-            sink.onError(err.error, err.message)
-            return err
-        }
-        if (imageParts.size > 1) {
-            val err = BackendResult.Err(
-                QuickAiError.INVALID_PARAMETER,
-                "Only 1 image is allowed. Found ${imageParts.size}"
             )
             sink.onError(err.error, err.message)
             return err
@@ -521,20 +459,42 @@ class NativeQuickDotAI(
         }
 
         return try {
-            val errorCode = NativeCausalLm.runMultimodalHandleWithMessagesStreamingNative(
-                handle = handle,
-                messages = messages.toTypedArray(),
-                addGenerationPrompt = true,
-                pixelValues = multimodalInput.pixelValues,
-                numPatches = multimodalInput.numPatches,
-                originalHeight = multimodalInput.originalHeight,
-                originalWidth = multimodalInput.originalWidth,
-                listener = object : NativeCausalLm.NativeStreamListener {
-                    override fun onDelta(text: String) {
-                        sink.onDelta(text)
+            val errorCode = if (multimodalInput.numImages > 1 && multimodalInput.patchesPerImage != null) {
+                // Multi-image path (V-JEPA)
+                Log.i(TAG, "runMultimodalHandleWithMessagesStreaming(): using multi-image path, numImages=${multimodalInput.numImages}")
+                NativeCausalLm.runMultimodalMultiImageWithMessagesStreamingNative(
+                    handle = handle,
+                    messages = messages.toTypedArray(),
+                    addGenerationPrompt = true,
+                    pixelValues = multimodalInput.pixelValues,
+                    numPatches = multimodalInput.numPatches,
+                    numImages = multimodalInput.numImages,
+                    patchesPerImage = multimodalInput.patchesPerImage,
+                    originalHeights = multimodalInput.originalHeights ?: IntArray(multimodalInput.numImages) { multimodalInput.originalHeight },
+                    originalWidths = multimodalInput.originalWidths ?: IntArray(multimodalInput.numImages) { multimodalInput.originalWidth },
+                    listener = object : NativeCausalLm.NativeStreamListener {
+                        override fun onDelta(text: String) {
+                            sink.onDelta(text)
+                        }
                     }
-                }
-            )
+                )
+            } else {
+                // Single-image path (legacy)
+                NativeCausalLm.runMultimodalHandleWithMessagesStreamingNative(
+                    handle = handle,
+                    messages = messages.toTypedArray(),
+                    addGenerationPrompt = true,
+                    pixelValues = multimodalInput.pixelValues,
+                    numPatches = multimodalInput.numPatches,
+                    originalHeight = multimodalInput.originalHeight,
+                    originalWidth = multimodalInput.originalWidth,
+                    listener = object : NativeCausalLm.NativeStreamListener {
+                        override fun onDelta(text: String) {
+                            sink.onDelta(text)
+                        }
+                    }
+                )
+            }
             if (errorCode != 0) {
                 val err = QuickAiError.fromNativeCode(errorCode)
                 sink.onError(err, "runMultimodalHandleWithMessagesStreaming failed (errorCode=$errorCode)")
@@ -691,15 +651,33 @@ class NativeQuickDotAI(
         )
 
         return try {
-            val errorCode = NativeCausalLm.runMultimodalHandleStreamingNative(
-                handle,
-                textPrompt,
-                multimodalInput.pixelValues,
-                multimodalInput.numPatches,
-                multimodalInput.originalHeight,
-                multimodalInput.originalWidth
-            ) { delta ->
-                sink.onDelta(delta)
+            val errorCode = if (multimodalInput.numImages > 1 && multimodalInput.patchesPerImage != null) {
+                // Multi-image path (V-JEPA)
+                Log.i(TAG, "runMultimodalStreaming(): using multi-image path, numImages=${multimodalInput.numImages}")
+                NativeCausalLm.runMultimodalMultiImageStreamingNative(
+                    handle,
+                    textPrompt,
+                    multimodalInput.pixelValues,
+                    multimodalInput.numPatches,
+                    multimodalInput.numImages,
+                    multimodalInput.patchesPerImage,
+                    multimodalInput.originalHeights ?: IntArray(multimodalInput.numImages) { multimodalInput.originalHeight },
+                    multimodalInput.originalWidths ?: IntArray(multimodalInput.numImages) { multimodalInput.originalWidth },
+                ) { delta ->
+                    sink.onDelta(delta)
+                }
+            } else {
+                // Single-image path (legacy)
+                NativeCausalLm.runMultimodalHandleStreamingNative(
+                    handle,
+                    textPrompt,
+                    multimodalInput.pixelValues,
+                    multimodalInput.numPatches,
+                    multimodalInput.originalHeight,
+                    multimodalInput.originalWidth
+                ) { delta ->
+                    sink.onDelta(delta)
+                }
             }
 
             if (errorCode != 0) {
@@ -722,8 +700,13 @@ class NativeQuickDotAI(
     /**
      * @brief Prepare multimodal input from PromptPart list.
      *
-     * Extracts the first image from parts and preprocesses it using
-     * LlavaNextImageProcessor.
+     * Extracts images from parts and preprocesses them using
+     * LlavaNextImageProcessor. Supports both single-image and
+     * multi-image (V-JEPA) scenarios:
+     * - Single image: returns a MultimodalInput with numImages=1 (default)
+     * - Multiple ImageBytes: preprocesses each image, concatenates pixel
+     *   values, and returns a multi-image MultimodalInput
+     * - PreprocessedPixels: passed through directly
      *
      * @return MultimodalInput with preprocessed pixel values, or null if no image found
      */
@@ -731,49 +714,142 @@ class NativeQuickDotAI(
         parts: List<PromptPart>,
         processor: LlavaNextImageProcessor
     ): NativeCausalLm.MultimodalInput? {
+        // Collect all image parts first
+        val imageParts = mutableListOf<PromptPart>()
         for (part in parts) {
             when (part) {
-                is PromptPart.ImageFile -> {
-                    val file = File(part.absolutePath)
-                    if (!file.exists() || !file.canRead()) {
-                        Log.w(TAG, "Image file not readable: ${part.absolutePath}")
-                        continue
-                    }
-                    val bitmap = BitmapFactory.decodeFile(part.absolutePath)
-                    if (bitmap == null) {
-                        Log.w(TAG, "Failed to decode image: ${part.absolutePath}")
-                        continue
-                    }
-                    val modelInput = processor.preprocess(bitmap)
+                is PromptPart.ImageFile -> imageParts.add(part)
+                is PromptPart.ImageBytes -> imageParts.add(part)
+                is PromptPart.PreprocessedPixels -> {
+                    // PreprocessedPixels bypass the image processor entirely
                     return NativeCausalLm.MultimodalInput(
-                        pixelValues = modelInput.pixelValues,
-                        numPatches = modelInput.pixelValues.size / (processor.getCropSize() * processor.getCropSize() * 3),
-                        originalHeight = modelInput.originalSize.first,
-                        originalWidth = modelInput.originalSize.second
-                    )
-                }
-                is PromptPart.ImageBytes -> {
-                    if (part.bytes.isEmpty()) {
-                        Log.w(TAG, "Image bytes are empty")
-                        continue
-                    }
-                    val bitmap = BitmapFactory.decodeByteArray(part.bytes, 0, part.bytes.size)
-                    if (bitmap == null) {
-                        Log.w(TAG, "Failed to decode image from bytes")
-                        continue
-                    }
-                    val modelInput = processor.preprocess(bitmap)
-                    return NativeCausalLm.MultimodalInput(
-                        pixelValues = modelInput.pixelValues,
-                        numPatches = modelInput.pixelValues.size / (processor.getCropSize() * processor.getCropSize() * 3),
-                        originalHeight = modelInput.originalSize.first,
-                        originalWidth = modelInput.originalSize.second
+                        pixelValues = part.pixelValues,
+                        numPatches = part.numPatches,
+                        originalHeight = part.imageHeights.firstOrNull() ?: 0,
+                        originalWidth = part.imageWidths.firstOrNull() ?: 0,
+                        numImages = part.numImages,
+                        patchesPerImage = part.patchesPerImage,
+                        originalHeights = part.imageHeights,
+                        originalWidths = part.imageWidths
                     )
                 }
                 is PromptPart.Text -> { /* skip text parts */ }
             }
         }
-        return null
+
+        if (imageParts.isEmpty()) return null
+
+        // Single image: use the original single-image path
+        if (imageParts.size == 1) {
+            return preprocessSingleImage(imageParts[0], processor)
+        }
+
+        // Multiple images: preprocess each and concatenate
+        val allPixelValues = mutableListOf<Float>()
+        val patchesPerImageList = mutableListOf<Int>()
+        val heightsList = mutableListOf<Int>()
+        val widthsList = mutableListOf<Int>()
+        var totalPatches = 0
+        val cropSize = processor.getCropSize()
+        val patchSize = cropSize * cropSize * 3
+
+        for (imgPart in imageParts) {
+            val bitmap = when (imgPart) {
+                is PromptPart.ImageFile -> {
+                    val file = File(imgPart.absolutePath)
+                    if (!file.exists() || !file.canRead()) {
+                        Log.w(TAG, "Image file not readable: ${imgPart.absolutePath}")
+                        continue
+                    }
+                    BitmapFactory.decodeFile(imgPart.absolutePath)
+                }
+                is PromptPart.ImageBytes -> {
+                    if (imgPart.bytes.isEmpty()) {
+                        Log.w(TAG, "Image bytes are empty")
+                        continue
+                    }
+                    BitmapFactory.decodeByteArray(imgPart.bytes, 0, imgPart.bytes.size)
+                }
+                else -> null
+            }
+            if (bitmap == null) {
+                Log.w(TAG, "Failed to decode image in multi-image batch")
+                continue
+            }
+            val modelInput = processor.preprocess(bitmap)
+            val numPatches = modelInput.pixelValues.size / patchSize
+            allPixelValues.addAll(modelInput.pixelValues.toList())
+            patchesPerImageList.add(numPatches)
+            heightsList.add(modelInput.originalSize.first)
+            widthsList.add(modelInput.originalSize.second)
+            totalPatches += numPatches
+        }
+
+        if (allPixelValues.isEmpty()) return null
+
+        val numImages = patchesPerImageList.size
+        Log.i(TAG, "prepareMultimodalInput(): multi-image mode, numImages=$numImages, " +
+            "totalPatches=$totalPatches, patchesPerImage=$patchesPerImageList")
+
+        return NativeCausalLm.MultimodalInput(
+            pixelValues = allPixelValues.toFloatArray(),
+            numPatches = totalPatches,
+            originalHeight = heightsList.firstOrNull() ?: 0,
+            originalWidth = widthsList.firstOrNull() ?: 0,
+            numImages = numImages,
+            patchesPerImage = patchesPerImageList.toIntArray(),
+            originalHeights = heightsList.toIntArray(),
+            originalWidths = widthsList.toIntArray()
+        )
+    }
+
+    /**
+     * @brief Preprocess a single image part into a MultimodalInput.
+     */
+    private fun preprocessSingleImage(
+        part: PromptPart,
+        processor: LlavaNextImageProcessor
+    ): NativeCausalLm.MultimodalInput? {
+        when (part) {
+            is PromptPart.ImageFile -> {
+                val file = File(part.absolutePath)
+                if (!file.exists() || !file.canRead()) {
+                    Log.w(TAG, "Image file not readable: ${part.absolutePath}")
+                    return null
+                }
+                val bitmap = BitmapFactory.decodeFile(part.absolutePath)
+                if (bitmap == null) {
+                    Log.w(TAG, "Failed to decode image: ${part.absolutePath}")
+                    return null
+                }
+                val modelInput = processor.preprocess(bitmap)
+                return NativeCausalLm.MultimodalInput(
+                    pixelValues = modelInput.pixelValues,
+                    numPatches = modelInput.pixelValues.size / (processor.getCropSize() * processor.getCropSize() * 3),
+                    originalHeight = modelInput.originalSize.first,
+                    originalWidth = modelInput.originalSize.second
+                )
+            }
+            is PromptPart.ImageBytes -> {
+                if (part.bytes.isEmpty()) {
+                    Log.w(TAG, "Image bytes are empty")
+                    return null
+                }
+                val bitmap = BitmapFactory.decodeByteArray(part.bytes, 0, part.bytes.size)
+                if (bitmap == null) {
+                    Log.w(TAG, "Failed to decode image from bytes")
+                    return null
+                }
+                val modelInput = processor.preprocess(bitmap)
+                return NativeCausalLm.MultimodalInput(
+                    pixelValues = modelInput.pixelValues,
+                    numPatches = modelInput.pixelValues.size / (processor.getCropSize() * processor.getCropSize() * 3),
+                    originalHeight = modelInput.originalSize.first,
+                    originalWidth = modelInput.originalSize.second
+                )
+            }
+            else -> return null
+        }
     }
 
     /**
@@ -785,29 +861,6 @@ class NativeQuickDotAI(
         return parts.filterIsInstance<PromptPart.Text>()
             .joinToString(" ") { it.text }
             .ifEmpty { "Describe this image." }
-    }
-
-    // --- enum → native-ordinal mapping ---------------------------------
-
-    /**
-     * @brief Maps a ModelId to the C enum ordinal in quick_dot_ai_api.h.
-     * Returns null for values that are Kotlin-only (e.g. GEMMA4) —
-     * those are routed to [LiteRTLm] instead and never reach this
-     * engine.
-     */
-    private fun mapModelId(m: ModelId): Int? = when (m) {
-        ModelId.QWEN3_0_6B -> 0 // CAUSAL_LM_MODEL_QWEN3_0_6B
-        ModelId.GEMMA4 -> null
-        ModelId.GAUSS3_6_QNN -> 2 // CAUSAL_LM_MODEL_GAUSS3_6_QNN
-        ModelId.GAUSS3_8_QNN -> 3 // CAUSAL_LM_MODEL_GAUSS3_8_QNN
-        ModelId.QWEN3_1_7B_Q40 -> 4 // CAUSAL_LM_MODEL_QWEN3_1_7B_Q40
-        ModelId.GAUSS3_8_VISION_QNN -> 6 // CAUSAL_LM_MODEL_GAUSS3_8_VIT_QNN
-        ModelId.GAUSS3_6 -> 7 // CAUSAL_LM_MODEL_GAUSS3_6
-        ModelId.TINY_BERT ->8 // CAUSAL_LM_MODEL_TINY_BERT
-        ModelId.FUNCTION_GEMMA -> 9 // CAUSAL_LM_MODEL_FUNCTION_GEMMA
-        ModelId.GAUSS3_8 -> 10 // CAUSAL_LM_MODEL_GAUSS3_8
-        ModelId.GEMMA4_CPU -> 11 // CAUSAL_LM_MODEL_GEMMA4_CPU
-        ModelId.GEMMA4_E2B_QNN -> 12 // CAUSAL_LM_MODEL_GEMMA4_E2B_QNN
     }
 
     private fun mapBackend(b: BackendType): Int = when (b) {

@@ -27,6 +27,8 @@
  */
 package com.example.quickdotai
 
+import android.content.Context
+
 /**
  * @brief Outcome of a QuickDotAI call.
  *
@@ -361,3 +363,12 @@ interface QuickDotAI {
      */
     fun close()
 }
+
+/**
+ * Factory: create the right engine for a [ModelDescriptor].
+ */
+fun createEngine(context: Context, descriptor: ModelDescriptor): QuickDotAI =
+    when (descriptor.runtime) {
+        RuntimeKind.LITERT -> LiteRTLm(context)
+        RuntimeKind.NATIVE -> NativeQuickDotAI(context)
+    }
