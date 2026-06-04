@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# pre-push hook — blocks proprietary model sources from reaching the public remote.
+#
+# Install: ln -sf ../../scripts/hooks/pre-push .git/hooks/pre-push
+#
+# Proprietary model source files must never land on the public `origin` remote.
+# The public tree ships a fixed allow-list of model directories; every other
+# per-model subdirectory under src/models/ is treated as proprietary. This hook
+# intercepts every `git push` and aborts if:
+#   1. The target remote is `origin`, AND
+#   2. The commits being pushed touch a file in a non-allow-listed model dir.
+#
+# Usage with multiple remotes:
+#   git push <internal-remote> ...  → allowed (no restriction)
+#   git push origin ...             → blocked if proprietary model paths present
+
+set -euo pipefail
+
+REMOTE="$1"
+# REMOTE_URL="$2"  # unused but available
+
+# Per-model directories that ARE allowed on the public remote. Shared QNN infra
+# lives in files directly under src/models/qnn/ (not a per-model subdirectory)
+# and is always allowed.
+ALLOWED_MODEL_DIRS=(
+    "src/models/qnn/gemma4-e2b-qnn"
+)
+
+# Only enforce on the public remote
+if [[ "$REMOTE" != "origin" ]]; then
+    exit 0
+fi
+
+is_allowed() {
+    local path="$1"
+    local d
+    for d in "${ALLOWED_MODEL_DIRS[@]}"; do
+        [[ "$path" == "$d/"* ]] && return 0
+    done
+    return 1
+}
+
+# A path is a per-model source file if it lives in a subdirectory of
+# src/models/ (excluding the qnn infra dir itself) or of src/models/qnn/.
+is_model_path() {
+    local f="$1"
+    if [[ "$f" =~ ^src/models/qnn/[^/]+/ ]]; then
+        return 0
+    fi
+    if [[ "$f" =~ ^src/models/[^/]+/ ]] && [[ ! "$f" =~ ^src/models/qnn/ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Skip branch deletions
+    if [[ "$local_sha" == "0000000000000000000000000000000000000000" ]]; then
+        continue
+    fi
+
+    # Range: everything not yet on the remote
+    if [[ "$remote_sha" == "0000000000000000000000000000000000000000" ]]; then
+        range="$local_sha"
+    else
+        range="$remote_sha..$local_sha"
+    fi
+
+    changed=$(git diff-tree --no-commit-id -r --name-only "$range" 2>/dev/null || true)
+
+    violations=""
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        if is_model_path "$f" && ! is_allowed "$f"; then
+            violations+="  $f"$'\n'
+        fi
+    done <<< "$changed"
+
+    if [[ -n "$violations" ]]; then
+        echo "ERROR: pre-push blocked — proprietary model paths detected in" \
+             "commits being pushed to '$REMOTE':" >&2
+        printf '%s' "$violations" >&2
+        echo "" >&2
+        echo "These directories are internal-only. Push to your internal remote" >&2
+        echo "instead, or remove them from the commits being pushed." >&2
+        exit 1
+    fi
+done
+
+exit 0
