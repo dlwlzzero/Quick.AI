@@ -381,8 +381,15 @@ interface QuickDotAI {
 /**
  * Factory: create the right engine for a [ModelDescriptor].
  */
-fun createEngine(context: Context, descriptor: ModelDescriptor): QuickDotAI =
+fun createEngine(
+    context: Context,
+    descriptor: ModelDescriptor,
+    modelBasePath: String? = null
+): QuickDotAI =
     when (descriptor.runtime) {
-        RuntimeKind.LITERT -> LiteRTLm(context)
+        RuntimeKind.LITERT -> LiteRTLm(
+            context,
+            defaultModelBasePath = modelBasePath ?: "/sdcard/Download/aistudio-mobile/models/"
+        )
         RuntimeKind.NATIVE -> NativeQuickDotAI(context)
     }
