@@ -45,7 +45,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *        and therefore never hit the fallback.
  */
 class LiteRTLm(
-    private val appContext: Context
+    private val appContext: Context,
+    /** Base directory for model files, used by [testModelFile] fallback.
+     *  Defaults to `/sdcard/Download/aistudio-mobile/models/`. */
+    private val defaultModelBasePath: String = "/sdcard/Download/aistudio-mobile/models/"
 ) : QuickDotAI {
 
     override val kind: String = "litert-lm"
@@ -837,7 +840,7 @@ class LiteRTLm(
      * can share the same model file without duplication.
      */
     private fun testModelFile(): File {
-        val baseDir = File("/sdcard/Download/aistudio-mobile/models/")
+        val baseDir = File(defaultModelBasePath.trimEnd('/'))
         val dir = File(baseDir, TEST_GEMMA4_REL_DIR)
         if (!dir.exists()) dir.mkdirs()
         return File(dir, TEST_GEMMA4_FILE_NAME)
