@@ -44,6 +44,8 @@
 #include "qwen3_causallm.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
+#include "ouro_causallm.h"
+#include "ouro_embedding.h"
 #include "xgrammar_manager.h"
 #include "xgrammar_wrapper.h"
 #include <factory.h>
@@ -118,6 +120,7 @@ static std::map<std::string, std::string> g_model_path_map = {
   {"TINY_BERT", "tiny_bert"},
   {"FUNCTION_GEMMA", "function_gemma"},
   {"GEMMA4_CPU", "gemma4_cpu"},
+  {"OURO_EMBEDDING", "ouro_embedding"},
 #ifdef ENABLE_QNN
   {"GEMMA4-E2B-QNN", "gemma-4-e2b-qnn"},
   {"VJEPA-QNN", "vjepa-qnn"},
@@ -312,6 +315,25 @@ static void register_models() {
         return std::make_unique<causallm::MultilingualTinyBert>(
           cfg, generation_cfg, nntr_cfg);
       });
+    // Ouro (Universal-Transformer). config.json's architectures[0] is used
+    // verbatim as the Factory key, so "OuroModel" maps to the embedding
+    // backbone; "OuroEmbedding" is kept as an alias and "OuroForCausalLM" for
+    // the decoder-only (causal LM) variant.
+    causallm::Factory::Instance().registerModel(
+      "OuroModel", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::OuroEmbedding>(cfg, generation_cfg,
+                                                         nntr_cfg);
+      });
+    causallm::Factory::Instance().registerModel(
+      "OuroEmbedding", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::OuroEmbedding>(cfg, generation_cfg,
+                                                         nntr_cfg);
+      });
+    causallm::Factory::Instance().registerModel(
+      "OuroForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::OuroCausalLM>(cfg, generation_cfg,
+                                                        nntr_cfg);
+      });
 
 #ifdef ENABLE_QNN
     causallm::Factory::Instance().registerModel(
@@ -337,6 +359,8 @@ static const char *get_model_name_from_type(ModelType type) {
     return "FUNCTION_GEMMA";
   case CAUSAL_LM_MODEL_GEMMA4_CPU:
     return "GEMMA4_CPU";
+  case CAUSAL_LM_MODEL_OURO_EMBEDDING:
+    return "OURO_EMBEDDING";
 #ifdef ENABLE_QNN
   case CAUSAL_LM_MODEL_GEMMA4_E2B_QNN:
     return "GEMMA4-E2B-QNN";
