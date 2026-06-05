@@ -85,6 +85,7 @@ import com.example.quickdotai.QuantizationType
 import com.example.quickdotai.QuickAiError
 import com.example.quickdotai.QuickDotAI
 import com.example.quickdotai.StreamSink
+import java.io.File
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import kotlinx.serialization.json.Json
@@ -193,19 +194,20 @@ class MainActivity : AppCompatActivity() {
     private var samplingExpanded = false
 
     private var selFamily: String = ModelIds.GEMMA4
-    private var selRuntime: RuntimeKind = RuntimeKind.LITERT
-    private var selBackend: BackendType = BackendType.GPU
+    private var selRuntime: RuntimeKind = RuntimeKind.NATIVE
+    private var selBackend: BackendType = BackendType.NPU
     private val selDescriptor: ModelDescriptor?
         get() = ModelCatalog.resolve(selFamily, selRuntime, selBackend)
     private var selectedQuant: QuantizationType = QuantizationType.W4A32
 
     private var chatSelFamily: String = ModelIds.GEMMA4
-    private var chatSelRuntime: RuntimeKind = RuntimeKind.LITERT
-    private var chatSelBackend: BackendType = BackendType.GPU
+    private var chatSelRuntime: RuntimeKind = RuntimeKind.NATIVE
+    private var chatSelBackend: BackendType = BackendType.NPU
     private val chatSelDescriptor: ModelDescriptor?
         get() = ModelCatalog.resolve(chatSelFamily, chatSelRuntime, chatSelBackend)
     private var chatSelectedQuant: QuantizationType = QuantizationType.W4A32
 
+    private var modelBasePathText: String = "/sdcard/Download/aistudio-mobile/models/"
     private var modelPathText: String = ""
     private var promptText: String = "What is rainbow?"
 
@@ -243,6 +245,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var outputScrollView: NestedScrollView
     private lateinit var statusView: TextView
     private lateinit var outputView: TextView
+    private lateinit var modelBasePathField: EditText
     private lateinit var modelPathField: EditText
     private lateinit var promptField: EditText
     private lateinit var imageStatusView: TextView
@@ -253,6 +256,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chatSeedField: EditText
     private lateinit var chatPromptField: EditText
     private lateinit var openAIMessagesField: EditText
+    private lateinit var chatModelBasePathField: EditText
     private lateinit var chatSessionStatusView: TextView
 
     /**
@@ -306,7 +310,8 @@ class MainActivity : AppCompatActivity() {
         // Snapshot any in-flight EditText contents into state vars so the
         // theme rebuild does not lose typed input.
         if (::promptField.isInitialized) promptText = promptField.text.toString()
-        if (!resetModelPath && ::modelPathField.isInitialized) modelPathText = modelPathField.text.toString()
+        if (::modelBasePathField.isInitialized) modelBasePathText = modelBasePathField.text.toString()
+        if (::chatModelBasePathField.isInitialized) modelBasePathText = chatModelBasePathField.text.toString()
         if (::chatSystemPromptField.isInitialized) systemPromptText = chatSystemPromptField.text.toString()
         if (::chatTemperatureField.isInitialized) temperatureText = chatTemperatureField.text.toString()
         if (::chatTopKField.isInitialized) topKText = chatTopKField.text.toString()
@@ -589,21 +594,16 @@ class MainActivity : AppCompatActivity() {
             })
             spacer(body, 12)
 
-            // QUANT chip group.
-            body.addView(labelView(t, "QUANTIZATION"))
-            body.addView(chipRow(t, QuantizationType.values().map { it.name },
-                selectedQuant.name) { picked ->
-                selectedQuant = QuantizationType.valueOf(picked)
-                modelPathText = defaultModelPathFor(selDescriptor, selectedQuant) ?: ""
-                rebuildUi(resetModelPath = true)
-            })
+            // MODEL BASE PATH — editable root directory for model files.
+            body.addView(labelView(t, "MODEL BASE PATH"))
+            modelBasePathField = roundedEditText(t, modelBasePathText, mono = true,
+                onTextChange = { modelBasePathText = it })
+            body.addView(modelBasePathField)
             spacer(body, 12)
 
-            // MODEL PATH.
-            body.addView(labelView(t, "MODEL PATH"))
-            modelPathField = roundedEditText(t, modelPathText, mono = true,
-                onTextChange = { modelPathText = it })
-            body.addView(modelPathField)
+            // MODEL NAME — read-only display of default folder name + error if missing.
+            body.addView(labelView(t, "MODEL NAME"))
+            body.addView(modelNameView(t, selDescriptor))
             spacer(body, 12)
 
             // Load / Unload action row.
@@ -746,7 +746,7 @@ class MainActivity : AppCompatActivity() {
         // ── Model Selection Card ──
         val modelCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = solid(t.surfaceContainer, 20)
+            background = strokedSolid(t.surface, 24, t.outlineVariant, 1)
             setPadding(dp(14), dp(14), dp(14), dp(14))
         }
         val active = sessionIdText != null && activeSessionKey == loadedKey
@@ -818,6 +818,18 @@ class MainActivity : AppCompatActivity() {
             clearChatSessionState()
             rebuildUi()
         })
+        spacer(modelCard, 12)
+
+        // MODEL BASE PATH — editable root directory for model files.
+        modelCard.addView(labelView(t, "MODEL BASE PATH"))
+        chatModelBasePathField = roundedEditText(t, modelBasePathText, mono = true,
+            onTextChange = { modelBasePathText = it })
+        modelCard.addView(chatModelBasePathField)
+        spacer(modelCard, 12)
+
+        // MODEL NAME — read-only display of default folder name + error if missing.
+        modelCard.addView(labelView(t, "MODEL NAME"))
+        modelCard.addView(modelNameView(t, chatSelDescriptor))
         container.addView(modelCard)
         spacer(container, 10)
 
@@ -1617,6 +1629,131 @@ class MainActivity : AppCompatActivity() {
         return scroll
     }
 
+    /**
+     * @brief Read-only view showing the default model name (folder name)
+     * derived from the model descriptor. Displays an error message if the
+     * expected folder does not exist under MODEL BASE PATH.
+     */
+    private fun modelNameView(t: M3Tokens, descriptor: ModelDescriptor?): View {
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        val relPath = descriptor?.let { modelPathById[it.id] } ?: descriptor?.id ?: "—"
+        val folderName = relPath.substringBefore('/')
+        val fullPath = "${modelBasePathText.trimEnd('/')}/$folderName"
+        val folderExists = File(fullPath).exists()
+
+        val nameView = TextView(this).apply {
+            text = folderName
+            setTextColor(t.onSurface)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            background = strokedSolid(t.surfaceContainer, 8, t.outline, 1)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        wrapper.addView(nameView)
+
+        if (!folderExists) {
+            wrapper.addView(TextView(this).apply {
+                text = "⚠ Folder not found: $fullPath"
+                setTextColor(t.error)
+                textSize = 11f
+                typeface = Typeface.MONOSPACE
+                setPadding(dp(4), dp(4), 0, 0)
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            })
+        }
+        return wrapper
+    }
+
+    /**
+     * @brief Dropdown field that lists subdirectories inside [basePath]
+     * and updates [modelPathText] with the full path when a model is picked.
+     * Falls back to the current [currentPath] as the displayed value if
+     * the directory is not readable or has no subdirectories.
+     */
+    private fun modelNameDropdown(t: M3Tokens, currentPath: String, basePath: String): View {
+        // Scan the base path for subdirectories
+        val baseDir = File(basePath.trimEnd('/'))
+        val subDirs: List<String> = if (baseDir.exists() && baseDir.isDirectory) {
+            baseDir.listFiles()
+                ?.filter { it.isDirectory }
+                ?.map { it.name }
+                ?.sorted()
+                ?: emptyList()
+        } else {
+            emptyList()
+        }
+
+        // Determine display name: if currentPath starts with basePath, show the relative name
+        val displayPath = currentPath.trimEnd('/')
+        val displayValue = if (displayPath.startsWith(basePath.trimEnd('/')) && displayPath.length > basePath.trimEnd('/').length) {
+            displayPath.substring(basePath.trimEnd('/').length + 1)
+        } else {
+            displayPath.substringAfterLast('/')
+        }
+
+        val field = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = strokedSolid(t.surfaceContainer, 8, t.outline, 1)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+        }
+        val valueView = TextView(this).apply {
+            text = displayValue.ifEmpty { "— tap to select —" }
+            setTextColor(if (displayValue.isNotEmpty()) t.onSurface else t.onSurfaceVar)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        }
+        val arrow = TextView(this).apply {
+            text = "▾"
+            setTextColor(t.onSurfaceVar)
+            textSize = 14f
+        }
+        field.addView(valueView)
+        field.addView(arrow)
+
+        field.setOnClickListener { anchor ->
+            // Build options: subdirectories + a "Custom…" option
+            val options = if (subDirs.isNotEmpty()) subDirs + "Custom…" else listOf("Custom…")
+            val menu = PopupMenu(this, anchor)
+            options.forEachIndexed { i, opt ->
+                menu.menu.add(0, i, i, opt).apply {
+                    isCheckable = true
+                    isChecked = opt == displayValue
+                }
+            }
+            menu.setOnMenuItemClickListener { item ->
+                val picked = options[item.itemId]
+                if (picked == "Custom…") {
+                    // Switch to a free-form EditText for custom model name entry
+                    modelPathField = roundedEditText(t, modelPathText, mono = true,
+                        onTextChange = { modelPathText = it })
+                    // Replace the dropdown with the edit text in the parent
+                    val parent = field.parent as? ViewGroup
+                    val index = parent?.indexOfChild(field) ?: -1
+                    if (parent != null && index >= 0) {
+                        parent.removeView(field)
+                        parent.addView(modelPathField, index)
+                    }
+                } else {
+                    // Build the full path: basePath/picked
+                    val newPath = "${basePath.trimEnd('/')}/$picked"
+                    modelPathText = newPath
+                    valueView.text = picked
+                    setStatus("Model name: $picked")
+                }
+                true
+            }
+            menu.show()
+        }
+        return field
+    }
+
     private fun dropdownField(t: M3Tokens, options: List<String>, selected: String,
                              onPick: (String) -> Unit): View {
         val enabled = options.isNotEmpty()
@@ -1888,10 +2025,10 @@ class MainActivity : AppCompatActivity() {
         val d = selDescriptor
         val backend = selBackend
         val quant = selectedQuant
-        val modelPath = (if (::modelPathField.isInitialized) modelPathField.text.toString()
-                          else modelPathText).trim().ifEmpty { null }
+        val modelPath = modelPathText.trim().ifEmpty { null }
         val nativeLibDir = applicationContext.applicationInfo.nativeLibraryDir
-        val modelBasePath = "/sdcard/Download/aistudio-mobile/models/"
+        val basePath = (if (::modelBasePathField.isInitialized) modelBasePathField.text.toString()
+                        else modelBasePathText).trim().ifEmpty { modelBasePathText }
         return LoadModelRequest(
             backend = backend,
             modelId = d?.id ?: selFamily,
@@ -1899,7 +2036,7 @@ class MainActivity : AppCompatActivity() {
             modelPath = modelPath,
             visionBackend = d?.let { visionBackendFor(it, backend) },
             nativeLibDir = nativeLibDir,
-            modelBasePath = modelBasePath,
+            modelBasePath = basePath,
         )
     }
 
@@ -1909,7 +2046,8 @@ class MainActivity : AppCompatActivity() {
         val quant = chatSelectedQuant
         val modelPath = defaultModelPathFor(d, quant)
         val nativeLibDir = applicationContext.applicationInfo.nativeLibraryDir
-        val modelBasePath = "/sdcard/Download/aistudio-mobile/models/"
+        val basePath = (if (::chatModelBasePathField.isInitialized) chatModelBasePathField.text.toString()
+                        else modelBasePathText).trim().ifEmpty { modelBasePathText }
         return LoadModelRequest(
             backend = backend,
             modelId = d?.id ?: chatSelFamily,
@@ -1917,7 +2055,7 @@ class MainActivity : AppCompatActivity() {
             modelPath = modelPath,
             visionBackend = d?.let { visionBackendFor(it, backend) },
             nativeLibDir = nativeLibDir,
-            modelBasePath = modelBasePath,
+            modelBasePath = basePath,
         )
     }
 
@@ -1945,8 +2083,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         val descriptor = ModelCatalog.byId(req.modelId)
+        val basePath = req.modelBasePath ?: modelBasePathText
         val newEngine: QuickDotAI = if (descriptor != null) {
-            createEngine(applicationContext, descriptor)
+            createEngine(applicationContext, descriptor, modelBasePath = basePath)
         } else {
             NativeQuickDotAI(applicationContext)  // fallback
         }
@@ -2669,21 +2808,20 @@ class MainActivity : AppCompatActivity() {
      */
     private fun defaultModelPathFor(d: ModelDescriptor?, quant: QuantizationType): String? {
         if (d == null) return null
-        val externalFiles = applicationContext.getExternalFilesDir(null)
-        val base = externalFiles?.absolutePath ?: "/sdcard/Download/aistudio-mobile"
+        val base = modelBasePathText.trimEnd('/')
         return modelPathById[d.id]?.let { "$base/$it" }
-            ?: "$base/models/${d.id}"
+            ?: "$base/${d.id}"
     }
 
     private val modelPathById: Map<String, String> = mapOf(
-        ModelIds.GEMMA4         to "models/gemma-4-E2B-it/gemma-4-E2B-it.litertlm",
-        ModelIds.QWEN3_0_6B     to "models/qwen3-0.6b",
-        ModelIds.QWEN3_1_7B_Q40 to "models/qwen3-1.7b-q40-arm",
-        ModelIds.TINY_BERT      to "models/tiny-bert",
-        ModelIds.FUNCTION_GEMMA to "models/function_gemma",
-        ModelIds.GEMMA4_CPU     to "models/gemma4_cpu",
-        ModelIds.GEMMA4_E2B_QNN to "models/gemma-4-e2b-qnn",
-        ModelIds.VJEPA_QNN      to "models/vjepa-qnn",
+        ModelIds.GEMMA4         to "gemma-4-E2B-it/gemma-4-E2B-it.litertlm",
+        ModelIds.QWEN3_0_6B     to "qwen3-0.6b",
+        ModelIds.QWEN3_1_7B_Q40 to "qwen3-1.7b-q40-arm",
+        ModelIds.TINY_BERT      to "tiny-bert",
+        ModelIds.FUNCTION_GEMMA to "function_gemma",
+        ModelIds.GEMMA4_CPU     to "gemma4_cpu",
+        ModelIds.GEMMA4_E2B_QNN to "gemma-4-e2b-qnn",
+        ModelIds.VJEPA_QNN      to "vjepa-qnn",
     )
 
     private fun checkAllFilesAccess() {
