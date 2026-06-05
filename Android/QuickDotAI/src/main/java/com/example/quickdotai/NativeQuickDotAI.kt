@@ -146,6 +146,29 @@ class NativeQuickDotAI(
         }
     }
 
+    override fun encode(text: String): BackendResult<FloatArray> {
+        if (handle == 0L) {
+            return BackendResult.Err(
+                QuickAiError.NOT_INITIALIZED,
+                "encode(): no model loaded"
+            )
+        }
+        return try {
+            val vec = NativeCausalLm.encodeModelHandleNative(handle, text)
+            if (vec == null || vec.isEmpty()) {
+                BackendResult.Err(
+                    QuickAiError.INFERENCE_FAILED,
+                    "encode() failed for current model '$currentModelId'"
+                )
+            } else {
+                BackendResult.Ok(vec)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "encode() threw", t)
+            BackendResult.Err(QuickAiError.INFERENCE_FAILED, t.message)
+        }
+    }
+
     override fun unload(): BackendResult<Unit> {
         // Cancel any in-flight inference before unloading
         cancel()

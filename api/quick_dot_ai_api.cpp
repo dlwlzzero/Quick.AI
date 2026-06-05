@@ -31,6 +31,7 @@
 
 #include "causal_lm.h"
 #include "chat_template.h"
+#include "sentence_transformer.h"
 #include "gemma3_causallm.h"
 #include "gemma4_causallm.h"
 #include "gptoss_cached_slim_causallm.h"
@@ -2080,6 +2081,69 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   LOGD("[DEBUG] runModelHandleStreaming: END (errorCode=%d)", ec);
   return ec;
 }
+
+ErrorCode encodeModelHandle(CausalLmHandle handle, const char *text,
+                            float **out_embedding, int *out_dim) {
+  if (handle == nullptr || text == nullptr || out_embedding == nullptr ||
+      out_dim == nullptr) {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+  *out_embedding = nullptr;
+  *out_dim = 0;
+
+  auto &h = *handle;
+  std::lock_guard<std::mutex> lock(h.mtx);
+
+  if (!h.initialized || h.models.empty()) {
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  // Embedding models occupy models[0] (single-model embedding handle).
+  auto *st =
+    dynamic_cast<causallm::SentenceTransformer *>(h.models[0].get());
+  if (st == nullptr) {
+    LOGE("encodeModelHandle: models[0] is not a SentenceTransformer");
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
+
+  try {
+    const int dim = st->getEmbeddingDim();
+    if (dim <= 0) {
+      return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+    }
+
+    // WSTR is std::string in this codebase; pass the text directly,
+    // consistent with runModelHandleStreaming.
+    std::string s(text);
+
+    std::vector<float *> results = st->encode(s);
+    if (results.empty() || results[0] == nullptr) {
+      for (auto *p : results)
+        delete[] p;
+      return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+    }
+
+    // Copy the batch-0 embedding (first DIM floats) into a caller-owned buffer.
+    float *buf = new float[dim];
+    std::memcpy(buf, results[0], sizeof(float) * static_cast<size_t>(dim));
+
+    // encode() allocates each pointer with new[]; release them all.
+    for (auto *p : results)
+      delete[] p;
+
+    *out_embedding = buf;
+    *out_dim = dim;
+    return CAUSAL_LM_ERROR_NONE;
+  } catch (const std::exception &e) {
+    LOGE("encodeModelHandle: exception: %s", e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  } catch (...) {
+    LOGE("encodeModelHandle: unknown exception");
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+}
+
+void freeEmbedding(float *embedding) { delete[] embedding; }
 
 ErrorCode unloadModelHandle(CausalLmHandle handle) {
   if (handle == nullptr) {
