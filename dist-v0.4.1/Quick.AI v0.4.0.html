@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quick.AI v0.4.0 — Android</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #1b1922;
+    transition: background .35s ease;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; overflow: hidden;
+  }
+  #stage { display: flex; align-items: center; justify-content: center; }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  @keyframes qpulse {
+    0% { box-shadow: 0 0 0 0 currentColor; }
+    70% { box-shadow: 0 0 0 7px rgba(0,0,0,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+  }
+  .qcaret { animation: qblink 1s steps(1) infinite; margin-left: 1px; }
+  @keyframes qblink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+  <div id="stage"><div id="root"></div></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="android-frame.jsx"></script>
+  <script type="text/babel" src="quick-core.jsx"></script>
+  <script type="text/babel" src="quick-chrome.jsx"></script>
+  <script type="text/babel" src="quick-screens.jsx"></script>
+  <script type="text/babel" src="quick-settings.jsx"></script>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    const CHAT_REPLY =
+`On-device inference keeps every token local — weights, prompt, and activations never leave the phone.
+
+Quick.AI streams Mixture-of-Experts experts from flash on demand (FSU), so a 30B model fits in ~1.3 GB of RAM. Want me to walk through how the KV cache is sized?`;
+
+    const OPENAI_REPLY =
+`Running your messages[] through the model's chat_template.jinja, then on the selected backend. Each role maps to the template's turn markers — system sets the preamble, user/assistant interleave the turns.`;
+
+    const DEFAULT_JSON =
+`[
+  { "role": "system", "content": "You are a terse on-device assistant." },
+  { "role": "user", "content": "Why run an LLM locally?" }
+]`;
+
+    const FINAL_METRICS = { prefillTok: 18, prefillDur: 142, genTok: 96, genDur: 1840, totalDur: 1982, initDur: 480, peakKb: 737280 };
+
+    function App() {
+      const [dark, setDark] = useState(false);
+      const t = dark ? DARK : LIGHT;
+
+      const [tab, setTab] = useState('chat');                 // chat | metrics
+      const [model, setModel] = useState({ family: 'qwen3', runtime: 'NATIVE', backend: 'CPU', quant: 'W4A32' });
+      const [loadStatus, setLoadStatus] = useState('idle');   // idle | loading | loaded
+      const [loadedLabel, setLoadedLabel] = useState('');
+      const [sessionOpen, setSessionOpen] = useState(false);
+
+      const [sampling, setSampling] = useState({ system: '', temp: '0.7', topk: '40', topp: '0.95', seed: 'random', thinking: 'default' });
+
+      const [messages, setMessages] = useState([]);
+      const [composer, setComposer] = useState('');
+      const [attachments, setAttachments] = useState([]);
+      const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+
+      const [msgFormat, setMsgFormatRaw] = useState('chat');  // chat | openai
+      const [jsonView, setJsonView] = useState(false);
+      const [openaiJson, setOpenaiJson] = useState(DEFAULT_JSON);
+
+      const [settingsOpen, setSettingsOpen] = useState(false);
+      const [streaming, setStreaming] = useState(false);
+      const [metrics, setMetrics] = useState(null);
+      const timer = useRef(null);
+
+      useEffect(() => { document.body.style.background = dark ? '#0C0F11' : '#E4E7EA'; }, [dark]);
+
+      const [scale, setScale] = useState(1);
+      useEffect(() => {
+        const fit = () => setScale(Math.min(1, (window.innerHeight - 24) / 892, (window.innerWidth - 24) / 412));
+        fit(); window.addEventListener('resize', fit); return () => window.removeEventListener('resize', fit);
+      }, []);
+
+      const stop = () => { if (timer.current) { clearInterval(timer.current); timer.current = null; } };
+      useEffect(() => stop, []);
+
+      const desc = cat.resolve(model.family, model.runtime, model.backend);
+      const modelId = loadStatus === 'loaded' ? loadedLabel : (desc ? desc.id : model.family);
+
+      const setMsgFormat = (f) => { setMsgFormatRaw(f); if (f !== 'openai') setJsonView(false); };
+
+      const ensureReady = (cb) => {
+        if (loadStatus === 'loaded') { if (msgFormat === 'chat') setSessionOpen(true); cb(); return; }
+        setLoadStatus('loading');
+        setTimeout(() => {
+          setLoadStatus('loaded'); setLoadedLabel(desc ? desc.id : model.family);
+          if (msgFormat === 'chat') setSessionOpen(true);
+          cb();
+        }, 950);
+      };
+
+      const streamInto = (reply) => {
+        stop(); setStreaming(true);
+        const words = reply.split(/(\s+)/); let i = 0;
+        timer.current = setInterval(() => {
+          if (i >= words.length) { stop(); setStreaming(false); setMetrics(FINAL_METRICS); return; }
+          const w = words[i++];
+          setMessages(m => {
+            const c = [...m]; const last = c[c.length - 1];
+            if (last && last.role === 'assistant') c[c.length - 1] = { ...last, text: last.text + w };
+            return c;
+          });
+        }, 36);
+      };
+
+      const onSend = () => {
+        if (streaming) return;
+        const text = composer.trim(); if (!text) return;
+        const atts = attachments;
+        setMessages(m => [...m, { role: 'user', text, atts }, { role: 'assistant', text: '' }]);
+        setComposer(''); setAttachments([]); setAttachMenuOpen(false);
+        const reply = msgFormat === 'openai' ? OPENAI_REPLY : CHAT_REPLY;
+        ensureReady(() => streamInto(reply));
+      };
+
+      const onRunJson = () => {
+        if (streaming) return;
+        let arr; try { arr = JSON.parse(openaiJson); if (!Array.isArray(arr)) return; } catch (e) { return; }
+        const conv = arr.filter(m => String(m.role).toLowerCase() !== 'system')
+          .map(m => ({ role: String(m.role).toLowerCase() === 'assistant' ? 'assistant' : 'user', text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }));
+        setMessages([...conv, { role: 'assistant', text: '' }]);
+        setJsonView(false);
+        ensureReady(() => streamInto(OPENAI_REPLY));
+      };
+
+      const onStop = () => { stop(); setStreaming(false); };
+      const onClear = () => { stop(); setStreaming(false); setMessages([]); };
+      const onSuggest = (s) => setComposer(s);
+
+      const onAttach = (kind) => {
+        const name = kind === 'image' ? 'photo_2048.jpg' : kind === 'camera' ? 'capture.jpg' : 'context.md';
+        setAttachments(a => [...a, { kind, name }]);
+      };
+      const removeAttach = (i) => setAttachments(a => a.filter((_, idx) => idx !== i));
+
+      const onLoad = () => {
+        setLoadStatus('loading');
+        setTimeout(() => { setLoadStatus('loaded'); setLoadedLabel(desc ? desc.id : model.family); }, 1000);
+      };
+      const onUnload = () => { setLoadStatus('idle'); setLoadedLabel(''); setSessionOpen(false); };
+      const onFetchMetrics = () => setMetrics(FINAL_METRICS);
+      const onSyncJson = () => setOpenaiJson(buildJson(sampling.system, messages));
+
+      // hero status
+      let tone = 'idle', statusText = 'idle · type a message to begin';
+      if (streaming) { tone = 'progress'; statusText = `▶ generating · ${modelId}`; }
+      else if (loadStatus === 'loading') { tone = 'progress'; statusText = `loading ${desc ? desc.id : model.family}…`; }
+      else if (loadStatus === 'loaded') { tone = 'success'; statusText = `● loaded · ${loadedLabel} · ${model.backend}/${model.quant}`; }
+
+      const ctx = {
+        model, setModel, loadStatus, loadedLabel, sessionOpen,
+        sampling, setSampling,
+        messages, composer, setComposer, attachments, removeAttach,
+        attachMenuOpen, setAttachMenuOpen, onAttach,
+        msgFormat, setMsgFormat, jsonView, setJsonView, openaiJson, setOpenaiJson, onSyncJson,
+        onSend: jsonView && msgFormat === 'openai' ? onRunJson : onSend,
+        onStop, onClear, onSuggest,
+        onOpenSettings: () => { setAttachMenuOpen(false); setSettingsOpen(true); },
+        onCloseSettings: () => setSettingsOpen(false),
+        onLoad, onUnload,
+        streaming, metrics, onFetchMetrics,
+      };
+
+      return (
+        <div id="stage-inner" style={{ transform: `scale(${scale})`, transformOrigin: 'center center' }}>
+          <AndroidDevice dark={dark} bg={t.bg}>
+            <div style={{
+              position: 'relative', height: '100%', overflow: 'hidden',
+              background: t.bg,
+              backgroundImage: `radial-gradient(${t.grid} 1px, transparent 1px)`,
+              backgroundSize: '22px 22px',
+              display: 'flex', flexDirection: 'column',
+            }}>
+              <TopBar t={t} dark={dark} onToggleTheme={() => setDark(d => !d)} loadStatus={loadStatus} loadedLabel={loadedLabel} />
+              <HeroStatus t={t} tone={tone} text={statusText} streaming={streaming} onStop={onStop} />
+              <TabBar t={t} value={tab} onPick={setTab} />
+
+              <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+                {tab === 'chat' && <ConversationView t={t} ctx={ctx} />}
+                {tab === 'metrics' && <MetricsTab t={t} ctx={ctx} />}
+              </div>
+
+              {settingsOpen && <SettingsPanel t={t} ctx={ctx} />}
+            </div>
+          </AndroidDevice>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
