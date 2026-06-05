@@ -248,6 +248,37 @@ Java_com_example_quickdotai_NativeCausalLm_nativeQueryCatalog(
   return env->NewStringUTF(getModelCatalogJson());
 }
 
+// ---- encodeModelHandle (embedding vector) ---------------------------------
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_example_quickdotai_NativeCausalLm_encodeModelHandleNative(
+  JNIEnv *env, jobject /*thiz*/, jlong handleJlong, jstring textJ) {
+  auto handle = reinterpret_cast<CausalLmHandle>(handleJlong);
+  if (handle == nullptr || textJ == nullptr) {
+    return nullptr;
+  }
+  const char *text = env->GetStringUTFChars(textJ, nullptr);
+
+  float *vec = nullptr;
+  int dim = 0;
+  ErrorCode ec = encodeModelHandle(handle, text, &vec, &dim);
+
+  env->ReleaseStringUTFChars(textJ, text);
+
+  if (ec != CAUSAL_LM_ERROR_NONE || vec == nullptr || dim <= 0) {
+    if (vec != nullptr) {
+      freeEmbedding(vec);
+    }
+    return nullptr; // null signals failure to the Kotlin layer
+  }
+
+  jfloatArray arr = env->NewFloatArray(dim);
+  if (arr != nullptr) {
+    env->SetFloatArrayRegion(arr, 0, dim, vec);
+  }
+  freeEmbedding(vec);
+  return arr;
+}
+
 // ---------------------------------------------------------------------------
 // runModelHandleStreaming
 // ---------------------------------------------------------------------------

@@ -359,6 +359,31 @@ WIN_EXPORT ErrorCode runModelHandleStreaming(CausalLmHandle handle,
                                              void *user_data);
 
 /**
+ * @brief Encode a single text prompt into a sentence-embedding vector using a
+ *        handle whose models[0] is an embedding model (e.g. Ouro / "ouro").
+ *
+ * On success, *out_embedding points to a freshly allocated array of *out_dim
+ * floats (the batch-0 embedding). The caller OWNS this buffer and MUST release
+ * it with freeEmbedding(). On any error, *out_embedding is set to NULL and
+ * *out_dim to 0.
+ *
+ * @param handle         Handle from loadModelHandle / loadModelHandleByName
+ * @param text           UTF-8 input text (NUL-terminated)
+ * @param out_embedding  [out] receives a newly allocated float[*out_dim]
+ * @param out_dim        [out] receives the embedding dimension
+ * @return ErrorCode. CAUSAL_LM_ERROR_UNSUPPORTED if models[0] is not an
+ *         embedding (SentenceTransformer) model.
+ */
+WIN_EXPORT ErrorCode encodeModelHandle(CausalLmHandle handle, const char *text,
+                                       float **out_embedding, int *out_dim);
+
+/**
+ * @brief Release a buffer returned by encodeModelHandle().
+ * @param embedding  Pointer previously returned via out_embedding (may be NULL)
+ */
+WIN_EXPORT void freeEmbedding(float *embedding);
+
+/**
  * @brief Run inference on a handle with a tool schema for constrained
  * generation.
  *

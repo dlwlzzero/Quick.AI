@@ -16,7 +16,7 @@
  *           3. Final RMSNorm applied at the end of each UT step (matches HF
  *              `self.norm(hidden_states)` placed inside the UT loop).
  *         The embedding-projection and the final pooling/lm_head are added
- *         by OuroEmbedding / OuroCausalLM in their constructModel().
+ *         by OuroEmbedding in its constructModel().
  */
 
 #ifndef __OURO_TRANSFORMER_H__
@@ -71,7 +71,8 @@ protected:
 
   /**
    * @brief Per-(step, layer) external cache placeholders. Only used when
-   *        ouro_use_external_kv_cache_ is true (OuroCausalLM).
+   *        ouro_use_external_kv_cache_ is true, which is currently unused
+   *        (OuroEmbedding sets it to false).
    *        Placeholder names are "cache_k_l<flat>" / "cache_v_l<flat>"
    *        where flat = current_ut_ * NUM_LAYERS + layer_id.
    */
@@ -110,15 +111,16 @@ protected:
 
   /**
    * @brief UT step the next createTransformerDecoderBlock / createAttention
-   *        / createMlp call should emit. OuroCausalLM and OuroEmbedding
-   *        update this before each layer-loop pass in constructModel.
+   *        / createMlp call should emit. OuroEmbedding updates this before
+   *        each layer-loop pass in constructModel.
    */
   int current_ut_ = 0;
 
   /**
-   * @brief When true (OuroCausalLM default) mha_core is wired in 5-input
-   *        mode with externally-bound cache_k_l<flat> placeholders owned by
-   *        OuroCausalLM's KVCacheManager. When false (set by OuroEmbedding)
+   * @brief When true mha_core is wired in 5-input mode with externally-bound
+   *        cache_k_l<flat> placeholders owned by a host KVCacheManager; this
+   *        path is currently unused (OuroEmbedding sets this to false).
+   *        When false (set by OuroEmbedding)
    *        mha_core is wired in 3-input mode and allocates its scratch KV
    *        cache internally, so no host cache management is needed for the
    *        single-prefill embedding path.

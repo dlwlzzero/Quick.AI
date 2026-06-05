@@ -44,8 +44,8 @@
 #include "qwen3_causallm.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
-#include "ouro_causallm.h"
 #include "ouro_embedding.h"
+#include "sentence_transformer.h"
 #include "xgrammar_manager.h"
 #include "xgrammar_wrapper.h"
 #include <factory.h>
@@ -317,8 +317,8 @@ static void register_models() {
       });
     // Ouro (Universal-Transformer). config.json's architectures[0] is used
     // verbatim as the Factory key, so "OuroModel" maps to the embedding
-    // backbone; "OuroEmbedding" is kept as an alias and "OuroForCausalLM" for
-    // the decoder-only (causal LM) variant.
+    // backbone; "OuroEmbedding" is kept as an alias. Ouro is embedding-only;
+    // the decoder-only (causal LM) variant has been removed.
     causallm::Factory::Instance().registerModel(
       "OuroModel", [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::OuroEmbedding>(cfg, generation_cfg,
@@ -328,11 +328,6 @@ static void register_models() {
       "OuroEmbedding", [](json cfg, json generation_cfg, json nntr_cfg) {
         return std::make_unique<causallm::OuroEmbedding>(cfg, generation_cfg,
                                                          nntr_cfg);
-      });
-    causallm::Factory::Instance().registerModel(
-      "OuroForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-        return std::make_unique<causallm::OuroCausalLM>(cfg, generation_cfg,
-                                                        nntr_cfg);
       });
 
 #ifdef ENABLE_QNN
@@ -2104,6 +2099,69 @@ ErrorCode runModelHandleStreaming(CausalLmHandle handle,
   LOGD("[DEBUG] runModelHandleStreaming: END (errorCode=%d)", ec);
   return ec;
 }
+
+ErrorCode encodeModelHandle(CausalLmHandle handle, const char *text,
+                            float **out_embedding, int *out_dim) {
+  if (handle == nullptr || text == nullptr || out_embedding == nullptr ||
+      out_dim == nullptr) {
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+  }
+  *out_embedding = nullptr;
+  *out_dim = 0;
+
+  auto &h = *handle;
+  std::lock_guard<std::mutex> lock(h.mtx);
+
+  if (!h.initialized || h.models.empty()) {
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  // Embedding models occupy models[0] (single-model embedding handle).
+  auto *st =
+    dynamic_cast<causallm::SentenceTransformer *>(h.models[0].get());
+  if (st == nullptr) {
+    LOGE("encodeModelHandle: models[0] is not a SentenceTransformer");
+    return CAUSAL_LM_ERROR_UNSUPPORTED;
+  }
+
+  try {
+    const int dim = st->getEmbeddingDim();
+    if (dim <= 0) {
+      return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+    }
+
+    // WSTR is std::string in this codebase; pass the text directly,
+    // consistent with runModelHandleStreaming.
+    std::string s(text);
+
+    std::vector<float *> results = st->encode(s);
+    if (results.empty() || results[0] == nullptr) {
+      for (auto *p : results)
+        delete[] p;
+      return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+    }
+
+    // Copy the batch-0 embedding (first DIM floats) into a caller-owned buffer.
+    float *buf = new float[dim];
+    std::memcpy(buf, results[0], sizeof(float) * static_cast<size_t>(dim));
+
+    // encode() allocates each pointer with new[]; release them all.
+    for (auto *p : results)
+      delete[] p;
+
+    *out_embedding = buf;
+    *out_dim = dim;
+    return CAUSAL_LM_ERROR_NONE;
+  } catch (const std::exception &e) {
+    LOGE("encodeModelHandle: exception: %s", e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  } catch (...) {
+    LOGE("encodeModelHandle: unknown exception");
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+}
+
+void freeEmbedding(float *embedding) { delete[] embedding; }
 
 ErrorCode unloadModelHandle(CausalLmHandle handle) {
   if (handle == nullptr) {
