@@ -11,6 +11,7 @@
  */
 
 #include <algorithm>
+#include <chrono>
 
 #include <app_context.h>
 #include <common.h>
@@ -102,8 +103,24 @@ std::vector<float *> OuroEmbedding::encode(const WSTR prompt,
   input.push_back(input_sample.data());
 
   std::vector<float *> label;
-  return model->incremental_inference(BATCH_SIZE, input, label, input_len, 0,
-                                      input_len, false);
+
+  // Time the single prefill forward pass and populate prefill telemetry, the
+  // same way SentenceTransformer::encode does. OuroEmbedding overrides encode()
+  // to skip external-KV-cache binding, so without this the "Embedding with
+  // NNTrainer" report shows "prefill: 0 tokens, 0 ms, 0 TPS". For an embedding
+  // model this is one forward pass (no autoregressive generation), so the
+  // reported TPS is prefill throughput (input_len / prefill_ms), not token gen.
+  auto start_prefill = std::chrono::high_resolution_clock::now();
+  std::vector<float *> output = model->incremental_inference(
+    BATCH_SIZE, input, label, input_len, 0, input_len, false);
+  auto finish_prefill = std::chrono::high_resolution_clock::now();
+
+  auto prefill_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+    finish_prefill - start_prefill);
+  performance_metrics.prefill_tokens = input_len;
+  performance_metrics.prefill_duration_ms = prefill_duration.count();
+
+  return output;
 }
 
 } // namespace causallm
