@@ -18,6 +18,7 @@
 #include <app_context.h>
 #include <engine.h>
 #include <factory.h>
+#include <model_descriptor.h>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -51,6 +52,19 @@ __attribute__((constructor)) static void register_custom_models() {
       return std::make_unique<causallm::Gauss3_8_VIT_QNN>(cfg, generation_cfg,
                                                           nntr_cfg);
     });
+
+  // Composite preset: catalog id "gauss-3.8-vit-qnn" resolves to the device
+  // dir whose nntr_config.json composes [Gauss_3_8_VEncoder_QNN,
+  // Gauss_3_8_QNN]. The generic api multimodal path then drives the pair.
+  static const ModelDescriptor d = {"gauss-3.8-vit-qnn",
+                                    "gauss-3.8-vision",
+                                    "Gauss 3.8 Vision (QNN)",
+                                    QDA_RUNTIME_NATIVE,
+                                    (1u << 2),
+                                    QDA_CAP_MULTIMODAL | QDA_CAP_MESSAGES_API,
+                                    "gauss-3.8-vit-qnn",
+                                    "Gauss_3_8_VEncoder_QNN"};
+  quick_dot_ai::register_model_descriptor(&d);
 }
 
 void causallm::Gauss3_8_VIT_QNN::initialize() {
@@ -434,3 +448,9 @@ void causallm::Gauss3_8_VIT_QNN::run(const WSTR prompt, bool do_sample,
             << ", token generation time average: "
             << this->raw_exec_seconds.count() / (idx - _len) << std::endl;
 }
+
+// ---------------------------------------------------------------------------
+// Multimodal composition is handled generically in the api layer
+// (execute_multimodal), driving any [vision producer, LLM consumer] pair
+// through base Transformer virtuals. No per-model multimodal logic lives here.
+// ---------------------------------------------------------------------------

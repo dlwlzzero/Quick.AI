@@ -35,25 +35,29 @@ backends.
 
 ## 🤖 Supported Models
 
-The C API model enum is defined in [`api/quick_dot_ai_api.h`](api/quick_dot_ai_api.h).
-Android `ModelId` values are defined in
-[`Android/QuickDotAI/src/main/java/com/example/quickdotai/Types.kt`](Android/QuickDotAI/src/main/java/com/example/quickdotai/Types.kt).
+As of T4, models are identified by a **string model id** rather than a
+`ModelType` C enum. The public model catalog is provided by
+`getModelCatalogJson()` (C API) and `ModelCatalog` (Android AAR). Each model
+self-registers its descriptor at load time — see [`docs/Architecture.md`](docs/Architecture.md)
+for how the registry works.
 
-| C enum | Android `ModelId` | Notes |
-|---|---|---|
-| `CAUSAL_LM_MODEL_QWEN3_0_6B` | `QWEN3_0_6B` | Native nntrainer model |
-| `CAUSAL_LM_MODEL_GAUSS2_5` | currently native-only | Built-in C API config |
-| `CAUSAL_LM_MODEL_GAUSS3_6_QNN` | `GAUSS3_6_QNN` | Android QNN |
-| `CAUSAL_LM_MODEL_GAUSS3_8_QNN` | `GAUSS3_8_QNN` | Android QNN |
-| `CAUSAL_LM_MODEL_QWEN3_1_7B_Q40` | `QWEN3_1_7B_Q40` | Native nntrainer model |
-| `CAUSAL_LM_MODEL_GAUSS3_8_VIT_QNN` | `GAUSS3_8_VISION_QNN` | Native QNN vision model |
-| `CAUSAL_LM_MODEL_GAUSS3_6` | `GAUSS3_6` | Native nntrainer model |
-| `CAUSAL_LM_MODEL_TINY_BERT` | `TINY_BERT` | Native model |
-| `CAUSAL_LM_MODEL_FUNCTION_GEMMA` | `FUNCTION_GEMMA` | Tool-calling oriented model |
-| `CAUSAL_LM_MODEL_GAUSS3_8` | `GAUSS3_8` | Native nntrainer model |
-| `CAUSAL_LM_MODEL_GEMMA4_CPU` | `GEMMA4_CPU` | Native CPU Gemma path |
-| `CAUSAL_LM_MODEL_GEMMA4_E2B_QNN` | `GEMMA4_E2B_QNN` | Android QNN |
-| Kotlin-only | `GEMMA4` | Routed to `LiteRTLm`; requires a `.litertlm` path |
+| Model family   | Runtime | Backends   | Capabilities                  |
+|----------------|---------|------------|-------------------------------|
+| `qwen3-0.6b`   | NATIVE  | CPU, GPU   | Streaming, Tool use           |
+| `qwen3-1.7b`   | NATIVE  | CPU, GPU   | Streaming                     |
+| `tiny-bert`    | NATIVE  | CPU        | Embedding                     |
+| `function-gemma` | NATIVE | CPU, GPU  | Tool use                      |
+| `gemma4-cpu`   | NATIVE  | CPU        | Streaming                     |
+| `gemma4-e2b`   | NATIVE  | QNN        | Streaming                     |
+| `gemma4`       | LiteRT  | GPU        | Streaming, Multimodal         |
+| `gauss*`       | NATIVE  | (internal) | (internal — T4 compat shim)   |
+
+> `gauss*` families are carried as a `ModelType` compat shim for internal
+> builds only. They are not registered in the public descriptor catalog.
+
+The `ModelType` C enum (`CAUSAL_LM_MODEL_*` constants) is a **deprecated
+compatibility shim**. Prefer string model ids and `loadModelHandleByName()` for
+new code.
 
 Model configuration files are placed under `src/res/` and model
 implementations live under `src/models/`.
@@ -82,9 +86,11 @@ API.
 ```cpp
 #include "quick_dot_ai_api.h"
 
+// T4 preferred: load by string model id
 CausalLmHandle handle = nullptr;
-loadModelHandle(CAUSAL_LM_BACKEND_NPU, CAUSAL_LM_MODEL_GAUSS3_8_QNN,
-                CAUSAL_LM_QUANTIZATION_W4A32, nullptr, "/models", &handle);
+loadModelHandleByName(CAUSAL_LM_BACKEND_CPU, "qwen3-0.6b",
+                      CAUSAL_LM_QUANTIZATION_W4A32,
+                      nullptr, "/models", &handle);
 
 runModelHandleStreaming(handle, "Hello!", [](const char *delta, void *) {
   std::cout << delta << std::flush;
@@ -94,7 +100,8 @@ runModelHandleStreaming(handle, "Hello!", [](const char *delta, void *) {
 destroyModelHandle(handle);
 ```
 
-See [`api/README.md`](api/README.md) for the complete C API reference.
+Use `getModelCatalogJson()` to enumerate all available model descriptors at
+runtime. See [`api/README.md`](api/README.md) for the complete C API reference.
 
 ## 🧰 Prerequisites
 

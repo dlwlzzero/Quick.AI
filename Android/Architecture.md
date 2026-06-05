@@ -60,6 +60,54 @@ The preferred calls are handle-based:
 - `cancelModelHandle`
 - `destroyModelHandle`
 
+## ModelCatalog (T4)
+
+Starting with T4, model selection in the AAR is driven by the
+`ModelCatalog` singleton rather than a `ModelType` / `ModelId` enum.
+
+### Seeding
+
+`ModelCatalog` is seeded on first access by calling `nativeQueryCatalog()`
+through JNI, which delegates to `getModelCatalogJson()` in
+`libquick_dot_ai_api.so`. Hardcoded LiteRT descriptors (e.g., `gemma4`) are
+merged in at the Kotlin layer.
+
+### Key types
+
+| Type | Role |
+|---|---|
+| `enum class RuntimeKind { NATIVE, LITERT }` | Selects the engine path |
+| `enum class Capability { STREAMING, MESSAGES_API, MULTIMODAL, TOOL_USE, EMBEDDING }` | Per-model feature flags |
+| `data class ModelDescriptor(id, family, displayName, runtime, backends, capabilities)` | Descriptor from the catalog |
+| `object ModelIds` | String constants for well-known model ids |
+| `object ModelCatalog` | Singleton: `all()`, `families()`, `runtimesFor(family)`, `backendsFor(family, rt)`, `resolve(family, rt, backend)`, `byId(id)` |
+
+### 3-axis cascading UI
+
+`SampleTestAPP` presents a 3-axis cascading chip UI:
+
+1. **Family chip row** — populated from `ModelCatalog.families()`
+2. **Runtime chip row** — populated from `ModelCatalog.runtimesFor(selectedFamily)`
+3. **Backend chip row** — populated from `ModelCatalog.backendsFor(selectedFamily, selectedRuntime)`
+
+The resolved descriptor is obtained via `ModelCatalog.resolve(family, runtime, backend)`
+and passed directly to `createEngine()`.
+
+### Engine factory
+
+```kotlin
+QuickDotAI.createEngine(context, descriptor: ModelDescriptor): QuickDotAI
+```
+
+`createEngine` dispatches to `NativeQuickDotAI` (for `RuntimeKind.NATIVE`) or
+`LiteRTLm` (for `RuntimeKind.LITERT`) based on `descriptor.runtime`.
+
+### LoadModelRequest changes
+
+`LoadModelRequest.modelId: String` replaces the old `model: ModelId` enum
+field. The cache key is `"$modelId:${quantization.name}"`. The JNI call
+dispatched on load is `loadModelHandleByNameNative`.
+
 ## 🌗 LiteRT Runtime Path
 
 `LiteRTLm` is selected for `ModelId.GEMMA4` and takes a `.litertlm` file path

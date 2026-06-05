@@ -6,6 +6,7 @@ NNTRAINER_ROOT := $(LOCAL_PATH)/../../nntrainer
 endif
 
 CAUSALLM_ROOT := $(NNTRAINER_ROOT)/Applications/CausalLM
+QUICK_DOT_AI_MODELS_ROOT := $(LOCAL_PATH)/../models
 
 ML_API_COMMON_INCLUDES := $(NNTRAINER_ROOT)/ml_api_common/include
 NNTRAINER_INCLUDES := $(NNTRAINER_ROOT)/builddir/android_build_result/include/nntrainer
@@ -59,6 +60,15 @@ CAUSALLM_ALL_SRC := \
 # Exclude quantize.cpp — built as separate executable
 CAUSALLM_ALL_SRC := $(filter-out %/main.cpp %/quantize.cpp,$(CAUSALLM_ALL_SRC))
 
+# ── Extension model sources (wildcard = empty when dirs absent on public branch) ─
+QUICK_DOT_AI_QNN_INFRA_SRC := $(wildcard $(QUICK_DOT_AI_MODELS_ROOT)/qnn/*.cpp)
+QUICK_DOT_AI_GAUSS_SRC := \
+    $(wildcard $(QUICK_DOT_AI_MODELS_ROOT)/gauss-*/*.cpp) \
+    $(wildcard $(QUICK_DOT_AI_MODELS_ROOT)/qnn/gauss-*/*.cpp)
+QUICK_DOT_AI_GAUSS_INCS := \
+    $(wildcard $(QUICK_DOT_AI_MODELS_ROOT)/gauss-*) \
+    $(wildcard $(QUICK_DOT_AI_MODELS_ROOT)/qnn/gauss-*)
+
 # ══════════════════════════════════════════════════════════════════════════
 # Module: libcausallm.so  (CausalLM shared library for API use)
 #
@@ -101,31 +111,16 @@ LOCAL_ALLOW_UNDEFINED_SYMBOLS := true
 LOCAL_MODULE := quick_dot_ai
 
 LOCAL_SRC_FILES := \
-     ../models/gauss-2.5/gauss2_5_causallm.cpp \
-     ../models/gauss-3/gauss3_causallm.cpp
-
-LOCAL_SRC_FILES += \
-	../models/qnn/android_memory_allocator.cpp \
-	../models/qnn/quick_dot_ai_qnn.cpp \
-	../models/qnn/graph_parser.cpp \
-	../models/qnn/generate_qnn_utils.cpp \
-	../models/qnn/qnn_kv_cache_manager.cpp \
-	../models/gauss-3.8-qnn/gauss3_8_qnn.cpp \
-	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vision_encoder_qnn.cpp \
-	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
-#	../models/gauss-3.6-qnn/gauss3_6_qnn.cpp \
-
+    $(QUICK_DOT_AI_QNN_INFRA_SRC) \
+    $(QUICK_DOT_AI_GAUSS_SRC)
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_LDLIBS := -llog -landroid
 
 LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5 \
-    $(LOCAL_PATH)/../models/gauss-3
-    $(LOCAL_PATH)/../models/qnn \
-    $(LOCAL_PATH)/../models/gauss-3.8-qnn \
-    $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
-#    $(LOCAL_PATH)/../models/qnn/gauss-3.6 \
+    $(LOCAL_PATH)/../../api \
+    $(QUICK_DOT_AI_MODELS_ROOT)/qnn \
+    $(QUICK_DOT_AI_GAUSS_INCS)
 
 include $(BUILD_SHARED_LIBRARY)
 
@@ -143,31 +138,16 @@ LOCAL_CXXFLAGS += -std=c++17 -frtti
 LOCAL_MODULE := quick_dot_ai_static
 
 LOCAL_SRC_FILES := \
-     ../models/gauss-2.5/gauss2_5_causallm.cpp \
-     ../models/gauss-3/gauss3_causallm.cpp
-
-LOCAL_SRC_FILES += \
-	../models/qnn/android_memory_allocator.cpp \
-	../models/qnn/quick_dot_ai_qnn.cpp \
-	../models/qnn/graph_parser.cpp \
-	../models/qnn/generate_qnn_utils.cpp \
-	../models/qnn/qnn_kv_cache_manager.cpp \
-	../models/gauss-3.8-qnn/gauss3_8_qnn.cpp \
-	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vision_encoder_qnn.cpp \
-	../models/qnn/gauss-3.8-vit-qnn/gauss3_8_vit_qnn.cpp \
-#	../models/qnn/gauss-3.6-qnn/gauss3_6_qnn.cpp \
-    
+    $(QUICK_DOT_AI_QNN_INFRA_SRC) \
+    $(QUICK_DOT_AI_GAUSS_SRC)
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_LDLIBS := -llog -landroid
 
 LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5 \
-    $(LOCAL_PATH)/../models/gauss-3 \
-    $(LOCAL_PATH)/../models/qnn \
-    $(LOCAL_PATH)/../models/gauss-3.8-qnn \
-    $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
-#    $(LOCAL_PATH)/../models/qnn/gauss-3.6 \
+    $(LOCAL_PATH)/../../api \
+    $(QUICK_DOT_AI_MODELS_ROOT)/qnn \
+    $(QUICK_DOT_AI_GAUSS_INCS)
 
 include $(BUILD_STATIC_LIBRARY)
 
@@ -190,25 +170,20 @@ LOCAL_ARM_MODE := arm
 LOCAL_MODULE := quick_dot_ai_exe
 LOCAL_LDLIBS := -llog -landroid -fopenmp -static-openmp
 
-# main.cpp + all CausalLM sources (mirrors original Android.mk)
+# main.cpp + all CausalLM sources + model_callbacks (registry for gauss TU constructors)
 LOCAL_SRC_FILES := \
     $(CAUSALLM_ROOT)/main.cpp \
-    $(CAUSALLM_ALL_SRC)
+    $(CAUSALLM_ALL_SRC) \
+    $(LOCAL_PATH)/../../api/model_callbacks.cpp
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := tokenizers_c
 LOCAL_WHOLE_STATIC_LIBRARIES := quick_dot_ai_static
 
-LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5
-
 LOCAL_C_INCLUDES := $(CAUSALLM_INCLUDES) \
-    $(LOCAL_PATH)/../models/gauss-2.5 \
-    $(LOCAL_PATH)/../models/gauss-3 \
-    $(LOCAL_PATH)/../models/qnn \
-    $(LOCAL_PATH)/../models/gauss-3.8-qnn \
-    $(LOCAL_PATH)/../models/qnn/gauss-3.8-vit-qnn \
-#    $(LOCAL_PATH)/../models/qnn/gauss-3.6 \
+    $(LOCAL_PATH)/../../api \
+    $(QUICK_DOT_AI_MODELS_ROOT)/qnn \
+    $(QUICK_DOT_AI_GAUSS_INCS)
 
 include $(BUILD_EXECUTABLE)
 

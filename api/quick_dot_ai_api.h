@@ -57,21 +57,25 @@ typedef enum {
   CAUSAL_LM_BACKEND_NPU = 2,
 } BackendType;
 
+/* causallm::transformer.h defines enum class ModelType at global scope.
+ * Suppress our deprecated compat shim when that header is already included
+ * to prevent an ambiguous-name error in translation units that include both. */
+#ifndef __TRANSFORMER_H__
+/**
+ * @deprecated T4: 모델 식별의 정본은 문자열 id (loadModelHandleByName).
+ *             이 enum은 기존 호출자 호환용 public-only compat shim.
+ *             모델은 카탈로그로 자동 등록.
+ */
 typedef enum {
   CAUSAL_LM_MODEL_QWEN3_0_6B = 0,
-  CAUSAL_LM_MODEL_GAUSS2_5 = 1,
-  CAUSAL_LM_MODEL_GAUSS3_6_QNN = 2,
-  CAUSAL_LM_MODEL_GAUSS3_8_QNN = 3,
-  CAUSAL_LM_MODEL_QWEN3_1_7B_Q40 = 4,
-  CAUSAL_LM_MODEL_GAUSS3_8_VE_QNN = 5,
-  CAUSAL_LM_MODEL_GAUSS3_8_VIT_QNN = 6,
-  CAUSAL_LM_MODEL_GAUSS3_6 = 7,
-  CAUSAL_LM_MODEL_TINY_BERT = 8,
-  CAUSAL_LM_MODEL_FUNCTION_GEMMA = 9,
-  CAUSAL_LM_MODEL_GAUSS3_8 = 10,
-  CAUSAL_LM_MODEL_GEMMA4_CPU = 11,
-  CAUSAL_LM_MODEL_GEMMA4_E2B_QNN = 12
+  CAUSAL_LM_MODEL_QWEN3_1_7B_Q40 = 4,  /* original ordinal preserved */
+  CAUSAL_LM_MODEL_TINY_BERT = 8,       /* original */
+  CAUSAL_LM_MODEL_FUNCTION_GEMMA = 9,  /* original */
+  CAUSAL_LM_MODEL_GEMMA4_CPU = 11,     /* original */
+  CAUSAL_LM_MODEL_GEMMA4_E2B_QNN = 12, /* original */
+  CAUSAL_LM_MODEL_VJEPA_QNN = 13,
 } ModelType;
+#endif /* __TRANSFORMER_H__ */
 
 typedef struct {
   // Add configuration options here as needed
@@ -110,9 +114,11 @@ typedef struct {
  * @param quant_type Model quantization type
  * @return ErrorCode
  */
+#ifndef __TRANSFORMER_H__
 WIN_EXPORT ErrorCode loadModel(BackendType compute, ModelType modeltype,
                                ModelQuantizationType quant_type,
                                const char *model_base_path);
+#endif /* __TRANSFORMER_H__ */
 
 typedef struct {
   unsigned int prefill_tokens;
@@ -192,11 +198,61 @@ typedef struct CausalLmModel *CausalLmHandle;
  * @param out_handle      Out-parameter that receives the new handle on success
  * @return ErrorCode
  */
+#ifndef __TRANSFORMER_H__
 WIN_EXPORT ErrorCode loadModelHandle(BackendType compute, ModelType modeltype,
                                      ModelQuantizationType quant_type,
                                      const char *native_lib_dir,
                                      const char *model_base_path,
                                      CausalLmHandle *out_handle);
+#endif /* __TRANSFORMER_H__ */
+
+/**
+ * @brief Load model by string id (T4 catalog path).
+ *
+ * Looks up the descriptor from the registry by @p model_id, validates the
+ * backend, then loads via the same internal path as loadModelHandle.
+ * Returns CAUSAL_LM_ERROR_INVALID_PARAMETER if the id is unknown, the
+ * descriptor has no config_name, or the backend is not in backend_mask.
+ *
+ * @param compute         Backend compute type
+ * @param model_id        Catalog string id e.g. "Qwen3-0.6B"
+ * @param quant_type      Quantization type
+ * @param native_lib_dir  Native library directory path. May be NULL.
+ * @param model_base_path Base path for model files. May be NULL.
+ * @param out_handle      Out-parameter receiving the new handle on success
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode loadModelHandleByName(BackendType compute,
+                                           const char *model_id,
+                                           ModelQuantizationType quant_type,
+                                           const char *native_lib_dir,
+                                           const char *model_base_path,
+                                           CausalLmHandle *out_handle);
+
+/**
+ * @brief Load a vision-encoder model and an LLM model as one multimodal handle.
+ *
+ * Lets the user freely pair an embedding (vision) model with an LLM, e.g.
+ * ("gauss-3.8-vencoder-qnn", "gauss-3.8-qnn"), or in future ("vjepa", "lfm")
+ * / ("siglip", "lfm"). The resulting handle has models[0] = embedding producer
+ * (vision) and models[1] = consumer (LLM); the multimodal run path drives the
+ * pair through the generic composer.
+ *
+ * @param compute             Backend compute type
+ * @param embedding_model_id  Catalog id of the vision encoder
+ * @param llm_model_id        Catalog id of the LLM
+ * @param quant_type          Quantization type
+ * @param native_lib_dir      Native library directory path. May be NULL.
+ * @param model_base_path     Base path for model files. May be NULL.
+ * @param out_handle          Out-parameter receiving the new handle on success
+ * @return ErrorCode. CAUSAL_LM_ERROR_UNSUPPORTED if the pair is incompatible
+ *         (e.g. the chosen LLM exposes no embedding table).
+ */
+WIN_EXPORT ErrorCode loadMultimodalHandleByName(
+  BackendType compute, const char *embedding_model_id,
+  const char *llm_model_id, ModelQuantizationType quant_type,
+  const char *native_lib_dir, const char *model_base_path,
+  CausalLmHandle *out_handle);
 
 /**
  * @brief Run inference on a specific handle.
@@ -337,7 +393,8 @@ WIN_EXPORT ErrorCode runModelHandleStreaming(CausalLmHandle handle,
                                              void *user_data);
 
 /**
- * @brief Run inference on a handle with a tool schema for constrained generation.
+ * @brief Run inference on a handle with a tool schema for constrained
+ * generation.
  *
  * @param handle          Handle returned by loadModelHandle
  * @param inputTextPrompt Input prompt text
@@ -439,6 +496,69 @@ WIN_EXPORT ErrorCode runMultimodalHandleWithMessagesStreaming(
   CausalLmTokenCallback callback, void *user_data);
 
 /*============================================================================
+ * Multi-image Multimodal API (V-JEPA)
+ *
+ * These functions extend the multimodal API to support multiple images
+ * (e.g. video frames for V-JEPA). The pixel values for all images are
+ * concatenated into a single flat array, with per-image metadata
+ * (patches per image, heights, widths) passed as separate arrays.
+ *
+ * The handle must have been loaded with CAUSAL_LM_MODEL_VJEPA_QNN or
+ * another multi-image-capable model type.
+ *============================================================================*/
+
+/**
+ * @brief Streaming multi-image multimodal inference on a specific handle.
+ *
+ * Designed for models like V-JEPA that accept multiple preprocessed
+ * image frames (e.g. 16 video frames) as input.
+ *
+ * @param handle            Handle returned by loadModelHandle
+ * @param prompt            Text prompt (UTF-8, NUL-terminated)
+ * @param pixelValues       Preprocessed image patches in CHW format
+ *                          (all images concatenated)
+ * @param numPatches        Total number of image patches across all images
+ * @param numImages         Number of images (e.g. 16 for V-JEPA)
+ * @param patchesPerImage   Array of numImages ints: patches per image
+ * @param originalHeights   Array of numImages ints: original height per image
+ * @param originalWidths    Array of numImages ints: original width per image
+ * @param callback          Token delta callback. Must be non-NULL.
+ * @param user_data         Opaque pointer forwarded to callback
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode runMultimodalMultiImageHandleStreaming(
+  CausalLmHandle handle, const char *prompt, const float *pixelValues,
+  int numPatches, int numImages, const int *patchesPerImage,
+  const int *originalHeights, const int *originalWidths,
+  CausalLmTokenCallback callback, void *user_data);
+
+/**
+ * @brief Streaming multi-image multimodal inference with OpenAI message
+ * format on a specific handle.
+ *
+ * @param handle              Handle returned by loadModelHandle
+ * @param messages            Array of chat messages with role and content
+ * @param num_messages        Number of messages in the array
+ * @param add_generation_prompt Whether to append generation prompt at end
+ * @param pixelValues         Preprocessed image patches in CHW format
+ *                            (all images concatenated)
+ * @param numPatches          Total number of image patches across all images
+ * @param numImages           Number of images (e.g. 16 for V-JEPA)
+ * @param patchesPerImage     Array of numImages ints: patches per image
+ * @param originalHeights     Array of numImages ints: original height per image
+ * @param originalWidths       Array of numImages ints: original width per image
+ * @param callback            Token delta callback. Must be non-NULL.
+ * @param user_data           Opaque pointer forwarded to callback
+ * @return ErrorCode
+ */
+WIN_EXPORT ErrorCode runMultimodalMultiImageHandleWithMessagesStreaming(
+  CausalLmHandle handle, const CausalLMChatMessage *messages,
+  size_t num_messages, bool add_generation_prompt, const float *pixelValues,
+  int numPatches, int numImages, const int *patchesPerImage,
+  const int *originalHeights, const int *originalWidths,
+  CausalLmTokenCallback callback, void *user_data);
+
+/*============================================================================
  * OpenAI JSON streaming API
  *
  * Accepts a JSON string in OpenAI format and processes it through the
@@ -470,11 +590,23 @@ WIN_EXPORT ErrorCode runMultimodalHandleWithMessagesStreaming(
  * @return ErrorCode
  */
 WIN_EXPORT ErrorCode runModelHandleWithJsonStreaming(
-    CausalLmHandle handle,
-    const char *jsonRequest,
-    CausalLmTokenCallback callback,
-    void *user_data
-);
+  CausalLmHandle handle, const char *jsonRequest,
+  CausalLmTokenCallback callback, void *user_data);
+
+/**
+ * @brief Return a JSON array of all registered ModelDescriptors.
+ *
+ * Returns a NUL-terminated UTF-8 string like:
+ *   [{"id":"...","family":"...","display_name":"...","runtime":0,
+ *     "backend_mask":0,"capabilities":0}, ...]
+ *
+ * The registry is empty until tasks that call
+ * quick_dot_ai::register_model_descriptor() are linked in.
+ * The returned pointer is valid until the next call to getModelCatalogJson().
+ *
+ * @return const char* JSON array string (never NULL)
+ */
+WIN_EXPORT const char *getModelCatalogJson(void);
 
 #ifdef __cplusplus
 }

@@ -85,7 +85,7 @@ class LiteRTLm(
     override fun load(req: LoadModelRequest): BackendResult<Unit> {
         Log.i(
             TAG,
-            "load() entered: model=${req.model} backend=${req.backend} " +
+            "load() entered: modelId=${req.modelId} backend=${req.backend} " +
                 "quant=${req.quantization} modelPath=${req.modelPath}"
         )
 
@@ -655,6 +655,12 @@ class LiteRTLm(
                         }
                         Content.ImageBytes(part.bytes)
                     }
+                    is PromptPart.PreprocessedPixels -> {
+                        throw UnsupportedOperationException(
+                            "PromptPart.PreprocessedPixels is not supported by LiteRTLm. " +
+                            "Use NativeQuickDotAI for V-JEPA multi-image inference."
+                        )
+                    }
                 }
             }
         }
@@ -812,6 +818,12 @@ class LiteRTLm(
                         "PromptPart.ImageBytes has empty byte array"
                     }
                     Content.ImageBytes(p.bytes)
+                }
+                is PromptPart.PreprocessedPixels -> {
+                    throw UnsupportedOperationException(
+                        "PromptPart.PreprocessedPixels is not supported by LiteRTLm. " +
+                        "Use NativeQuickDotAI for V-JEPA multi-image inference."
+                    )
                 }
             }
         }

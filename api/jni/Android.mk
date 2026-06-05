@@ -65,20 +65,20 @@ LOCAL_MODULE := quick_dot_ai_api
 
 LOCAL_SRC_FILES := \
     ../quick_dot_ai_api.cpp \
+    ../model_callbacks.cpp \
     ../model_config.cpp \
-../streamer.cpp \
-../callback_streamer.cpp
+    ../streamer.cpp \
+    ../callback_streamer.cpp \
+    ../model_descriptors_public.cpp \
+    ../model_descriptors_gauss.cpp
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer causallm quick_dot_ai
 LOCAL_LDLIBS := -llog -landroid -ldl
 
 LOCAL_C_INCLUDES += $(CAUSALLM_INCLUDES) \
     $(LOCAL_PATH)/.. \
-    $(QUICK_DOT_AI_ROOT)/models/gauss-2.5 \
-    $(QUICK_DOT_AI_ROOT)/models/qnn
-    $(QUICK_DOT_AI_ROOT)/models/qnn/gauss-3.8-qnn \
-    $(QUICK_DOT_AI_ROOT)/models/qnn/gauss-3.8-vit-qnn \
-    $(QUICK_DOT_AI_ROOT)/models/qnn/gauss-3.6-qnn \
-    $(QUICK_DOT_AI_ROOT)/models/gauss-3 \
+    $(QUICK_DOT_AI_ROOT)/models/qnn \
+    $(wildcard $(QUICK_DOT_AI_ROOT)/models/gauss-*) \
+    $(wildcard $(QUICK_DOT_AI_ROOT)/models/qnn/gauss-*)
 
 include $(BUILD_SHARED_LIBRARY)

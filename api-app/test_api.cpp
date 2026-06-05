@@ -95,7 +95,7 @@ static void print_usage(const char *prog) {
             << prog << clr::reset << " <model> [prompt] [chat_tpl] [quant] "
             << "[verbose]\n";
   std::cout << clr::yellow << "│" << clr::reset << "\n";
-  print_kv("model", "qwen3-0.6b | gauss2.5-1b | gauss3.6-qnn", clr::yellow);
+  print_kv("model", "qwen3-0.6b | gauss2.5-1b | gauss-3.6-qnn", clr::yellow);
   print_kv("prompt", "\"Hello, how are you?\"", clr::yellow);
   print_kv("chat_tpl", "true | false  (default: true)", clr::yellow);
   print_kv("quant", "W4A32 | W16A16 | W8A16 | W32A32", clr::yellow);
@@ -186,28 +186,52 @@ int main(int argc, char *argv[]) {
   }
 
   // ── Resolve model type ─────────────────────────────────────────────────
+  // Public models use the compat enum path (loadModelHandle).
+  // Gauss models are no longer in the enum — they use loadModelHandleByName
+  // via catalog id.
   std::string model_name_str(model_name);
   std::transform(model_name_str.begin(), model_name_str.end(),
                  model_name_str.begin(), ::tolower);
 
-  ModelType model_type;
+  ModelType model_type =
+    CAUSAL_LM_MODEL_QWEN3_0_6B; // default, overridden below
+  std::string catalog_id;       // non-empty → use loadModelHandleByName
+  bool use_by_name = false;
+
   if (model_name_str == "qwen3-0.6b") {
     model_type = CAUSAL_LM_MODEL_QWEN3_0_6B;
+  } else if (model_name_str == "qwen3-1.7b-q40" ||
+             model_name_str == "qwen3_1.7b_q40") {
+    model_type = CAUSAL_LM_MODEL_QWEN3_1_7B_Q40;
+  } else if (model_name_str == "tiny_bert" || model_name_str == "tiny-bert") {
+    model_type = CAUSAL_LM_MODEL_TINY_BERT;
+  } else if (model_name_str == "function_gemma" ||
+             model_name_str == "function-gemma") {
+    model_type = CAUSAL_LM_MODEL_FUNCTION_GEMMA;
+  } else if (model_name_str == "gemma4_cpu" || model_name_str == "gemma4-cpu") {
+    model_type = CAUSAL_LM_MODEL_GEMMA4_CPU;
+  } else if (model_name_str == "gemma4_e2b_qnn" ||
+             model_name_str == "gemma4-e2b-qnn") {
+    model_type = CAUSAL_LM_MODEL_GEMMA4_E2B_QNN;
   } else if (model_name_str == "gauss2.5" || model_name_str == "gauss2.5-1b") {
-    model_type = CAUSAL_LM_MODEL_GAUSS2_5;
-  } else if (model_name_str == "gauss3.6-qnn" ||
-             model_name_str == "gauss3.6_qnn") {
+    // Gauss models use loadModelHandleByName (catalog-registered, no enum)
+    catalog_id = "gauss2.5-1b";
+    use_by_name = true;
+  } else if (model_name_str == "gauss-3.6-qnn" ||
+             model_name_str == "gauss-3.6_qnn") {
 #ifdef ENABLE_QNN
-    model_type = CAUSAL_LM_MODEL_GAUSS3_6_QNN;
+    catalog_id = "gauss-3.6-qnn";
+    use_by_name = true;
 #else
     print_error("Model '" + std::string(model_name) +
                 "' requires QNN support. Rebuild with -Denable-qnn=true.");
     return 1;
 #endif
-  } else if (model_name_str == "gauss3.8-qnn" ||
-             model_name_str == "gauss3.8_qnn") {
+  } else if (model_name_str == "gauss-3.8-qnn" ||
+             model_name_str == "gauss-3.8_qnn") {
 #ifdef ENABLE_QNN
-    model_type = CAUSAL_LM_MODEL_GAUSS3_8_QNN;
+    catalog_id = "gauss-3.8-qnn";
+    use_by_name = true;
 #else
     print_error("Model '" + std::string(model_name) +
                 "' requires QNN support. Rebuild with -Denable-qnn=true.");
@@ -229,10 +253,16 @@ int main(int argc, char *argv[]) {
 
     // Load
     CausalLmHandle cycle_handle = nullptr;
-    err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
-                          nullptr, model_base_path, &cycle_handle);
+    if (use_by_name) {
+      err = loadModelHandleByName(CAUSAL_LM_BACKEND_CPU, catalog_id.c_str(),
+                                  quant_type, nullptr, model_base_path,
+                                  &cycle_handle);
+    } else {
+      err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
+                            nullptr, model_base_path, &cycle_handle);
+    }
     if (err != CAUSAL_LM_ERROR_NONE) {
-      print_error("loadModelHandle failed at cycle " + std::to_string(i + 1) +
+      print_error("loadModel failed at cycle " + std::to_string(i + 1) +
                   " (code " + std::to_string(err) + ")");
       return 1;
     }
@@ -262,11 +292,15 @@ int main(int argc, char *argv[]) {
             << " (" << quant_str << ") ...\n";
 
   CausalLmHandle handle = nullptr;
-  err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type, nullptr,
-                        model_base_path, &handle);
+  if (use_by_name) {
+    err = loadModelHandleByName(CAUSAL_LM_BACKEND_CPU, catalog_id.c_str(),
+                                quant_type, nullptr, model_base_path, &handle);
+  } else {
+    err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
+                          nullptr, model_base_path, &handle);
+  }
   if (err != CAUSAL_LM_ERROR_NONE) {
-    print_error("Final loadModelHandle failed (code " + std::to_string(err) +
-                ")");
+    print_error("Final loadModel failed (code " + std::to_string(err) + ")");
     return 1;
   }
 

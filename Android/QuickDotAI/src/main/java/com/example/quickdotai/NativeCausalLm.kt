@@ -99,17 +99,30 @@ object NativeCausalLm {
     /**
      * @brief Multimodal input data for vision encoder.
      *
-     * @param pixelValues    Preprocessed image patches in CHW format.
-     *                       Shape: [numPatches * 3 * 512 * 512] (patch size is fixed at 512)
-     * @param numPatches     Number of image patches
-     * @param originalHeight Original image height before preprocessing
-     * @param originalWidth  Original image width before preprocessing
+     * Supports both single-image (legacy) and multi-image (e.g. V-JEPA
+     * video frames) scenarios.
+     *
+     * @param pixelValues      Preprocessed image patches in CHW format.
+     *                         Shape: [numPatches * 3 * 512 * 512] (patch size is fixed at 512)
+     *                         For multi-image, all images' patches are concatenated.
+     * @param numPatches       Total number of image patches across all images
+     * @param originalHeight   Original image height before preprocessing (first image)
+     * @param originalWidth    Original image width before preprocessing (first image)
+     * @param numImages        Number of images (e.g. 16 for V-JEPA video frames).
+     *                         Defaults to 1 for backward compatibility.
+     * @param patchesPerImage  Number of patches per image. Null for single-image.
+     * @param originalHeights  Original height of each image. Null for single-image.
+     * @param originalWidths   Original width of each image. Null for single-image.
      */
     data class MultimodalInput(
         val pixelValues: FloatArray,
         val numPatches: Int,
         val originalHeight: Int,
-        val originalWidth: Int
+        val originalWidth: Int,
+        val numImages: Int = 1,
+        val patchesPerImage: IntArray? = null,
+        val originalHeights: IntArray? = null,
+        val originalWidths: IntArray? = null
     )
 
 
@@ -153,6 +166,21 @@ object NativeCausalLm {
         modelBasePath: String?,
         htpBackendConfigPath: String?
     ): LoadResult
+
+    /**
+     * @brief Loads model by string catalog id (T4 path).
+     * @return Handle as Long, or 0 on failure.
+     */
+    external fun loadModelHandleByNameNative(
+        backend: Int,
+        modelId: String,
+        quant: Int,
+        nativeLibDir: String?,
+        modelBasePath: String?,
+    ): Long
+
+    /** @brief Returns the registered model catalog as a JSON array string. */
+    external fun nativeQueryCatalog(): String
 
     /**
      * @brief Listener invoked by the JNI trampoline once per decoded
@@ -304,6 +332,60 @@ object NativeCausalLm {
     external fun runModelHandleWithJsonStreamingNative(
         handle: Long,
         jsonRequest: String,
+        listener: NativeStreamListener
+    ): Int
+
+    /**
+     * @brief Multimodal streaming inference with multi-image support (V-JEPA).
+     *
+     * @param handle              Handle returned by loadModelHandleNative
+     * @param prompt              Text prompt
+     * @param pixelValues         Preprocessed image patches (CHW format, all images concatenated)
+     * @param numPatches          Total number of image patches
+     * @param numImages           Number of images (e.g. 16 for V-JEPA)
+     * @param patchesPerImage     Number of patches per image
+     * @param originalHeights     Original height of each image
+     * @param originalWidths      Original width of each image
+     * @param listener            Callback for streaming output
+     * @return An `ErrorCode` int; 0 on clean completion.
+     */
+    external fun runMultimodalMultiImageStreamingNative(
+        handle: Long,
+        prompt: String,
+        pixelValues: FloatArray,
+        numPatches: Int,
+        numImages: Int,
+        patchesPerImage: IntArray,
+        originalHeights: IntArray,
+        originalWidths: IntArray,
+        listener: NativeStreamListener
+    ): Int
+
+    /**
+     * @brief Multimodal streaming inference with multi-image + messages (V-JEPA).
+     *
+     * @param handle              Handle returned by loadModelHandleNative
+     * @param messages            Array of chat messages
+     * @param addGenerationPrompt Whether to append generation prompt at end
+     * @param pixelValues         Preprocessed image patches (CHW format, all images concatenated)
+     * @param numPatches          Total number of image patches
+     * @param numImages           Number of images (e.g. 16 for V-JEPA)
+     * @param patchesPerImage     Number of patches per image
+     * @param originalHeights     Original height of each image
+     * @param originalWidths      Original width of each image
+     * @param listener            Callback for streaming output
+     * @return An `ErrorCode` int; 0 on clean completion.
+     */
+    external fun runMultimodalMultiImageWithMessagesStreamingNative(
+        handle: Long,
+        messages: Array<QuickAiChatMessage>,
+        addGenerationPrompt: Boolean,
+        pixelValues: FloatArray,
+        numPatches: Int,
+        numImages: Int,
+        patchesPerImage: IntArray,
+        originalHeights: IntArray,
+        originalWidths: IntArray,
         listener: NativeStreamListener
     ): Int
 

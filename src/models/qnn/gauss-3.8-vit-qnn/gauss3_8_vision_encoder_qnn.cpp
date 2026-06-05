@@ -9,6 +9,7 @@
 #include "gauss3_8_vision_encoder_qnn.h"
 #include "factory.h"
 #include "nntrainer_error.h"
+#include <model_descriptor.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -34,6 +35,16 @@ __attribute__((constructor)) static void register_custom_models() {
       return std::make_unique<causallm::Gauss3_8_Vision_Encoder_QNN>(
         cfg, generation_cfg, nntr_cfg);
     });
+
+  static const ModelDescriptor d = {"gauss-3.8-vencoder-qnn",
+                                    "gauss-3.8",
+                                    "Gauss 3.8 Vision Encoder (QNN)",
+                                    QDA_RUNTIME_NATIVE,
+                                    (1u << 2),
+                                    QDA_CAP_MULTIMODAL | QDA_CAP_VISION_ENCODER,
+                                    "gauss-3.8-vencoder-qnn",
+                                    "Gauss_3_8_VEncoder_QNN"};
+  quick_dot_ai::register_model_descriptor(&d);
 }
 
 causallm::Gauss3_8_Vision_Encoder_QNN::~Gauss3_8_Vision_Encoder_QNN() {
