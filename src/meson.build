@@ -102,6 +102,9 @@ endif
 if _fs.is_dir('models/gauss-3')
   _ext_inc += include_directories('models/gauss-3')
 endif
+if _fs.is_dir('models/ouro')
+  _ext_inc += include_directories('models/ouro')
+endif
 ext_inc = _ext_inc
 
 # model_descriptor.h lives in api/; gauss TUs include it for self-registration

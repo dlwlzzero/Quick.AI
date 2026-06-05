@@ -210,6 +210,8 @@ int main(int argc, char *argv[]) {
     model_type = CAUSAL_LM_MODEL_FUNCTION_GEMMA;
   } else if (model_name_str == "gemma4_cpu" || model_name_str == "gemma4-cpu") {
     model_type = CAUSAL_LM_MODEL_GEMMA4_CPU;
+  } else if (model_name_str == "ouro_embedding") {
+    model_type = CAUSAL_LM_MODEL_OURO_EMBEDDING;
   } else if (model_name_str == "gemma4_e2b_qnn" ||
              model_name_str == "gemma4-e2b-qnn") {
     model_type = CAUSAL_LM_MODEL_GEMMA4_E2B_QNN;

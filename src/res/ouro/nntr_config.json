@@ -1,0 +1,22 @@
+{
+    "model_type": "embedding",
+    "model_tensor_type": "FP32-FP32",
+    "model_file_name": "nntr_ouro_fp32.safetensors",
+    "fc_layer_dtype": "FP32",
+    "embedding_dtype": "FP32",
+    "lmhead_dtype": "FP32",
+    "lora_rank": 0,
+    "lora_alpha": 0,
+    "lora_target": [],
+    "bad_word_ids": [],
+    "fsu": false,
+    "fsu_lookahead": 2,
+    "num_to_generate": 512,
+    "init_seq_len": 1024,
+    "max_seq_len": 2048,
+    "batch_size": 1,
+    "use_flash_attention": true,
+    "module_config_path": "./modules.json",
+    "tokenizer_file": "./tokenizer.json",
+    "sample_input": "It is not enough to consider only model accuracy. Inference speed, debugging and long-term maintainability must also be taken into account. This becomes especially important on mobile and embedded devices, where hardware resources are limited, memory bandwidth is constrained, storage space is expensive, and large language models cannot always be executed directly without careful system-level optimization. For this reason, techniques such as quantization, KV cache optimization, Flash Attention, weight memory mapping, lazy loading, tensor metadata validation, and safetensors-based model storage are becoming increasingly important in practical LLM inference systems. For example, a traditional raw binary format often depends heavily on the exact order of model layers and the order in which weights are read by the runtime. If the model architecture changes slightly, or if the loading order is modified during refactoring, the existing binary file may no longer be reusable, even though most of the actual tensor data has not changed. This makes development slower, because engineers must regenerate large model binaries whenever the model graph or loader implementation is adjusted. In contrast, a safetensors-like format separates a JSON header from the binary data region and explicitly stores metadata such as tensor names, shapes, data types, quantization types, byte offsets, and sometimes additional model-specific attributes. This makes it easier to locate, validate, inspect, convert, and load each weight safely without relying only on implicit ordering. In addition, supporting multiple quantization formats such as Q4_0, Q6_K, and Q8_0 allows developers to reduce model size while choosing a reasonable balance between accuracy, latency, and memory footprint. Attention computation is another major bottleneck when processing long contexts, because the standard implementation may create a large attention matrix and repeatedly move intermediate data between memory and compute units. Flash Attention reduces memory traffic by avoiding full materialization of that matrix and instead fuses softmax and matrix multiplication in a block-based manner. In causal language models, the kernel must also correctly apply the causal mask so that each token can only attend to previous tokens, while still preserving numerical stability and compatibility with different sequence lengths. Therefore, a well-designed LLM inference system is not just code that runs a model. It is an integrated execution stack that connects model formats, computation kernels, memory mapping, data type propagation, cache management, Android build options, runtime configuration, logging, validation tools, and feature switches into one reliable and reusable path. When these components are designed together, the system becomes easier to optimize, easier to debug, and much safer to extend for future models."
+}
