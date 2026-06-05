@@ -183,6 +183,15 @@ object NativeCausalLm {
     external fun nativeQueryCatalog(): String
 
     /**
+     * Encode [text] into a sentence-embedding vector using an embedding handle
+     * (models[0] must be a SentenceTransformer, e.g. "ouro").
+     *
+     * @return the embedding FloatArray on success, or null on any native error
+     *         (unsupported model, not initialized, inference failure).
+     */
+    external fun encodeModelHandleNative(handle: Long, text: String): FloatArray?
+
+    /**
      * @brief Listener invoked by the JNI trampoline once per decoded
      * delta during [runModelHandleStreamingNative].
      *

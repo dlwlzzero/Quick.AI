@@ -178,6 +178,20 @@ interface QuickDotAI {
      */
     fun metrics(): BackendResult<PerformanceMetrics>
 
+    /**
+     * Encode [text] into a sentence-embedding vector. Only embedding models
+     * (e.g. the Ouro family) support this; other engines return
+     * [QuickAiError.INFERENCE_FAILED] by default.
+     *
+     * @return [BackendResult.Ok] with the embedding FloatArray, or
+     *         [BackendResult.Err] on failure.
+     */
+    fun encode(text: String): BackendResult<FloatArray> =
+        BackendResult.Err(
+            QuickAiError.INFERENCE_FAILED,
+            "encode() is not supported by this engine"
+        )
+
     // ----- Chat session API ------------------------------------------------
     // All chat operations go through this interface so the app never needs
     // to interact with chat session classes directly.

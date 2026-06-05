@@ -9,6 +9,7 @@
 #include "quick_dot_ai_api.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,6 +97,7 @@ static void print_usage(const char *prog) {
             << "[verbose]\n";
   std::cout << clr::yellow << "│" << clr::reset << "\n";
   print_kv("model", "qwen3-0.6b | gauss2.5-1b | gauss-3.6-qnn", clr::yellow);
+  print_kv("", "ouro → embedding smoke (encodeModelHandle)", clr::yellow);
   print_kv("prompt", "\"Hello, how are you?\"", clr::yellow);
   print_kv("chat_tpl", "true | false  (default: true)", clr::yellow);
   print_kv("quant", "W4A32 | W16A16 | W8A16 | W32A32", clr::yellow);
@@ -104,6 +106,71 @@ static void print_usage(const char *prog) {
            "Base directory for models (or set QUICKAI_MODEL_BASE_PATH)",
            clr::yellow);
   print_section_end(clr::yellow);
+}
+
+// Loads nothing; assumes `handle` is an already-loaded embedding model.
+// Calls encodeModelHandle, prints + sanity-checks the vector. Returns true on success.
+static bool run_embedding_smoke(CausalLmHandle handle, const char *text) {
+  print_section("Embedding (encode)", clr::green);
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
+            << "Input: " << clr::reset << clr::bold_white << text
+            << clr::reset << "\n";
+
+  float *vec = nullptr;
+  int dim = 0;
+  ErrorCode err = encodeModelHandle(handle, text, &vec, &dim);
+  if (err != CAUSAL_LM_ERROR_NONE) {
+    print_error("encodeModelHandle failed (code " + std::to_string(err) + ")");
+    return false;
+  }
+  if (vec == nullptr || dim <= 0) {
+    print_error("encodeModelHandle returned empty result (dim=" +
+                std::to_string(dim) + ")");
+    freeEmbedding(vec);
+    return false;
+  }
+
+  // Sanity: all finite, compute L2 norm.
+  bool all_finite = true;
+  double sumsq = 0.0;
+  for (int i = 0; i < dim; ++i) {
+    if (!std::isfinite(vec[i])) { all_finite = false; break; }
+    sumsq += static_cast<double>(vec[i]) * vec[i];
+  }
+  const double norm = std::sqrt(sumsq);
+
+  print_kv("Dim", std::to_string(dim), clr::green);
+  {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(4) << norm;
+    print_kv("L2 norm", oss.str(), clr::green);
+  }
+  {
+    std::ostringstream oss;
+    const int n = dim < 16 ? dim : 16;
+    oss << "[";
+    for (int i = 0; i < n; ++i) {
+      oss << std::fixed << std::setprecision(4) << vec[i];
+      if (i != n - 1) oss << ", ";
+    }
+    if (dim > 16) oss << ", …";
+    oss << "]";
+    print_kv(("First " + std::to_string(n)).c_str(), oss.str(), clr::green);
+  }
+
+  freeEmbedding(vec);
+
+  bool ok = all_finite && dim > 0 && norm > 0.0;
+  if (!all_finite)
+    print_error("embedding contains non-finite values");
+  if (norm <= 0.0)
+    print_error("embedding L2 norm is zero");
+  if (ok) {
+    std::cout << clr::green << "│" << clr::reset << "  " << clr::green
+              << "✓ embedding sanity checks passed" << clr::reset << "\n";
+  }
+  print_section_end(clr::green);
+  return ok;
 }
 
 int main(int argc, char *argv[]) {
@@ -197,6 +264,7 @@ int main(int argc, char *argv[]) {
     CAUSAL_LM_MODEL_QWEN3_0_6B; // default, overridden below
   std::string catalog_id;       // non-empty → use loadModelHandleByName
   bool use_by_name = false;
+  bool is_embedding = false;
 
   if (model_name_str == "qwen3-0.6b") {
     model_type = CAUSAL_LM_MODEL_QWEN3_0_6B;
@@ -212,6 +280,13 @@ int main(int argc, char *argv[]) {
     model_type = CAUSAL_LM_MODEL_GEMMA4_CPU;
   } else if (model_name_str == "ouro_embedding") {
     model_type = CAUSAL_LM_MODEL_OURO_EMBEDDING;
+    is_embedding = true;
+  } else if (model_name_str == "ouro") {
+    // Recommended embedding smoke target: by-name load aligns with the
+    // on-device models/ouro dir (descriptor config_name = "ouro").
+    catalog_id = "ouro";
+    use_by_name = true;
+    is_embedding = true;
   } else if (model_name_str == "gemma4_e2b_qnn" ||
              model_name_str == "gemma4-e2b-qnn") {
     model_type = CAUSAL_LM_MODEL_GEMMA4_E2B_QNN;
@@ -310,7 +385,20 @@ int main(int argc, char *argv[]) {
   print_status("Model loaded successfully", ">>", clr::bold_green);
   print_section_end(clr::blue);
 
-  // ── Inference ──────────────────────────────────────────────────────────
+  if (is_embedding) {
+    bool emb_ok = run_embedding_smoke(handle, prompt);
+    if (!emb_ok) {
+      destroyModelHandle(handle);
+      return 1;
+    }
+    // Embedding models have no token generation; skip the generation metrics
+    // block below by jumping straight to cleanup.
+    destroyModelHandle(handle);
+    std::cout << clr::bold_green << "  Done." << clr::reset << "\n\n";
+    return 0;
+  }
+
+  // ── Inference (generation) ─────────────────────────────────────────────
   print_section("Inference", clr::green);
   std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
             << "Input: " << clr::reset << clr::bold_white << prompt
