@@ -20,6 +20,14 @@
 #include <utility>
 #include <vector>
 
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#endif
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 __attribute__((constructor)) static void register_vjepa2_qnn() {
   causallm::Factory::Instance().registerModel(
     "VJEPA2_QNN", [](causallm::json cfg, causallm::json generation_cfg,
@@ -52,6 +60,12 @@ causallm::VJEPA2_QNN::~VJEPA2_QNN() {
 void causallm::VJEPA2_QNN::setupParameters(json &cfg, json &generation_cfg,
                                            json &nntr_cfg) {
   Quick_Dot_AI_QNN::setupParameters(cfg, generation_cfg, nntr_cfg);
+
+  if (nntr_cfg.contains("vjepa2_tubelet_size"))
+    tubelet_size_ = nntr_cfg["vjepa2_tubelet_size"].get<int>();
+
+  if (nntr_cfg.contains("vjepa2_input_format"))
+    input_format_ = nntr_cfg["vjepa2_input_format"].get<std::string>();
 
   if (nntr_cfg.contains("rotation_matrix_path")) {
     rotation_matrix_path_ = nntr_cfg["rotation_matrix_path"].get<std::string>();
@@ -226,6 +240,202 @@ void causallm::VJEPA2_QNN::requantEmbedding(void *from, void *to,
   }
 }
 
+void causallm::VJEPA2_QNN::preprocessToQnnInput(const float *raw_nchw, int B,
+                                                int T, int C, int H, int W,
+                                                uint16_t *qnn_hwc_dest,
+                                                float scale, int offset) {
+
+  int Dp = T / tubelet_size_;
+  NNTR_THROW_IF(T % tubelet_size_ != 0, std::invalid_argument)
+    << "preprocessToQnnInput: T (" << T
+    << ") must be divisible by tubelet_size (" << tubelet_size_ << ")";
+
+  for (int b = 0; b < B; ++b) {
+    for (int d = 0; d < Dp; ++d) {
+      for (int h = 0; h < H; ++h) {
+        for (int w = 0; w < W; ++w) {
+          for (int tau = 0; tau < tubelet_size_; ++tau) {
+            for (int c = 0; c < C; ++c) {
+              size_t src_idx = static_cast<size_t>(b) * T * C * H * W +
+                               (d * tubelet_size_ + tau) * C * H * W +
+                               c * H * W + h * W + w;
+              size_t dst_idx =
+                static_cast<size_t>(b * Dp + d) * H * W * tubelet_size_ * C +
+                h * W * tubelet_size_ * C + w * tubelet_size_ * C + tau * C + c;
+
+              float val = raw_nchw[src_idx];
+              if (std::isfinite(val)) {
+                float quantized = val / scale - offset;
+                qnn_hwc_dest[dst_idx] = static_cast<uint16_t>(
+                  std::max(0.0f, std::min(65535.0f, quantized)));
+              } else {
+                qnn_hwc_dest[dst_idx] = 0;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+std::vector<uint8_t>
+causallm::VJEPA2_QNN::frameToDepth(const float *raw_nchw, int B, int T, int C,
+                                   int H, int W, int tubelet_size, float scale,
+                                   int offset) {
+
+  int Dp = T / tubelet_size;
+  NNTR_THROW_IF(T % tubelet_size != 0, std::invalid_argument)
+    << "frameToDepth: T must be divisible by tubelet_size";
+
+  size_t num_elements = static_cast<size_t>(B * Dp * H * W * tubelet_size * C);
+  std::vector<uint8_t> buffer(num_elements * sizeof(uint16_t));
+  uint16_t *dest = reinterpret_cast<uint16_t *>(buffer.data());
+
+  for (int b = 0; b < B; ++b) {
+    for (int d = 0; d < Dp; ++d) {
+      for (int h = 0; h < H; ++h) {
+        for (int w = 0; w < W; ++w) {
+          for (int tau = 0; tau < tubelet_size; ++tau) {
+            for (int c = 0; c < C; ++c) {
+              size_t src_idx = static_cast<size_t>(b) * T * C * H * W +
+                               (d * tubelet_size + tau) * C * H * W +
+                               c * H * W + h * W + w;
+              size_t dst_idx =
+                static_cast<size_t>(b * Dp + d) * H * W * tubelet_size * C +
+                h * W * tubelet_size * C + w * tubelet_size * C + tau * C + c;
+
+              float val = raw_nchw[src_idx];
+              if (std::isfinite(val)) {
+                float quantized = val / scale - offset;
+                dest[dst_idx] = static_cast<uint16_t>(
+                  std::max(0.0f, std::min(65535.0f, quantized)));
+              } else {
+                dest[dst_idx] = 0;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return buffer;
+}
+
+// -------------------------------------------------------------------
+// Fixed-shape fast path  (B=1, T=24, C=3, H=256, W=256, tubelet=2)
+// -------------------------------------------------------------------
+static inline void
+preprocessToQnnInput_FixedShape_Helper(const float *__restrict raw,
+                                       uint16_t *__restrict dst, float scale,
+                                       int offset) {
+
+  constexpr int B = 1, T = 24, C = 3, H = 256, W = 256, t = 2;
+  constexpr int Dp = T / t;                 // 12
+  constexpr int PLANE = H * W;              // 65536
+  constexpr int SRC_STRIDE_TAU = C * PLANE; // 196608
+  constexpr int DST_HWC = W * t * C;        // 1536
+  constexpr int DST_SLICE = H * DST_HWC;    // 393216
+
+  const float inv_scale = 1.0f / scale;
+  const float offset_f = static_cast<float>(offset);
+
+#ifndef NDEBUG
+  // One-shot NaN/Inf guard before the hot loop.
+  constexpr size_t TOTAL_FLOATS = static_cast<size_t>(B) * T * C * H * W;
+  for (size_t i = 0; i < TOTAL_FLOATS; ++i) {
+    if (__builtin_expect(!std::isfinite(raw[i]), 0)) {
+      std::cerr << "NaN/Inf detected at index " << i
+                << " in preprocessToQnnInput_FixedShape" << std::endl;
+      std::abort();
+    }
+  }
+#endif
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+  for (int d = 0; d < Dp; ++d) {
+    const float *raw_d = raw + d * t * SRC_STRIDE_TAU;
+    uint16_t *dst_d = dst + d * DST_SLICE;
+
+    for (int h = 0; h < H; ++h) {
+      int w = 0;
+
+#ifdef __ARM_NEON
+      const float32x4_t v_inv_scale = vdupq_n_f32(inv_scale);
+      const float32x4_t v_offset = vdupq_n_f32(offset_f);
+      const float32x4_t v_zero = vdupq_n_f32(0.0f);
+      const float32x4_t v_max = vdupq_n_f32(65535.0f);
+
+      // Vectorised quantise path: 4 pixels at once per (tau, c).
+      // The destination is strided (t*C = 6), so we scalar-store the
+      // 4 results, but the FMA / clamp / cvtt is fully vectorised.
+      for (; w + 4 <= W; w += 4) {
+        for (int tau = 0; tau < t; ++tau) {
+          for (int c = 0; c < C; ++c) {
+            const float *src =
+              raw_d + tau * SRC_STRIDE_TAU + c * PLANE + h * W + w;
+            float32x4_t v = vld1q_f32(src);
+
+            float32x4_t q = vmulq_f32(v, v_inv_scale);
+            q = vsubq_f32(q, v_offset);
+            q = vmaxq_f32(q, v_zero);
+            q = vminq_f32(q, v_max);
+            uint32x4_t u32 = vcvtq_u32_f32(q);
+            uint16x4_t u16 = vmovn_u32(u32);
+
+            uint16_t tmp[4];
+            vst1_u16(tmp, u16);
+
+            uint16_t *dst_ptr = dst_d + h * DST_HWC + w * t * C + tau * C + c;
+            dst_ptr[0 * t * C] = tmp[0];
+            dst_ptr[1 * t * C] = tmp[1];
+            dst_ptr[2 * t * C] = tmp[2];
+            dst_ptr[3 * t * C] = tmp[3];
+          }
+        }
+      }
+#endif
+
+      // Scalar tail + fallback.
+      for (; w < W; ++w) {
+        for (int tau = 0; tau < t; ++tau) {
+          for (int c = 0; c < C; ++c) {
+            size_t src_idx = static_cast<size_t>(d) * t * SRC_STRIDE_TAU +
+                             tau * SRC_STRIDE_TAU + c * PLANE + h * W + w;
+            size_t dst_idx = static_cast<size_t>(d) * DST_SLICE + h * DST_HWC +
+                             w * t * C + tau * C + c;
+
+            float val = raw[src_idx];
+            float quantized = val * inv_scale - offset_f;
+            dst[dst_idx] = static_cast<uint16_t>(
+              std::max(0.0f, std::min(65535.0f, quantized)));
+          }
+        }
+      }
+    }
+  }
+}
+
+void causallm::VJEPA2_QNN::preprocessToQnnInput_FixedShape(
+  const float *__restrict raw, uint16_t *__restrict dst, float scale,
+  int offset) {
+  preprocessToQnnInput_FixedShape_Helper(raw, dst, scale, offset);
+}
+
+std::vector<uint8_t>
+causallm::VJEPA2_QNN::frameToDepth_FixedShape(const float *raw, float scale,
+                                              int offset) {
+  constexpr size_t num_elements =
+    static_cast<size_t>(1) * 12 * 256 * 256 * 2 * 3;
+  std::vector<uint8_t> buffer(num_elements * sizeof(uint16_t));
+  uint16_t *dest = reinterpret_cast<uint16_t *>(buffer.data());
+  preprocessToQnnInput_FixedShape_Helper(raw, dest, scale, offset);
+  return buffer;
+}
+
 causallm::multimodal_pointer
 causallm::VJEPA2_QNN::run_image(const WSTR prompt, multimodal_pointer image,
                                 int image_height, int image_width,
@@ -243,11 +453,26 @@ causallm::VJEPA2_QNN::run_image(const WSTR prompt, multimodal_pointer image,
   int num_bytes_per_inference = GraphParser::get_tensor_size(input_info);
   int num_elements_per_inference = GraphParser::get_tensor_count(input_info);
 
-  NNTR_THROW_IF(image.second % (num_bytes_per_inference *
-                                (sizeof(float) / sizeof(uint16_t))),
-                std::invalid_argument)
-    << "Video input data size " << image.second << " is not a multiple of "
-    << num_bytes_per_inference * (sizeof(float) / sizeof(uint16_t));
+  size_t raw_size = image.second;
+  constexpr size_t PREPROCESSED_FLOAT_BYTES =
+    12 * 256 * 256 * 6 * sizeof(float);
+  constexpr size_t RAW_FLOAT_BYTES = 1 * 24 * 3 * 256 * 256 * sizeof(float);
+
+  // For the standard V-JEPA2 graph both constants evaluate to the same value.
+  // When they differ (different H/W or tubelet config) auto-sniff works as
+  // intended.  Users can also force a path via vjepa2_input_format.
+  bool use_preprocessed =
+    (input_format_ == "preprocessed") ||
+    (input_format_ == "auto" && raw_size == PREPROCESSED_FLOAT_BYTES);
+  bool use_raw = (input_format_ == "raw") ||
+                 (input_format_ == "auto" && raw_size == RAW_FLOAT_BYTES);
+
+  if (!use_preprocessed && !use_raw) {
+    NNTR_THROW_IF(true, std::invalid_argument)
+      << "Unexpected video buffer size " << raw_size << ". Expected "
+      << PREPROCESSED_FLOAT_BYTES << " (preprocessed) or " << RAW_FLOAT_BYTES
+      << " (raw frames).";
+  }
 
   int num_inference = image.second / (num_bytes_per_inference *
                                       (sizeof(float) / sizeof(uint16_t)));
@@ -263,9 +488,23 @@ causallm::VJEPA2_QNN::run_image(const WSTR prompt, multimodal_pointer image,
   void *my_output = malloc(total_embedding_size * num_inference);
 
   for (int i = 0; i < num_inference; i++) {
-    auto src = ((float *)image.first) + i * num_elements_per_inference;
-    quantize_uint16_memcpy(src, pixel_values_input_, num_elements_per_inference,
-                           input_info.scale, input_info.offset);
+    auto src = ((const float *)image.first) + i * num_elements_per_inference;
+    if (use_preprocessed) {
+      quantize_uint16_memcpy(const_cast<float *>(src), pixel_values_input_,
+                             num_elements_per_inference, input_info.scale,
+                             input_info.offset);
+    } else {
+      if (image_height == 256 && image_width == 256) {
+        preprocessToQnnInput_FixedShape(src, pixel_values_input_,
+                                        input_info.scale, input_info.offset);
+      } else {
+        preprocessToQnnInput(src,
+                             /*B=*/1, /*T=*/24, /*C=*/3,
+                             /*H=*/image_height, /*W=*/image_width,
+                             pixel_values_input_, input_info.scale,
+                             input_info.offset);
+      }
+    }
     auto qnn_output = model->inference(1, model_input)[0];
     void *vision_encoder_output = std::visit(
       [](auto *p) -> void * { return static_cast<void *>(p); }, qnn_output);

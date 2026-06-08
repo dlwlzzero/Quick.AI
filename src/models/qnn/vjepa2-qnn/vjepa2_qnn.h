@@ -87,6 +87,32 @@ private:
 
   void requantEmbedding(void *from, void *to, size_t length);
   void loadRotationMatrix(); // mmap + memcpy from rotation_matrix_path_
+
+  // -------------------------------------------------------------------
+  // Video preprocessing
+  // -------------------------------------------------------------------
+  int tubelet_size_ = 2;              // Read from nntr_cfg at setup time
+  std::string input_format_ = "auto"; // "auto", "raw", "preprocessed"
+
+  /** In-place reshape + quantize into the QNN graph's NHWC buffer. */
+  void preprocessToQnnInput(const float *raw_nchw, int B, int T, int C, int H,
+                            int W, uint16_t *qnn_hwc_dest, float scale,
+                            int offset);
+
+  /** Fixed-shape fast path: (B=1,T=24,C=3,H=256,W=256). */
+  void preprocessToQnnInput_FixedShape(const float *__restrict raw,
+                                       uint16_t *__restrict dst, float scale,
+                                       int offset);
+
+  /** Standalone helper for unit tests / external callers. */
+  static std::vector<uint8_t> frameToDepth(const float *raw_nchw, int B, int T,
+                                           int C, int H, int W,
+                                           int tubelet_size, float scale,
+                                           int offset);
+
+  /** Fixed-shape standalone helper. */
+  static std::vector<uint8_t> frameToDepth_FixedShape(const float *raw,
+                                                      float scale, int offset);
 };
 
 } // namespace causallm
