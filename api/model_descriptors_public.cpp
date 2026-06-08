@@ -42,12 +42,11 @@ __attribute__((constructor)) static void register_public_descriptors() {
     {"gemma4-e2b-qnn", "gemma4", "Gemma4 E2B (QNN)", QDA_RUNTIME_NATIVE, B(2),
      QDA_CAP_MESSAGES_API,
      "GEMMA4-E2B-QNN", /* get_model_name_from_type(CAUSAL_LM_MODEL_GEMMA4_E2B_QNN)
-                         */
+                        */
      "Gemma4_E2B_QNN"},
-    {"vjepa-qnn", "vjepa", "V-JEPA (QNN)", QDA_RUNTIME_NATIVE, B(2),
+    {"vjepa2-qnn", "vjepa", "V-JEPA 2 (QNN)", QDA_RUNTIME_NATIVE, B(2),
      QDA_CAP_MULTIMODAL | QDA_CAP_MESSAGES_API | QDA_CAP_MULTI_IMAGE,
-     "VJEPA-QNN", /* get_model_name_from_type(CAUSAL_LM_MODEL_VJEPA_QNN) */
-     "VJEPA_QNN"},
+     "VJEPA2-QNN", "VJEPA2_QNN"},
 #endif
   };
   for (const auto &d : kPublic)

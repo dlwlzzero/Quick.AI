@@ -36,20 +36,20 @@
 #include "gptoss_cached_slim_causallm.h"
 #include "gptoss_causallm.h"
 #include "json.hpp"
+#include "model_callbacks.h"
 #include "model_config_internal.h"
 #include "model_descriptor.h"
 #include "multilingual_tinybert_16mb.h"
+#include "ouro_embedding.h"
 #include "qwen2_causallm.h"
 #include "qwen3_cached_slim_moe_causallm.h"
 #include "qwen3_causallm.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
-#include "ouro_embedding.h"
 #include "sentence_transformer.h"
 #include "xgrammar_manager.h"
 #include "xgrammar_wrapper.h"
 #include <factory.h>
-#include "model_callbacks.h"
 #ifdef ENABLE_QNN
 #include "gemma4_e2b_qnn.h"
 #include "quick_dot_ai_qnn.h"
@@ -123,7 +123,7 @@ static std::map<std::string, std::string> g_model_path_map = {
   {"OURO_EMBEDDING", "ouro_embedding"},
 #ifdef ENABLE_QNN
   {"GEMMA4-E2B-QNN", "gemma-4-e2b-qnn"},
-  {"VJEPA-QNN", "vjepa-qnn"},
+  {"VJEPA2-QNN", "vjepa2-qnn"},
 #endif
 };
 
@@ -359,8 +359,8 @@ static const char *get_model_name_from_type(ModelType type) {
 #ifdef ENABLE_QNN
   case CAUSAL_LM_MODEL_GEMMA4_E2B_QNN:
     return "GEMMA4-E2B-QNN";
-  case CAUSAL_LM_MODEL_VJEPA_QNN:
-    return "VJEPA-QNN";
+  case CAUSAL_LM_MODEL_VJEPA2_QNN:
+    return "VJEPA2-QNN";
 #endif
   default:
     return nullptr;
@@ -413,7 +413,8 @@ static std::string apply_chat_template(const std::string &architecture,
     // "<bos>" is a special added token (id 2) and encodes to that single id.
     return "<bos><|turn>user\n" + input + "<turn|>\n<|turn>model\n";
   } else {
-    if (const auto *cb = ModelCallbackRegistry::instance().lookup(architecture)) {
+    if (const auto *cb =
+          ModelCallbackRegistry::instance().lookup(architecture)) {
       if (cb->format_prompt) {
         return cb->format_prompt(input);
       }
@@ -444,7 +445,8 @@ static void update_handle_session_after_run(CausalLmModel &h,
                                             size_t model_index) {
   if (model_index >= h.models.size() || model_index >= h.architectures.size())
     return;
-  const auto *cb = ModelCallbackRegistry::instance().lookup(h.architectures[model_index]);
+  const auto *cb =
+    ModelCallbackRegistry::instance().lookup(h.architectures[model_index]);
   if (!cb || !cb->read_kv_len)
     return;
   h.kv_len = cb->read_kv_len(h.models[model_index].get());
@@ -454,7 +456,8 @@ static void update_handle_session_after_run(CausalLmModel &h,
 static causallm::Quick_Dot_AI_QNN *find_qnn_kv_cache_model(CausalLmModel &h) {
   for (auto &m : h.models) {
     auto *q = dynamic_cast<causallm::Quick_Dot_AI_QNN *>(m.get());
-    if (q && q->supportsKvCachePersistence()) return q;
+    if (q && q->supportsKvCachePersistence())
+      return q;
   }
   return nullptr;
 }
@@ -641,8 +644,9 @@ static std::string rebase_path(const std::string &path,
 
 static void fix_paths(json &nntr_cfg, const std::string &sub_dir) {
   static const char *kKeys[] = {
-    "tokenizer_file",     "model_file_name",     "binary_config_path",
-    "image_newline_path", "embedding_file_name", "ple_file_name",
+    "tokenizer_file",       "model_file_name",     "binary_config_path",
+    "image_newline_path",   "embedding_file_name", "ple_file_name",
+    "rotation_matrix_path",
   };
   for (const char *k : kKeys) {
     if (!nntr_cfg.contains(k) || !nntr_cfg[k].is_string())
@@ -823,8 +827,7 @@ ErrorCode registerModel(const char *model_name, const char *arch_name,
 // layer registration throws not_supported ("Unable to load backend extensions
 // config"). Honors an externally configured path if already set.
 static void ensure_qnn_backend_ext_config(const std::string &base_dir) {
-  const char *configured =
-    getenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
+  const char *configured = getenv("QUICK_DOT_AI_QNN_BACKEND_EXT_CONFIG_PATH");
   if (configured != nullptr && configured[0] != '\0')
     return;
   std::string config_path = base_dir;
@@ -1875,13 +1878,10 @@ ErrorCode loadModelHandleByName(BackendType compute, const char *model_id,
   return CAUSAL_LM_ERROR_NONE;
 }
 
-ErrorCode loadMultimodalHandleByName(BackendType compute,
-                                     const char *embedding_model_id,
-                                     const char *llm_model_id,
-                                     ModelQuantizationType quant_type,
-                                     const char *native_lib_dir,
-                                     const char *model_base_path,
-                                     CausalLmHandle *out_handle) {
+ErrorCode loadMultimodalHandleByName(
+  BackendType compute, const char *embedding_model_id, const char *llm_model_id,
+  ModelQuantizationType quant_type, const char *native_lib_dir,
+  const char *model_base_path, CausalLmHandle *out_handle) {
   if (out_handle == nullptr || embedding_model_id == nullptr ||
       llm_model_id == nullptr)
     return CAUSAL_LM_ERROR_INVALID_PARAMETER;
@@ -1933,8 +1933,8 @@ ErrorCode loadMultimodalHandleByName(BackendType compute,
 
   auto move_one = [](CausalLmModel &src, CausalLmModel &dst) {
     dst.models.push_back(std::move(src.models[0]));
-    dst.architectures.push_back(src.architectures.empty() ? std::string()
-                                                          : src.architectures[0]);
+    dst.architectures.push_back(
+      src.architectures.empty() ? std::string() : src.architectures[0]);
     dst.model_dirs.push_back(src.model_dirs.empty() ? std::string()
                                                     : src.model_dirs[0]);
     if (!src.initialization_duration_ms.empty())
@@ -2117,8 +2117,7 @@ ErrorCode encodeModelHandle(CausalLmHandle handle, const char *text,
   }
 
   // Embedding models occupy models[0] (single-model embedding handle).
-  auto *st =
-    dynamic_cast<causallm::SentenceTransformer *>(h.models[0].get());
+  auto *st = dynamic_cast<causallm::SentenceTransformer *>(h.models[0].get());
   if (st == nullptr) {
     LOGE("encodeModelHandle: models[0] is not a SentenceTransformer");
     return CAUSAL_LM_ERROR_UNSUPPORTED;
@@ -2255,11 +2254,11 @@ ErrorCode cancelModelHandle(CausalLmHandle handle) {
  *   image_embeds: producer output; ownership taken here (freed before return)
  */
 static ErrorCode execute_multimodal(CausalLmModel &h,
-                                     causallm::Transformer *llm,
-                                     causallm::multimodal_pointer image_embeds,
-                                     const std::string &prompt,
-                                     CausalLmTokenCallback callback,
-                                     void *user_data) {
+                                    causallm::Transformer *llm,
+                                    causallm::multimodal_pointer image_embeds,
+                                    const std::string &prompt,
+                                    CausalLmTokenCallback callback,
+                                    void *user_data) {
   auto *tok = llm->getTokenizer();
   if (tok == nullptr) {
     LOGE("[MM] llm has no tokenizer");
@@ -2351,8 +2350,8 @@ static ErrorCode execute_multimodal(CausalLmModel &h,
  */
 static causallm::multimodal_pointer
 run_vision_encoder(CausalLmModel &h, const char *prompt,
-                   const float *pixelValues, int numPatches,
-                   int originalHeight, int originalWidth) {
+                   const float *pixelValues, int numPatches, int originalHeight,
+                   int originalWidth) {
   const int PATCH_SIZE = 512; // pixel layout: numPatches*3*512*512 floats
   causallm::Transformer *vision = h.models[0].get();
   causallm::Transformer *llm = h.models[1].get();
@@ -2449,8 +2448,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   std::string input =
     prepare_input_for_model(h, 1, raw_input, input_already_formatted);
 
-  return execute_multimodal(h, h.models[1].get(), image_embeds, input,
-                            callback, user_data);
+  return execute_multimodal(h, h.models[1].get(), image_embeds, input, callback,
+                            user_data);
 #else
   LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
   return CAUSAL_LM_ERROR_UNSUPPORTED;
@@ -2533,8 +2532,9 @@ ErrorCode runMultimodalHandleWithMessages(
 #ifdef ENABLE_QNN
   causallm::multimodal_pointer image_embeds{nullptr, 0};
   try {
-    image_embeds = run_vision_encoder(h, prompt.c_str(), pixelValues,
-                                      numPatches, originalHeight, originalWidth);
+    image_embeds =
+      run_vision_encoder(h, prompt.c_str(), pixelValues, numPatches,
+                         originalHeight, originalWidth);
   } catch (const std::exception &e) {
     LOGE("[DEBUG] runMultimodalHandleWithMessages: vision threw: %s", e.what());
     *outputText = nullptr;
@@ -2814,7 +2814,7 @@ ErrorCode runMultimodalMultiImageHandleStreaming(
   // to the single-image path using the first image's metadata, as a
   // temporary bridge until the V-JEPA vision encoder is integrated.
   LOGD("[DEBUG] runMultimodalMultiImageHandleStreaming: STUB — delegating to "
-        "single-image runMultimodalHandleStreaming");
+       "single-image runMultimodalHandleStreaming");
 
   return runMultimodalHandleStreaming(handle, prompt, pixelValues, numPatches,
                                       originalHeights[0], originalWidths[0],
@@ -2852,7 +2852,7 @@ ErrorCode runMultimodalMultiImageHandleWithMessagesStreaming(
   // to the single-image path using the first image's metadata, as a
   // temporary bridge until the V-JEPA vision encoder is integrated.
   LOGD("[DEBUG] runMultimodalMultiImageHandleWithMessagesStreaming: STUB — "
-        "delegating to single-image runMultimodalHandleWithMessagesStreaming");
+       "delegating to single-image runMultimodalHandleWithMessagesStreaming");
 
   return runMultimodalHandleWithMessagesStreaming(
     handle, messages, num_messages, add_generation_prompt, pixelValues,

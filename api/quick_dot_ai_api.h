@@ -73,7 +73,7 @@ typedef enum {
   CAUSAL_LM_MODEL_FUNCTION_GEMMA = 9,  /* original */
   CAUSAL_LM_MODEL_GEMMA4_CPU = 11,     /* original */
   CAUSAL_LM_MODEL_GEMMA4_E2B_QNN = 12, /* original */
-  CAUSAL_LM_MODEL_VJEPA_QNN = 13,
+  CAUSAL_LM_MODEL_VJEPA2_QNN = 13,
   CAUSAL_LM_MODEL_OURO_EMBEDDING = 14,
 } ModelType;
 #endif /* __TRANSFORMER_H__ */
@@ -250,10 +250,9 @@ WIN_EXPORT ErrorCode loadModelHandleByName(BackendType compute,
  *         (e.g. the chosen LLM exposes no embedding table).
  */
 WIN_EXPORT ErrorCode loadMultimodalHandleByName(
-  BackendType compute, const char *embedding_model_id,
-  const char *llm_model_id, ModelQuantizationType quant_type,
-  const char *native_lib_dir, const char *model_base_path,
-  CausalLmHandle *out_handle);
+  BackendType compute, const char *embedding_model_id, const char *llm_model_id,
+  ModelQuantizationType quant_type, const char *native_lib_dir,
+  const char *model_base_path, CausalLmHandle *out_handle);
 
 /**
  * @brief Run inference on a specific handle.

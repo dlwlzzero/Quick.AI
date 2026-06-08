@@ -24,3 +24,6 @@ endif
 if fs.is_dir('gemma4-e2b-qnn')
   subdir('gemma4-e2b-qnn')
 endif
+if fs.is_dir('vjepa2-qnn')
+  subdir('vjepa2-qnn')
+endif
