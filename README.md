@@ -30,30 +30,29 @@ backends.
 - **Chat templates**: OpenAI-compatible `messages`, `tools`, and `functions`
   formatting through model-local `chat_template.jinja` or
   `tokenizer_config.json`.
-- **Multimodal paths**: LiteRT-LM image input for Gemma-family models and native
-  QNN vision paths where the loaded model supplies vision + LLM sub-models.
+- **Multimodal paths**: LiteRT-LM image input for Gemma-family models, and native
+  QNN vision paths where the loaded model supplies vision + LLM sub-models
 
 ## 🤖 Supported Models
 
-As of T4, models are identified by a **string model id** rather than a
-`ModelType` C enum. The public model catalog is provided by
-`getModelCatalogJson()` (C API) and `ModelCatalog` (Android AAR). Each model
-self-registers its descriptor at load time — see [`docs/Architecture.md`](docs/Architecture.md)
-for how the registry works.
+Models are identified by a **string model id**. The public model catalog is
+provided by `getModelCatalogJson()` (C API) and `ModelCatalog` (Android AAR).
+Each model self-registers its descriptor at load time — see
+[`docs/Architecture.md`](docs/Architecture.md) for how the registry works.
 
-| Model family   | Runtime | Backends   | Capabilities                  |
-|----------------|---------|------------|-------------------------------|
-| `qwen3-0.6b`   | NATIVE  | CPU, GPU   | Streaming, Tool use           |
-| `qwen3-1.7b`   | NATIVE  | CPU, GPU   | Streaming                     |
-| `tiny-bert`    | NATIVE  | CPU        | Embedding                     |
-| `function-gemma` | NATIVE | CPU, GPU  | Tool use                      |
-| `gemma4-cpu`   | NATIVE  | CPU        | Streaming                     |
-| `gemma4-e2b`   | NATIVE  | QNN        | Streaming                     |
-| `gemma4`       | LiteRT  | GPU        | Streaming, Multimodal         |
-| `gauss*`       | NATIVE  | (internal) | (internal — T4 compat shim)   |
+| Model id         | Runtime | Backends | Capabilities                       |
+|------------------|---------|----------|------------------------------------|
+| `qwen3-0.6b`     | NATIVE  | CPU, GPU | Streaming, Tool use                |
+| `qwen3-1.7b-q40` | NATIVE  | CPU, GPU | Streaming, Tool use                |
+| `tiny-bert`      | NATIVE  | CPU      | Embedding                          |
+| `function-gemma` | NATIVE  | CPU, GPU | Tool use                           |
+| `gemma4-cpu`     | NATIVE  | CPU      | Streaming                          |
+| `lfm2-vl-450m`   | NATIVE  | CPU      | Multimodal, Messages API, Streaming |
+| `gemma4-e2b-qnn` | NATIVE  | QNN      | Messages API                       |
+| `gemma4`         | LiteRT  | GPU      | Streaming, Multimodal, Messages API |
 
-> `gauss*` families are carried as a `ModelType` compat shim for internal
-> builds only. They are not registered in the public descriptor catalog.
+> QNN model ids (`gemma4-e2b-qnn`) only appear in the catalog on
+> Android builds compiled with `--enable-qnn`.
 
 The `ModelType` C enum (`CAUSAL_LM_MODEL_*` constants) is a **deprecated
 compatibility shim**. Prefer string model ids and `loadModelHandleByName()` for
@@ -86,7 +85,7 @@ API.
 ```cpp
 #include "quick_dot_ai_api.h"
 
-// T4 preferred: load by string model id
+// Preferred: load by string model id
 CausalLmHandle handle = nullptr;
 loadModelHandleByName(CAUSAL_LM_BACKEND_CPU, "qwen3-0.6b",
                       CAUSAL_LM_QUANTIZATION_W4A32,
@@ -189,8 +188,11 @@ __attribute__((constructor)) static void register_my_models() {
 ```
 
 4. Add model config files under `src/res/<model_name>/`.
-5. Add `src/models/<model_name>/meson.build` and include it from
-   `src/models/meson.build`.
+5. Add `src/models/<model_name>/meson.build` that appends your sources to
+   `quick_dot_ai_src`. CPU model directories are auto-discovered by
+   `src/models/meson.build`, so no manual `subdir()` edit is required. To expose
+   the model in the catalog, register a `ModelDescriptor` (see
+   [`docs/Architecture.md`](docs/Architecture.md)).
 
 ## 🏛️ Architecture
 
@@ -207,14 +209,17 @@ See [`docs/Architecture.md`](docs/Architecture.md) for native architecture and
 project-root/
 ├── nntrainer/              # nntrainer submodule
 ├── xgrammar/               # XGrammar submodule
-├── src/                    # Native CausalLM extensions and model configs
+├── src/                    # Native CausalLM extensions, models, and configs
 ├── api/                    # libquick_dot_ai_api.so public C API
+├── api-app/                # quick_dot_ai_test API test executable
 ├── qnn/                    # Android QNN context library
+├── cross/                  # Meson cross files (Android NDK)
+├── scripts/                # Build/git helper scripts
+├── install_libs/           # Staging dir for device-install libraries
 ├── Android/
 │   ├── QuickDotAI/         # Android AAR
 │   └── SampleTestAPP/      # Direct sample app
 ├── docs/                   # Canonical project documentation
-├── gemma_python/           # Gemma4 quantization-oriented Python package
 ├── build.sh
 ├── install_android.sh
 └── apk-build-install.sh

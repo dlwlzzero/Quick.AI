@@ -61,12 +61,15 @@ Important entry points:
 
 | API | Purpose |
 |---|---|
-| `loadModelHandle()` | Load one model handle |
+| `loadModelHandleByName()` | Preferred load path — load one handle by string model id |
+| `loadModelHandle()` | Legacy load path using the deprecated `ModelType` enum |
+| `loadMultimodalHandleByName()` | Pair a vision/embedding model with an LLM into one handle |
 | `runModelHandleStreaming()` | Stream a raw prompt |
 | `runModelHandleWithMessagesStreaming()` | Stream OpenAI-style messages |
 | `runModelHandleWithJsonStreaming()` | Stream full OpenAI JSON requests |
 | `runModelHandleWithTool()` | Run XGrammar-constrained structured generation |
-| `runMultimodalHandle*()` | Run image + text paths when supported by the handle |
+| `runMultimodalHandle*()` | Run single-image + text paths when supported by the handle |
+| `runMultimodalMultiImageHandle*()` | Run multi-image paths (e.g. `vjepa-qnn`) |
 | `cancelModelHandle()` | Request cooperative cancellation |
 | `destroyModelHandle()` | Release handle resources |
 | `unloadModelHandle()` | Unload model (handle remains valid) |
@@ -75,27 +78,27 @@ Important entry points:
 | `loadQnnKvCacheHandle()` | Load QNN KV cache |
 | `resetQnnKvCacheHandle()` | Reset QNN KV cache |
 
-## Model Registry (T4)
+## Model Registry
 
-Starting with T4, the API layer maintains a **string-keyed self-registering
-model descriptor catalog** separate from the nntrainer CausalLM factory.
+The API layer maintains a **string-keyed self-registering model descriptor
+catalog** separate from the nntrainer CausalLM factory.
 
 ### Self-registration
 
-Each model descriptor translation unit (`src/model_descriptors_<name>.cpp`)
-declares a `quick_dot_ai::ModelDescriptor` struct and registers it at load
-time:
+A descriptor is a `ModelDescriptor` struct (declared in
+`api/model_descriptor.h`) registered into a process-global registry at load
+time via `quick_dot_ai::register_model_descriptor(&desc)`:
 
 ```cpp
-static quick_dot_ai::ModelDescriptor desc = {
-  .id          = "qwen3-0.6b",
-  .family      = "qwen3-0.6b",
-  .display_name = "Qwen3 0.6B",
-  .runtime     = 0,               // 0 = NATIVE, 1 = LITERT
-  .backend_mask = /* CPU|GPU bitmask */,
-  .capabilities = /* STREAMING|TOOL_USE bitmask */,
-  .config_name = "qwen3_0_6b",
-  .arch_string = "Qwen3ForCausalLM",
+static const ModelDescriptor desc = {
+  "qwen3-0.6b",        // id
+  "qwen3-0.6b",        // family
+  "Qwen3 0.6B",        // display_name
+  QDA_RUNTIME_NATIVE,  // runtime (QDA_RUNTIME_NATIVE = 0, QDA_RUNTIME_LITERT = 1)
+  B(0) | B(1),         // backend_mask (CPU | GPU)
+  QDA_CAP_STREAMING | QDA_CAP_TOOL_USE, // capabilities bitmask
+  "QWEN3-0.6B",        // config_name (key into the internal config registry)
+  "Qwen3ForCausalLM",  // arch_string (nntrainer Factory key)
 };
 
 __attribute__((constructor)) static void register_descriptors() {
@@ -103,15 +106,33 @@ __attribute__((constructor)) static void register_descriptors() {
 }
 ```
 
-This runs before `main()` / API first-call, adding the descriptor to a
-process-global registry. No central switch statement or header change is
-needed — just link in the TU.
+This runs before `main()` / API first-call, adding the descriptor to the
+registry. No central switch statement or header change is needed.
+
+Two registration sites exist in the tree:
+
+- **Built-in catalog** — descriptors for the public models (Qwen3, TinyBERT,
+  Function-Gemma, Gemma4, LFM2-VL, and the QNN models) live together in
+  `api/model_descriptors_public.cpp`, registered by a single constructor. QNN
+  descriptors there are guarded by `ENABLE_QNN`.
+- **Plugin models** — a model implementation under `src/models/<name>/` may
+  register its own descriptor inline in the same `__attribute__((constructor))`
+  that registers it with the nntrainer `Factory` (see the QNN models under
+  `src/models/qnn/`).
+
+`src/model_descriptor_stub.cpp` provides a **weak no-op**
+`register_model_descriptor()` so the standalone `quick_dot_ai` executable links
+even when the API library (which carries the strong definition) is not present.
+
+> Note: there are no `src/model_descriptors_<name>.cpp` files — descriptors are
+> consolidated in `api/model_descriptors_public.cpp` or inlined in each model's
+> own translation unit.
 
 ### Catalog API
 
 | Function | Purpose |
 |---|---|
-| `loadModelHandleByName(backend, model_id, quant, lib_dir, base_path, out)` | Preferred T4 load path — routes through the descriptor registry |
+| `loadModelHandleByName(backend, model_id, quant, lib_dir, base_path, out)` | Preferred load path — routes through the descriptor registry |
 | `getModelCatalogJson()` | Returns a JSON array of all registered descriptors |
 
 `getModelCatalogJson()` returns a JSON array in this shape:
@@ -124,27 +145,24 @@ needed — just link in the TU.
     "display_name": "Qwen3 0.6B",
     "runtime": 0,
     "backend_mask": 3,
-    "capabilities": 5,
-    "config_name": "qwen3_0_6b",
-    "arch_string": "Qwen3ForCausalLM"
+    "capabilities": 9
   }
 ]
 ```
 
+Only these six fields are serialized. `config_name` and `arch_string` are
+internal descriptor fields used to resolve the config and the Factory
+architecture; they are **not** exposed in the catalog JSON. `backend_mask` is a
+bitmask (bit 0 = CPU, bit 1 = GPU, bit 2 = NPU/QNN); `capabilities` is a
+`CapabilityFlag` bitmask (bit 0 = STREAMING, 1 = MESSAGES_API, 2 = MULTIMODAL,
+3 = TOOL_USE, 4 = EMBEDDING, 5 = MULTI_IMAGE, 6 = VISION_ENCODER).
+
 ### ModelType enum status
 
 The `CAUSAL_LM_MODEL_*` C enum is a **deprecated compatibility shim**.
-Original non-gauss ordinals are preserved for ABI compatibility.
-Gauss entries have been removed from the enum. All new code should use
-string model ids and `loadModelHandleByName()`.
-
-### gauss models
-
-Gauss model implementations use the same `register_model_descriptor` path
-but are **not** linked into the public descriptor TU
-(`src/model_descriptors_public.cpp`). They remain internal (gauss-0
-readiness) and do not appear in `getModelCatalogJson()` output from the
-public library.
+Ordinals are preserved for ABI compatibility, so the values are not
+contiguous. All new code should use string model ids and
+`loadModelHandleByName()`.
 
 ## 🧰 Build System
 
