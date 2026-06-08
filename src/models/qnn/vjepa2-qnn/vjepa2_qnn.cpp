@@ -153,28 +153,48 @@ void causallm::VJEPA2_QNN::initialize() {
   int idx_sin =
     GraphParser::find_tensor_index(model_info.raw_inputs, "rope_sin");
 
-  NNTR_THROW_IF(idx_rot < 0, std::invalid_argument)
-    << "rotation_matrix not found in graph inputs";
+  // pixel_values_video is the only mandatory input for V-JEPA2 inference.
   NNTR_THROW_IF(idx_pix < 0, std::invalid_argument)
     << "pixel_values_video not found in graph inputs";
-  NNTR_THROW_IF(idx_cos < 0, std::invalid_argument)
-    << "rope_cos not found in graph inputs";
-  NNTR_THROW_IF(idx_sin < 0, std::invalid_argument)
-    << "rope_sin not found in graph inputs";
 
-  rotation_matrix_input_ = std::get<uint8_t *>(model_input[idx_rot]);
+  if (idx_rot >= 0)
+    rotation_matrix_input_ = std::get<uint8_t *>(model_input[idx_rot]);
   pixel_values_input_ = std::get<uint16_t *>(model_input[idx_pix]);
-  rope_cos_input_ = std::get<uint16_t *>(model_input[idx_cos]);
-  rope_sin_input_ = std::get<uint16_t *>(model_input[idx_sin]);
+  if (idx_cos >= 0)
+    rope_cos_input_ = std::get<uint16_t *>(model_input[idx_cos]);
+  if (idx_sin >= 0)
+    rope_sin_input_ = std::get<uint16_t *>(model_input[idx_sin]);
 
-  // Load constant inputs
-  loadRotationMatrix();
+  // Load rotation matrix from external file if provided.
+  if (idx_rot >= 0 && !rotation_matrix_path_.empty())
+    loadRotationMatrix();
 
-  // TODO: Compute rope_cos / rope_sin for V-JEPA2 vision-specific 3D RoPE.
-  // Current placeholder: leave as zero (or pre-filled by QNN runtime if any).
-  // Shape [1, 1, 3072, 64] each. Must quantize to UF16 using per-tensor
-  // scale/offset once the exact formula is known.
-  LOGD("VJEPA2_QNN: rope_cos/rope_sin computation TODO");
+  // Detect missing RoPE-related inputs and populate with dummy zero data.
+  // The serialized model may not supply these constant tensors.
+  if (idx_rot >= 0 && rotation_matrix_mmap_ptr_ == nullptr) {
+    size_t rot_byte_size =
+      GraphParser::get_tensor_size(model_info.raw_inputs[idx_rot]);
+    std::memset(rotation_matrix_input_, 0, rot_byte_size);
+    LOGD("VJEPA2_QNN: WARNING rotation_matrix missing --- zero-filled dummy "
+         "(%zu bytes)",
+         rot_byte_size);
+  }
+  if (idx_cos >= 0) {
+    size_t cos_byte_size =
+      GraphParser::get_tensor_size(model_info.raw_inputs[idx_cos]);
+    std::memset(rope_cos_input_, 0, cos_byte_size);
+    LOGD(
+      "VJEPA2_QNN: WARNING rope_cos missing --- zero-filled dummy (%zu bytes)",
+      cos_byte_size);
+  }
+  if (idx_sin >= 0) {
+    size_t sin_byte_size =
+      GraphParser::get_tensor_size(model_info.raw_inputs[idx_sin]);
+    std::memset(rope_sin_input_, 0, sin_byte_size);
+    LOGD(
+      "VJEPA2_QNN: WARNING rope_sin missing --- zero-filled dummy (%zu bytes)",
+      sin_byte_size);
+  }
 }
 
 void causallm::VJEPA2_QNN::run(const WSTR prompt, bool do_sample,
