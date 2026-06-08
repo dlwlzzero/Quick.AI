@@ -44,19 +44,23 @@ Extend Quick.AI with a new CausalLM architecture or QNN model.
 | [Native Architecture](Architecture.md) | Plugin system and build artifacts |
 | [QNN Context Guide](../qnn/README.md) | QNN backend/context extension details |
 
-## Adding a New Model (T4+)
+## Adding a New Model
 
-Starting with T4, adding a model requires only a new translation unit — no
-changes to the `ModelType` enum, `loadModelHandle`, or UI code are needed.
+Adding a model requires only a new translation unit — no changes to the
+`ModelType` enum, `loadModelHandle`, or UI code are needed.
 
-1. Create `src/model_descriptors_<name>.cpp` with a `ModelDescriptor` struct
-   and an `__attribute__((constructor))` that calls
-   `quick_dot_ai::register_model_descriptor(&desc)`. The descriptor fields
-   include `id` (string), `family`, `display_name`, `runtime` (0=NATIVE or
-   1=LITERT), `backend_mask`, `capabilities`, `config_name`, and
-   `arch_string`.
-2. Add the new TU to `src/meson.build` so it is linked into
-   `libquick_dot_ai_api.so`.
+1. Register a `ModelDescriptor` from a load-time
+   `__attribute__((constructor))` that calls
+   `quick_dot_ai::register_model_descriptor(&desc)`. The descriptor fields are
+   `id` (string), `family`, `display_name`, `runtime` (`QDA_RUNTIME_NATIVE` or
+   `QDA_RUNTIME_LITERT`), `backend_mask`, `capabilities`, `config_name`, and
+   `arch_string`. Add it to the built-in catalog in
+   `api/model_descriptors_public.cpp`, or register it inline in your model's own
+   translation unit under `src/models/<name>/` (the pattern used by the QNN
+   models in `src/models/qnn/`).
+2. Add a `src/models/<name>/meson.build` that appends your sources to
+   `quick_dot_ai_src`. CPU model directories are **auto-discovered** by
+   `src/models/meson.build`, so no manual `subdir()` edit is needed.
 3. The C API catalog (`getModelCatalogJson()`) and the Android `ModelCatalog`
    singleton will automatically reflect the new model after the library is
    rebuilt — no additional registration steps are required.

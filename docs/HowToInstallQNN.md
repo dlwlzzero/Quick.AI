@@ -8,6 +8,15 @@ If you install the QNN and Hexagon SDK for NNtrainer usage, please follow the ve
 - QNN (a.k.a., Qualcomm Neural Processing SDK) version 2.31.0.250130
 - HexagonSDK version 5.5.2.0
 
+> **Note:** Building Quick.AI itself does **not** require a separately installed
+> QNN SDK. The QNN SDK headers and helper sources are vendored under
+> `qnn/jni/qnn/` (build id `v2.42.0.251225...`, see
+> `qnn/jni/qnn/QNN/QnnSdkBuildId.h`), and `--enable-qnn` builds compile against
+> those — no `QNN_SDK_ROOT` is read. Install the SDK and Hexagon SDK below only
+> when you need the standalone Qualcomm toolchain (model conversion / on-device
+> runtime libraries such as `libQnnHtp.so`). When mixing toolchain and on-device
+> runtime, keep their versions compatible with the vendored headers.
+
 ## Prepare QPM CLI
 
 
