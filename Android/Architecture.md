@@ -30,11 +30,12 @@ Key files:
 | `Types.kt` | Serializable request/response DTOs, model enums, errors, metrics |
 | `NativeQuickDotAI.kt` | Kotlin wrapper around one native `CausalLmHandle` |
 | `NativeCausalLm.kt` | Low-level JNI declarations |
-| `LiteRTLm.kt` | LiteRT-LM engine wrapper for `ModelId.GEMMA4` |
+| `LiteRTLm.kt` | LiteRT-LM engine wrapper for the `gemma4` (`ModelIds.GEMMA4`) model |
 | `NativeChatSession.kt` | Native chat-session helper |
 | `LiteRTLmChatSession.kt` | LiteRT-LM chat-session helper |
-| `ImageStore.kt` | Per-session image cache |
-| `LlavaNextImageProcessor.kt` | Native multimodal preprocessing helper |
+| `ImageStore.kt` | Per-session image cache (SHA-256 dedup) |
+| `LlavaNextImageProcessor.kt` | Native multimodal preprocessing helper (any-resolution patching) |
+| `PilloBilinearResizer.kt` | Pillow-compatible bilinear resize used by the image processors |
 | `src/main/cpp/quickai_jni.cpp` | JNI bridge to `quick_dot_ai_api.h` |
 | `src/main/cpp/CMakeLists.txt` | Builds `libquickai_jni.so` and links `libquick_dot_ai_api.so` |
 
@@ -53,17 +54,18 @@ NativeQuickDotAI
 The native API surface is declared in `api/quick_dot_ai_api.h`.
 The preferred calls are handle-based:
 
-- `loadModelHandle`
+- `loadModelHandleByName` (dispatched from Kotlin via the
+  `loadModelHandleByNameNative` JNI declaration in `NativeCausalLm.kt`)
 - `runModelHandleWithMessagesStreaming`
 - `runModelHandleWithJsonStreaming`
 - `runMultimodalHandleStreaming`
 - `cancelModelHandle`
 - `destroyModelHandle`
 
-## ModelCatalog (T4)
+## ModelCatalog
 
-Starting with T4, model selection in the AAR is driven by the
-`ModelCatalog` singleton rather than a `ModelType` / `ModelId` enum.
+Model selection in the AAR is driven by the `ModelCatalog` singleton. Models
+are identified by string ids rather than an enum.
 
 ### Seeding
 
@@ -77,18 +79,24 @@ merged in at the Kotlin layer.
 | Type | Role |
 |---|---|
 | `enum class RuntimeKind { NATIVE, LITERT }` | Selects the engine path |
-| `enum class Capability { STREAMING, MESSAGES_API, MULTIMODAL, TOOL_USE, EMBEDDING }` | Per-model feature flags |
+| `enum class Capability { STREAMING, MESSAGES_API, MULTIMODAL, TOOL_USE, EMBEDDING, MULTI_IMAGE }` | Per-model feature flags |
 | `data class ModelDescriptor(id, family, displayName, runtime, backends, capabilities)` | Descriptor from the catalog |
 | `object ModelIds` | String constants for well-known model ids |
-| `object ModelCatalog` | Singleton: `all()`, `families()`, `runtimesFor(family)`, `backendsFor(family, rt)`, `resolve(family, rt, backend)`, `byId(id)` |
+| `object ModelCatalog` | Singleton: `all()`, `families()`, `selectable()`, `selectableFamilies()`, `runtimesFor(family)`, `backendsFor(family, rt)`, `resolve(family, rt, backend)`, `byId(id)` |
 
 ### 3-axis cascading UI
 
-`SampleTestAPP` presents a 3-axis cascading chip UI:
+`SampleTestAPP` presents a 3-axis cascading UI:
 
-1. **Family chip row** — populated from `ModelCatalog.families()`
+1. **Family** — populated from `ModelCatalog.selectableFamilies()`
 2. **Runtime chip row** — populated from `ModelCatalog.runtimesFor(selectedFamily)`
 3. **Backend chip row** — populated from `ModelCatalog.backendsFor(selectedFamily, selectedRuntime)`
+
+The app lists only **selectable** (generative) models. Embedding-only models
+such as `tiny-bert` — which expose only the `EMBEDDING` capability and have no
+public output path — are filtered out by `selectableFamilies()`. They remain in
+the AAR catalog and are still reachable through `ModelCatalog.all()` /
+`ModelCatalog.byId(...)`.
 
 The resolved descriptor is obtained via `ModelCatalog.resolve(family, runtime, backend)`
 and passed directly to `createEngine()`.
@@ -102,15 +110,15 @@ QuickDotAI.createEngine(context, descriptor: ModelDescriptor): QuickDotAI
 `createEngine` dispatches to `NativeQuickDotAI` (for `RuntimeKind.NATIVE`) or
 `LiteRTLm` (for `RuntimeKind.LITERT`) based on `descriptor.runtime`.
 
-### LoadModelRequest changes
+### LoadModelRequest
 
-`LoadModelRequest.modelId: String` replaces the old `model: ModelId` enum
-field. The cache key is `"$modelId:${quantization.name}"`. The JNI call
-dispatched on load is `loadModelHandleByNameNative`.
+`LoadModelRequest.modelId` is a `String` catalog id. The cache key is
+`"$modelId:${quantization.name}"`. The JNI call dispatched on load is
+`loadModelHandleByNameNative`.
 
 ## 🌗 LiteRT Runtime Path
 
-`LiteRTLm` is selected for `ModelId.GEMMA4` and takes a `.litertlm` file path
+`LiteRTLm` is selected for the `gemma4` (`ModelIds.GEMMA4`) model and takes a `.litertlm` file path
 through `LoadModelRequest.modelPath`. `visionBackend != null` enables
 multimodal calls for engines/models that support image input.
 
