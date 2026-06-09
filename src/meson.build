@@ -18,6 +18,10 @@ causallm_auto_src = run_command('find',
   '-name', '*.cpp',
   '-not', '-name', 'main.cpp',
   '-not', '-name', 'test_api.cpp',
+  # Exclude the incomplete vjepa2_vit WIP module (missing vjepa_gelu_layer.h /
+  # vjepa_layernorm_layer.h headers; not wired into nntrainer's own meson).
+  # Unrelated to LFM2-VL; the app's broad models/ glob otherwise pulls it in.
+  '-not', '-path', '*/vjepa2_vit/*',
   check: true).stdout().strip().split('\n')
 
 streamer_src = [
