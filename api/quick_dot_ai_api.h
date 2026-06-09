@@ -418,6 +418,42 @@ WIN_EXPORT ErrorCode encodeModelHandle(CausalLmHandle handle, const char *text,
 WIN_EXPORT void freeEmbedding(float *embedding);
 
 /**
+ * @brief Run a standalone vision/video encoder (e.g. V-JEPA2 QNN) on raw
+ *        pixel values and return its raw (quantized) embedding bytes.
+ *
+ * Unlike the multimodal path, this does NOT require an LLM consumer: the
+ * encoder runs alone (no set_quant_param), so the output is the encoder's
+ * native quantized buffer (uint16 for V-JEPA2), copied out verbatim.
+ *
+ * On success *out_embedding points to a freshly malloc'd buffer of *out_bytes
+ * bytes. The caller OWNS it and MUST release it with freeImageEmbedding()
+ * (NOT freeEmbedding(), which uses delete[]). On error *out_embedding is NULL
+ * and *out_bytes is 0.
+ *
+ * @param handle         Handle whose models[0] is a vision encoder
+ * @param pixelValues    Pointer to float buffer of raw pixels
+ * @param numFloats      Number of floats in pixelValues
+ *                       (V-JEPA2 raw layout: 1*24*3*256*256 = 4718592)
+ * @param height         Original frame height (V-JEPA2: 256)
+ * @param width          Original frame width  (V-JEPA2: 256)
+ * @param out_embedding  [out] receives a newly malloc'd byte buffer
+ * @param out_bytes      [out] receives the buffer length in bytes
+ * @return CAUSAL_LM_ERROR_NONE on success; CAUSAL_LM_ERROR_UNSUPPORTED if
+ *         built without QNN support.
+ */
+WIN_EXPORT ErrorCode encodeImageModelHandle(CausalLmHandle handle,
+                                            const float *pixelValues,
+                                            size_t numFloats, int height,
+                                            int width, void **out_embedding,
+                                            int *out_bytes);
+
+/**
+ * @brief Release a buffer returned by encodeImageModelHandle().
+ * @param embedding  Pointer previously returned via out_embedding (may be NULL)
+ */
+WIN_EXPORT void freeImageEmbedding(void *embedding);
+
+/**
  * @brief Run inference on a handle with a tool schema for constrained
  * generation.
  *
