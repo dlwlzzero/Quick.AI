@@ -36,6 +36,7 @@
 #include "gptoss_cached_slim_causallm.h"
 #include "gptoss_causallm.h"
 #include "json.hpp"
+#include "lfm2_causallm.h"
 #include "model_callbacks.h"
 #include "model_config_internal.h"
 #include "model_descriptor.h"
@@ -47,6 +48,8 @@
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include "sentence_transformer.h"
+#include "vjepa2_vit.h"
+#include "vjepa_projector.h"
 #include "xgrammar_manager.h"
 #include "xgrammar_wrapper.h"
 #include <factory.h>
@@ -337,6 +340,21 @@ static void register_models() {
                                                           nntr_cfg);
       });
 #endif
+    causallm::Factory::Instance().registerModel(
+      "Lfm2ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::Lfm2CausalLM>(cfg, generation_cfg,
+                                                        nntr_cfg);
+      });
+    causallm::Factory::Instance().registerModel(
+      "VJEPA2ViT", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::VJEPA2ViT>(cfg, generation_cfg,
+                                                     nntr_cfg);
+      });
+    causallm::Factory::Instance().registerModel(
+      "VjepaProjector", [](json cfg, json generation_cfg, json nntr_cfg) {
+        return std::make_unique<causallm::VjepaProjector>(cfg, generation_cfg,
+                                                          nntr_cfg);
+      });
     // Register built-in configurations
     quick_dot_ai::register_builtin_configs();
   });
