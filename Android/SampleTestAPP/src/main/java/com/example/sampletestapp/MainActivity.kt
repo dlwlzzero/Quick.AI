@@ -2821,7 +2821,7 @@ class MainActivity : AppCompatActivity() {
         ModelIds.FUNCTION_GEMMA to "function_gemma",
         ModelIds.GEMMA4_CPU     to "gemma4_cpu",
         ModelIds.GEMMA4_E2B_QNN to "gemma-4-e2b-qnn",
-        ModelIds.VJEPA_QNN      to "vjepa-qnn",
+        ModelIds.VJEPA_QNN      to "vjepa2-qnn",
     )
 
     private fun checkAllFilesAccess() {

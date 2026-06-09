@@ -37,7 +37,7 @@ object ModelIds {
     const val GEMMA4            = "gemma4"       // LiteRT only
     const val GEMMA4_CPU        = "gemma4-cpu"
     const val GEMMA4_E2B_QNN    = "gemma4-e2b-qnn"
-    const val VJEPA_QNN         = "vjepa-qnn"    // V-JEPA multi-image (QNN)
+    const val VJEPA_QNN         = "vjepa2-qnn"   // V-JEPA 2 multi-image (QNN)
 }
 
 object ModelCatalog {
