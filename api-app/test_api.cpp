@@ -458,7 +458,15 @@ int main(int argc, char *argv[]) {
     destroyModelHandle(handle);
     std::cout << (ok ? clr::bold_green : clr::bold_red)
               << (ok ? "  Done." : "  Failed.") << clr::reset << "\n\n";
-    return ok ? 0 : 1;
+    // The QNN context's global singleton runs its destructor during
+    // __cxa_finalize (after main returns). That post-inference teardown
+    // dereferences an invalid pointer and SIGSEGVs — turning a successful run
+    // into a crash *after* all useful work is done. The smoke test is complete
+    // here, so flush stdout and exit immediately, bypassing the fragile global
+    // teardown (the OS reclaims all resources on process exit).
+    std::cout.flush();
+    std::fflush(nullptr);
+    std::_Exit(ok ? 0 : 1);
   }
 #endif
 
