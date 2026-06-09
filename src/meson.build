@@ -18,10 +18,9 @@ causallm_auto_src = run_command('find',
   '-name', '*.cpp',
   '-not', '-name', 'main.cpp',
   '-not', '-name', 'test_api.cpp',
-  # Exclude the incomplete vjepa2_vit WIP module (missing vjepa_gelu_layer.h /
-  # vjepa_layernorm_layer.h headers; not wired into nntrainer's own meson).
-  # Unrelated to LFM2-VL; the app's broad models/ glob otherwise pulls it in.
-  '-not', '-path', '*/vjepa2_vit/*',
+  # vjepa2_vit module (VJEPA2ViT encoder + VjepaProjector) is now complete:
+  # its vjepa_gelu/layernorm/rope layers landed in layers/ (commit 9d505253),
+  # so the module compiles. Included for the vjepa->projector->lfm2 path.
   check: true).stdout().strip().split('\n')
 
 streamer_src = [
