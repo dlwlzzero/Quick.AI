@@ -113,8 +113,12 @@ if [ "$PLATFORM" = "android" ]; then
         cd "$NNTRAINER_ROOT"
         [ "$CLEAN" = true ] && rm -rf builddir
 
-        # Build nntrainer with QNN support if requested
-        NNTRAINER_EXTRA_OPTS="-Dmmap-read=false"
+        # Build nntrainer with QNN support if requested.
+        # Redirect the install prefix to a writable, build-local dir: nntrainer's
+        # own android libs install to builddir/android_build_result regardless of
+        # prefix, but bundled subprojects (e.g. googletest) honor it and would
+        # otherwise fail installing to the root-owned default /usr/local.
+        NNTRAINER_EXTRA_OPTS="-Dmmap-read=false -Dprefix=$NNTRAINER_ROOT/builddir/_host_install"
         if [ "$ENABLE_QNN" = true ]; then
             NNTRAINER_EXTRA_OPTS="$NNTRAINER_EXTRA_OPTS -Denable-npu=true"
         fi
