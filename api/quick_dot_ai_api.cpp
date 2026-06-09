@@ -2367,7 +2367,80 @@ run_vision_encoder(CausalLmModel &h, const char *prompt,
                            originalHeight, originalWidth, /*do_sample=*/false,
                            "", "", g_verbose);
 }
+
+/**
+ * Standalone vision/video encoder run (no LLM). Wraps models[0]->run_image
+ * and transfers the malloc'd output buffer to the caller. See header for the
+ * ownership contract (free with freeImageEmbedding, not freeEmbedding).
+ */
+ErrorCode encodeImageModelHandle(CausalLmHandle handle,
+                                 const float *pixelValues, size_t numFloats,
+                                 int height, int width, void **out_embedding,
+                                 int *out_bytes) {
+  if (handle == nullptr || pixelValues == nullptr || out_embedding == nullptr ||
+      out_bytes == nullptr)
+    return CAUSAL_LM_ERROR_INVALID_PARAMETER;
+
+  *out_embedding = nullptr;
+  *out_bytes = 0;
+
+  auto &h = *handle;
+  std::lock_guard<std::mutex> lock(h.mtx);
+  if (!h.initialized || h.models.empty()) {
+    LOGE("encodeImageModelHandle: handle not initialized or empty");
+    return CAUSAL_LM_ERROR_NOT_INITIALIZED;
+  }
+
+  causallm::Transformer *vision = h.models[0].get();
+  // Intentionally do NOT call set_quant_param: standalone encode keeps
+  // llm_quant_param_given_ == false so run_image returns the raw quantized
+  // embedding via plain memcpy (no LLM consumer required).
+
+  const size_t pixel_bytes = numFloats * sizeof(float);
+  causallm::multimodal_pointer image_in{const_cast<float *>(pixelValues),
+                                        pixel_bytes};
+  try {
+    causallm::multimodal_pointer embeds =
+      vision->run_image(std::string(""), image_in, height, width,
+                        /*do_sample=*/false, "", "", g_verbose);
+    if (embeds.first == nullptr || embeds.second == 0) {
+      LOGE("encodeImageModelHandle: run_image returned empty output");
+      return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+    }
+    *out_embedding = embeds.first; // ownership transferred to caller
+    *out_bytes = static_cast<int>(embeds.second);
+  } catch (const std::exception &e) {
+    LOGE("encodeImageModelHandle: exception: %s", e.what());
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  } catch (...) {
+    LOGE("encodeImageModelHandle: unknown exception");
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
+  return CAUSAL_LM_ERROR_NONE;
+}
+
+void freeImageEmbedding(void *embedding) { std::free(embedding); }
 #endif // ENABLE_QNN
+
+#ifndef ENABLE_QNN
+ErrorCode encodeImageModelHandle(CausalLmHandle handle,
+                                 const float *pixelValues, size_t numFloats,
+                                 int height, int width, void **out_embedding,
+                                 int *out_bytes) {
+  (void)handle;
+  (void)pixelValues;
+  (void)numFloats;
+  (void)height;
+  (void)width;
+  if (out_embedding)
+    *out_embedding = nullptr;
+  if (out_bytes)
+    *out_bytes = 0;
+  return CAUSAL_LM_ERROR_UNSUPPORTED;
+}
+
+void freeImageEmbedding(void *embedding) { (void)embedding; }
+#endif // !ENABLE_QNN
 
 ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
                                        const char *prompt,
