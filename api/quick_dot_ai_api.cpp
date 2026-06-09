@@ -2283,6 +2283,11 @@ static ErrorCode execute_multimodal(CausalLmModel &h,
     std::free(image_embeds.first);
     return CAUSAL_LM_ERROR_UNSUPPORTED;
   }
+  if (image_embeds.first == nullptr || image_embeds.second == 0) {
+    LOGE("[MM] empty image embeds");
+    std::free(image_embeds.first);
+    return CAUSAL_LM_ERROR_INFERENCE_FAILED;
+  }
   std::vector<int> text_ids = tok->Encode(prompt);
   // Prefer the LLM consumer's declared image placeholder id (LFM2-VL: 396);
   // fall back to the generic "<|image|>" token used by the gauss/vjepa pairs.
@@ -2374,26 +2379,57 @@ static causallm::multimodal_pointer
 run_vision_encoder(CausalLmModel &h, const char *prompt,
                    const float *pixelValues, int numPatches, int originalHeight,
                    int originalWidth) {
-  const int PATCH_SIZE = 512; // legacy vjepa/QNN pixel layout fallback
+  const int PATCH_SIZE = 512; // pixel layout: numPatches*3*512*512 floats
   causallm::Transformer *vision = h.models[0].get();
-  causallm::Transformer *llm = h.models[1].get();
+  const size_t llm_idx = text_generation_model_index(h);
+  causallm::Transformer *llm = h.models[llm_idx].get();
 
+  // Vision must emit in the FP32 space the next consumer expects. For the
+  // 2-stage path that consumer is the LLM embedding table; for the 3-stage
+  // path it is the projector (also FP32). The LLM embedding info is FP32 in
+  // both cases, so this single call is correct for either topology.
   auto info = llm->get_embedding_info();
   vision->set_quant_param(info.first, info.second);
 
-  // Models that consume a fixed pixel tensor (e.g. LFM2-VL: 3*256*256) declare
-  // their element count; others fall back to the legacy numPatches*3*512*512.
-  const size_t declared = vision->expectedPixelElems();
-  const size_t pixel_bytes =
-    declared != 0
-      ? declared * sizeof(float)
-      : static_cast<size_t>(numPatches) * 3 * PATCH_SIZE * PATCH_SIZE *
-          sizeof(float);
+  const size_t pixel_bytes = static_cast<size_t>(numPatches) * 3 * PATCH_SIZE *
+                             PATCH_SIZE * sizeof(float);
   causallm::multimodal_pointer image_in{const_cast<float *>(pixelValues),
                                         pixel_bytes};
-  return vision->run_image(std::string(prompt ? prompt : ""), image_in,
-                           originalHeight, originalWidth, /*do_sample=*/false,
-                           "", "", g_verbose);
+  causallm::multimodal_pointer raw =
+    vision->run_image(std::string(prompt ? prompt : ""), image_in,
+                      originalHeight, originalWidth, /*do_sample=*/false, "", "",
+                      g_verbose);
+
+  // 2-stage handle (no projector): return vision output directly.
+  if (h.models.size() < 3)
+    return raw;
+
+  // 3-stage handle: vision -> projector(768->1024) -> malloc'd copy.
+  auto *proj = dynamic_cast<causallm::VjepaProjector *>(h.models[1].get());
+  if (proj == nullptr) {
+    LOGE("[MM] models[1] is not a VjepaProjector");
+    std::free(raw.first);
+    return {nullptr, 0};
+  }
+  // Vision output is FP32 (set_quant_param above); token count = bytes/(768*4).
+  const size_t vis_dim = 768;
+  const size_t n_tokens = raw.second / (vis_dim * sizeof(float));
+  causallm::multimodal_pointer projected =
+    proj->run(static_cast<const float *>(raw.first),
+              static_cast<unsigned int>(n_tokens), g_verbose);
+  std::free(raw.first); // vision output no longer needed
+
+  if (projected.first == nullptr || projected.second == 0) {
+    LOGE("[MM] projector returned empty output");
+    return {nullptr, 0};
+  }
+  // projected is owned by the projector (last_output_). Copy into a malloc'd
+  // buffer so execute_multimodal can std::free it under the existing contract.
+  void *copy = std::malloc(projected.second);
+  if (copy == nullptr)
+    return {nullptr, 0};
+  std::memcpy(copy, projected.first, projected.second);
+  return {static_cast<float *>(copy), projected.second};
 }
 
 /**
