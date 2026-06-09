@@ -1,6 +1,9 @@
 {
   "batch_size": 1,
   "model_tensor_type": "FP16",
+  "init_seq_len": 2048,
+  "max_seq_len": 8192,
+  "num_to_generate": 1,
   "embedding_dtype": "FP16",
   "fc_layer_dtype": "FP16",
   "model_file_name": "vjepa2_1_vitb_384_v2-prefill-quantized.serialized.bin",
