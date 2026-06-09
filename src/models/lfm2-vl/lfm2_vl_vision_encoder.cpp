@@ -12,7 +12,6 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <stdexcept>
 #include <vector>
 
@@ -62,19 +61,11 @@ multimodal_pointer Lfm2VlVisionEncoder::run_image(
   const WSTR /*tail_prompt*/, bool /*log_output*/) {
 
   const size_t n_elems = expectedPixelElems();
-  if (image.second < n_elems * sizeof(float))
+  if (image.first == nullptr || image.second < n_elems * sizeof(float))
     throw std::runtime_error("Lfm2VlVisionEncoder: pixel buffer too small");
 
-  const char *tmp_dir = std::getenv("TMPDIR");
-  std::string tmp_path =
-    std::string(tmp_dir ? tmp_dir : "/data/local/tmp") + "/lfm2vl_pixels.bin";
-  {
-    std::ofstream of(tmp_path, std::ios::binary);
-    of.write(reinterpret_cast<const char *>(image.first),
-             static_cast<std::streamsize>(n_elems * sizeof(float)));
-  }
-
-  vit_->run(tmp_path, false, "", "", false);
+  vit_->runFromPixels(reinterpret_cast<const float *>(image.first), n_elems,
+                      false);
   const std::vector<float> &feats = vit_->getLastFeatures();
   if (feats.empty())
     throw std::runtime_error("Lfm2VlVisionEncoder: ViT produced no features");
@@ -90,6 +81,8 @@ multimodal_pointer Lfm2VlVisionEncoder::run_image(
 
   const size_t bytes = embeds.size() * sizeof(float);
   void *out = std::malloc(bytes);
+  if (out == nullptr)
+    throw std::runtime_error("Lfm2VlVisionEncoder: malloc failed");
   std::memcpy(out, embeds.data(), bytes);
   return {out, bytes};
 }
