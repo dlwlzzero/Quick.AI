@@ -35,8 +35,8 @@ class NativeQuickDotAI(
     private var handle: Long = 0L
     private var loaded: Boolean = false
 
-    // Image processor for multimodal inference
-    private var imageProcessor: LlavaNextImageProcessor? = null
+    // Image processor for multimodal inference (per-model concrete type)
+    private var imageProcessor: VisionImageProcessor? = null
 
     // Vision backend type (null = text-only mode)
     private var visionBackend: BackendType? = null
@@ -107,8 +107,11 @@ class NativeQuickDotAI(
                 currentModelId = req.modelId
                 visionBackend = req.visionBackend
                 if (req.visionBackend != null) {
-                    imageProcessor = LlavaNextImageProcessor(appContext)
-                    Log.i(TAG, "load(): visionBackend=${req.visionBackend}, image processor initialized")
+                    imageProcessor = when (req.modelId) {
+                        ModelIds.LFM2_VL -> SiglipImageProcessor(appContext)
+                        else -> LlavaNextImageProcessor(appContext)
+                    }
+                    Log.i(TAG, "load(): visionBackend=${req.visionBackend}, processor=${imageProcessor?.javaClass?.simpleName}")
                 }
                 Log.i(TAG, "load(): SUCCESS, handle=0x${h.toString(16)}")
                 BackendResult.Ok(Unit)
@@ -735,7 +738,7 @@ class NativeQuickDotAI(
      */
     private fun prepareMultimodalInput(
         parts: List<PromptPart>,
-        processor: LlavaNextImageProcessor
+        processor: VisionImageProcessor
     ): NativeCausalLm.MultimodalInput? {
         // Collect all image parts first
         val imageParts = mutableListOf<PromptPart>()
@@ -831,7 +834,7 @@ class NativeQuickDotAI(
      */
     private fun preprocessSingleImage(
         part: PromptPart,
-        processor: LlavaNextImageProcessor
+        processor: VisionImageProcessor
     ): NativeCausalLm.MultimodalInput? {
         when (part) {
             is PromptPart.ImageFile -> {

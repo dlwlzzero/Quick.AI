@@ -38,6 +38,7 @@ object ModelIds {
     const val GEMMA4_CPU        = "gemma4-cpu"
     const val GEMMA4_E2B_QNN    = "gemma4-e2b-qnn"
     const val VJEPA_QNN         = "vjepa2-qnn"   // V-JEPA 2 multi-image (QNN)
+    const val LFM2_VL           = "lfm2-vl"      // LFM2-VL 450M multimodal (CPU)
 }
 
 object ModelCatalog {

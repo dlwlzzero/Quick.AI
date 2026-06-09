@@ -34,7 +34,7 @@ class LlavaNextImageProcessor(
     private val imageStd: FloatArray = floatArrayOf(0.5f, 0.5f, 0.5f),
     private val rescaleFactor: Double = 1.0 / 255.0,
     private val patchMergeType: String = "nopad"
-) {
+) : VisionImageProcessor {
 
     fun resizeImage(inputBitmap: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
         val width = inputBitmap.width
@@ -97,13 +97,10 @@ class LlavaNextImageProcessor(
         return resizeImage(originalBitmap, newWidth, newHeight)
     }
 
-    // Represents the final model input for a single image
-    data class ModelInput(val pixelValues: FloatArray, val originalSize: Pair<Int, Int>)
-
     /**
      * @brief Returns the crop size (patch size) used for image preprocessing.
      */
-    fun getCropSize(): Int = cropSize
+    override fun getCropSize(): Int = cropSize
 
     /**
      * Preprocesses a single Bitmap image.
@@ -111,7 +108,7 @@ class LlavaNextImageProcessor(
      * @param image The input Bitmap.
      * @return A ModelInput object containing a list of float arrays (patches) and original image size.
      */
-    fun preprocess(image: Bitmap): ModelInput {
+    override fun preprocess(image: Bitmap): VisionModelInput {
         val originalSize = Pair(image.height, image.width)
         val imagePatches = getImagePatches(image)
         val perImagePatchSize = cropSize * cropSize * 3
@@ -124,7 +121,7 @@ class LlavaNextImageProcessor(
         }
 
         // TODO: Compare pixelValues to PyTorch's pixelValues for various images
-        return ModelInput(pixelValues = floatValues, originalSize = originalSize)
+        return VisionModelInput(pixelValues = floatValues, originalSize = originalSize)
     }
 
     /**
