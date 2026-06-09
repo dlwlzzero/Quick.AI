@@ -185,14 +185,23 @@ static bool run_vision_smoke(CausalLmHandle handle) {
 
   const size_t numFloats = 1ull * 24 * 3 * 256 * 256; // 4,718,592
   std::vector<float> dummy(numFloats);
-  // Mild deterministic ramp so the buffer isn't all-zero (still valid dummy).
-  for (size_t i = 0; i < numFloats; ++i)
-    dummy[i] = static_cast<float>(i % 255) / 255.0f;
+  // Pixel fill mode (env VJEPA2_PIXEL_FILL):
+  //   "zero" -> all-zero pixels (shows the output is STILL non-zero, coming
+  //             from biases / LayerNorm / quant zero-points)
+  //   else   -> deterministic ramp (non-zero content input; default)
+  const char *fill_env = std::getenv("VJEPA2_PIXEL_FILL");
+  const bool zero_fill = (fill_env != nullptr && std::string(fill_env) == "zero");
+  if (zero_fill) {
+    std::fill(dummy.begin(), dummy.end(), 0.0f);
+  } else {
+    for (size_t i = 0; i < numFloats; ++i)
+      dummy[i] = static_cast<float>(i % 255) / 255.0f;
+  }
 
   std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
             << "Dummy input: " << clr::reset << clr::bold_white << numFloats
-            << " floats (" << (numFloats * sizeof(float)) << " bytes)"
-            << clr::reset << "\n";
+            << " floats (" << (numFloats * sizeof(float)) << " bytes, fill="
+            << (zero_fill ? "zero" : "ramp") << ")" << clr::reset << "\n";
 
   void *out = nullptr;
   int out_bytes = 0;
