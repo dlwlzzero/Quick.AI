@@ -2379,7 +2379,7 @@ static causallm::multimodal_pointer
 run_vision_encoder(CausalLmModel &h, const char *prompt,
                    const float *pixelValues, int numPatches, int originalHeight,
                    int originalWidth) {
-  const int PATCH_SIZE = 512; // pixel layout: numPatches*3*512*512 floats
+  const int PATCH_SIZE = 512; // legacy vjepa/QNN pixel layout fallback
   causallm::Transformer *vision = h.models[0].get();
   const size_t llm_idx = text_generation_model_index(h);
   causallm::Transformer *llm = h.models[llm_idx].get();
@@ -2391,8 +2391,15 @@ run_vision_encoder(CausalLmModel &h, const char *prompt,
   auto info = llm->get_embedding_info();
   vision->set_quant_param(info.first, info.second);
 
-  const size_t pixel_bytes = static_cast<size_t>(numPatches) * 3 * PATCH_SIZE *
-                             PATCH_SIZE * sizeof(float);
+  // Vision models that consume a fixed pixel tensor (e.g. LFM2-VL SigLIP:
+  // 3*256*256) declare their exact element count; others (vjepa) fall back to
+  // the legacy numPatches*3*512*512 layout.
+  const size_t declared = vision->expectedPixelElems();
+  const size_t pixel_bytes =
+    declared != 0
+      ? declared * sizeof(float)
+      : static_cast<size_t>(numPatches) * 3 * PATCH_SIZE * PATCH_SIZE *
+          sizeof(float);
   causallm::multimodal_pointer image_in{const_cast<float *>(pixelValues),
                                         pixel_bytes};
   causallm::multimodal_pointer raw =
