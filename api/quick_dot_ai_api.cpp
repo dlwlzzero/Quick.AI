@@ -2266,7 +2266,11 @@ static ErrorCode execute_multimodal(CausalLmModel &h,
     return CAUSAL_LM_ERROR_UNSUPPORTED;
   }
   std::vector<int> text_ids = tok->Encode(prompt);
-  int32_t image_token_id = tok->TokenToId("<|image|>");
+  // Prefer the LLM consumer's declared image placeholder id (LFM2-VL: 396);
+  // fall back to the generic "<|image|>" token used by the gauss/vjepa pairs.
+  int32_t image_token_id = llm->imagePlaceholderTokenId();
+  if (image_token_id < 0)
+    image_token_id = tok->TokenToId("<|image|>");
 
   const size_t bpt = llm->embeddingBytesPerToken();
   if (bpt == 0) {
@@ -2352,15 +2356,21 @@ static causallm::multimodal_pointer
 run_vision_encoder(CausalLmModel &h, const char *prompt,
                    const float *pixelValues, int numPatches, int originalHeight,
                    int originalWidth) {
-  const int PATCH_SIZE = 512; // pixel layout: numPatches*3*512*512 floats
+  const int PATCH_SIZE = 512; // legacy vjepa/QNN pixel layout fallback
   causallm::Transformer *vision = h.models[0].get();
   causallm::Transformer *llm = h.models[1].get();
 
   auto info = llm->get_embedding_info();
   vision->set_quant_param(info.first, info.second);
 
-  const size_t pixel_bytes = static_cast<size_t>(numPatches) * 3 * PATCH_SIZE *
-                             PATCH_SIZE * sizeof(float);
+  // Models that consume a fixed pixel tensor (e.g. LFM2-VL: 3*256*256) declare
+  // their element count; others fall back to the legacy numPatches*3*512*512.
+  const size_t declared = vision->expectedPixelElems();
+  const size_t pixel_bytes =
+    declared != 0
+      ? declared * sizeof(float)
+      : static_cast<size_t>(numPatches) * 3 * PATCH_SIZE * PATCH_SIZE *
+          sizeof(float);
   causallm::multimodal_pointer image_in{const_cast<float *>(pixelValues),
                                         pixel_bytes};
   return vision->run_image(std::string(prompt ? prompt : ""), image_in,
