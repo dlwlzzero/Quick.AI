@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
@@ -178,17 +179,18 @@ static bool run_embedding_smoke(CausalLmHandle handle, const char *text) {
 #ifdef ENABLE_QNN
 // Builds a format-correct dummy pixel buffer for V-JEPA2 (raw layout
 // B=1,T=24,C=3,H=256,W=256 = 4,718,592 floats, auto-detected by
-// VJEPA2_QNN::run_image) and runs the vision encoder once. Prints the output
-// byte length and the first few raw uint16 values. Returns true on success.
+// VJEPA2_QNN::run_image) and runs the vision encoder. Times each run
+// (encode = preprocess + HTP inference), prints per-run latency, avg/min/max,
+// throughput, peak memory, and a sample of the output. Returns true on success.
+//
+// Env knobs:
+//   VJEPA2_PIXEL_FILL = zero | ramp   (input fill; default ramp)
+//   VJEPA2_RUNS       = N             (timed repetitions on the loaded handle; default 1)
 static bool run_vision_smoke(CausalLmHandle handle) {
   print_section("Vision Encode (dummy)", clr::green);
 
   const size_t numFloats = 1ull * 24 * 3 * 256 * 256; // 4,718,592
   std::vector<float> dummy(numFloats);
-  // Pixel fill mode (env VJEPA2_PIXEL_FILL):
-  //   "zero" -> all-zero pixels (shows the output is STILL non-zero, coming
-  //             from biases / LayerNorm / quant zero-points)
-  //   else   -> deterministic ramp (non-zero content input; default)
   const char *fill_env = std::getenv("VJEPA2_PIXEL_FILL");
   const bool zero_fill = (fill_env != nullptr && std::string(fill_env) == "zero");
   if (zero_fill) {
@@ -198,20 +200,71 @@ static bool run_vision_smoke(CausalLmHandle handle) {
       dummy[i] = static_cast<float>(i % 255) / 255.0f;
   }
 
+  int runs = 1;
+  if (const char *r = std::getenv("VJEPA2_RUNS")) {
+    runs = std::atoi(r);
+    if (runs < 1)
+      runs = 1;
+  }
+
   std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
             << "Dummy input: " << clr::reset << clr::bold_white << numFloats
             << " floats (" << (numFloats * sizeof(float)) << " bytes, fill="
-            << (zero_fill ? "zero" : "ramp") << ")" << clr::reset << "\n";
+            << (zero_fill ? "zero" : "ramp") << "), runs=" << runs
+            << clr::reset << "\n";
 
   void *out = nullptr;
   int out_bytes = 0;
-  ErrorCode err =
-    encodeImageModelHandle(handle, dummy.data(), numFloats, /*height=*/256,
-                           /*width=*/256, &out, &out_bytes);
-  if (err != CAUSAL_LM_ERROR_NONE || out == nullptr) {
-    print_error("encodeImageModelHandle failed (code " + std::to_string(err) +
-                ")");
-    return false;
+  double sum_ms = 0.0, min_ms = 0.0, max_ms = 0.0;
+  for (int i = 0; i < runs; ++i) {
+    if (out) {
+      freeImageEmbedding(out);
+      out = nullptr;
+    }
+    auto t0 = std::chrono::high_resolution_clock::now();
+    ErrorCode err =
+      encodeImageModelHandle(handle, dummy.data(), numFloats, /*height=*/256,
+                             /*width=*/256, &out, &out_bytes);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    if (err != CAUSAL_LM_ERROR_NONE || out == nullptr) {
+      print_error("encodeImageModelHandle failed (code " + std::to_string(err) +
+                  ")");
+      return false;
+    }
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    sum_ms += ms;
+    if (i == 0 || ms < min_ms)
+      min_ms = ms;
+    if (i == 0 || ms > max_ms)
+      max_ms = ms;
+    std::ostringstream rss;
+    rss << "run " << std::setw(2) << (i + 1) << "/" << runs << ": "
+        << std::fixed << std::setprecision(2) << ms << " ms";
+    std::cout << clr::green << "│" << clr::reset << "  " << clr::dim << rss.str()
+              << clr::reset << "\n";
+  }
+
+  const double avg_ms = sum_ms / runs;
+  // Output layout: out_tokens × 768 dim × 2 bytes(uint16). tok/s = patches/sec.
+  const int out_tokens = out_bytes / (768 * 2);
+  const double tps = avg_ms > 0 ? out_tokens / avg_ms * 1000.0 : 0.0;
+
+  std::ostringstream sp;
+  sp << std::fixed << std::setprecision(2) << "avg " << avg_ms << " ms"
+     << "  (min " << min_ms << " / max " << max_ms << ")  "
+     << std::setprecision(1) << tps << " tok/s";
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::bold_white
+            << "Speed: " << clr::reset << clr::bold_white << sp.str()
+            << clr::reset << "\n";
+
+  PerformanceMetrics pm;
+  memset(&pm, 0, sizeof(pm));
+  if (getPerformanceMetricsHandle(handle, &pm) == CAUSAL_LM_ERROR_NONE) {
+    std::ostringstream mm;
+    mm << std::fixed << std::setprecision(2) << "internal last-run "
+       << pm.total_duration_ms << " ms, peak " << pm.peak_memory_kb << " KB";
+    std::cout << clr::green << "│" << clr::reset << "  " << clr::dim << mm.str()
+              << clr::reset << "\n";
   }
 
   std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
