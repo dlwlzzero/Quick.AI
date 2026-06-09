@@ -318,6 +318,9 @@ int main(int argc, char *argv[]) {
   bool use_by_name = false;
   bool is_embedding = false;
   bool is_vision = false;
+  // Backend for loadModelHandleByName. Most catalog models accept CPU; QNN-only
+  // descriptors (e.g. vjepa2-qnn, backend_mask = B(NPU)) require NPU.
+  BackendType load_backend = CAUSAL_LM_BACKEND_CPU;
 
   if (model_name_str == "qwen3-0.6b") {
     model_type = CAUSAL_LM_MODEL_QWEN3_0_6B;
@@ -373,6 +376,7 @@ int main(int argc, char *argv[]) {
     catalog_id = "vjepa2-qnn";
     use_by_name = true;
     is_vision = true;
+    load_backend = CAUSAL_LM_BACKEND_NPU;
 #else
     print_error("Model '" + std::string(model_name) +
                 "' requires QNN support. Rebuild with -Denable-qnn=true.");
@@ -395,9 +399,8 @@ int main(int argc, char *argv[]) {
     // Load
     CausalLmHandle cycle_handle = nullptr;
     if (use_by_name) {
-      err = loadModelHandleByName(CAUSAL_LM_BACKEND_CPU, catalog_id.c_str(),
-                                  quant_type, nullptr, model_base_path,
-                                  &cycle_handle);
+      err = loadModelHandleByName(load_backend, catalog_id.c_str(), quant_type,
+                                  nullptr, model_base_path, &cycle_handle);
     } else {
       err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
                             nullptr, model_base_path, &cycle_handle);
@@ -434,8 +437,8 @@ int main(int argc, char *argv[]) {
 
   CausalLmHandle handle = nullptr;
   if (use_by_name) {
-    err = loadModelHandleByName(CAUSAL_LM_BACKEND_CPU, catalog_id.c_str(),
-                                quant_type, nullptr, model_base_path, &handle);
+    err = loadModelHandleByName(load_backend, catalog_id.c_str(), quant_type,
+                                nullptr, model_base_path, &handle);
   } else {
     err = loadModelHandle(CAUSAL_LM_BACKEND_CPU, model_type, quant_type,
                           nullptr, model_base_path, &handle);
