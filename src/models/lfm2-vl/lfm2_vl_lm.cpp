@@ -9,7 +9,14 @@
 namespace causallm {
 
 Lfm2VlLM::Lfm2VlLM(json &cfg, json &generation_cfg, json &nntr_cfg)
-  : Lfm2CausalLM(cfg, generation_cfg, nntr_cfg) {
+  // Transformer is a VIRTUAL base (CausalLM : virtual public Transformer), so
+  // the most-derived class must initialize it explicitly. Without this, when
+  // Lfm2VlLM is the most-derived type the virtual base is default-constructed
+  // (empty Transformer()), setupParameters() never runs, and BATCH_SIZE et al.
+  // are left uninitialized — causing a runaway output_list allocation (OOM).
+  // Mirror Lfm2CausalLM's own virtual-base init.
+  : Transformer(cfg, generation_cfg, nntr_cfg, ModelType::CAUSALLM),
+    Lfm2CausalLM(cfg, generation_cfg, nntr_cfg) {
   emb_dim_ = cfg.value("hidden_size", 1024u);
   image_token_id_ = cfg.value("image_token_id", 396);
 }

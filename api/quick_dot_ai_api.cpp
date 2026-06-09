@@ -665,6 +665,9 @@ static void fix_paths(json &nntr_cfg, const std::string &sub_dir) {
     "tokenizer_file",       "model_file_name",     "binary_config_path",
     "image_newline_path",   "embedding_file_name", "ple_file_name",
     "rotation_matrix_path",
+    // LFM2 LM reads the standalone embedding via "embedding_bin_path"; rebase
+    // it onto the sub-model dir like the other per-model weight paths.
+    "embedding_bin_path",
   };
   for (const char *k : kKeys) {
     if (!nntr_cfg.contains(k) || !nntr_cfg[k].is_string())
