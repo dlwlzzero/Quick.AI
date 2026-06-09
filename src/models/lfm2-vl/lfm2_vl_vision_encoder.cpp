@@ -44,15 +44,22 @@ Lfm2VlVisionEncoder::Lfm2VlVisionEncoder(json &cfg, json &generation_cfg,
 void Lfm2VlVisionEncoder::initialize() { vit_->initialize(); }
 
 void Lfm2VlVisionEncoder::load_weight(const std::string &weight_path) {
-  if (!vision_weight_file_.empty())
-    vit_->load_weight(vision_weight_file_);
-  else
-    vit_->load_weight(weight_path);
+  // weight_path is the model_file_name already rebased onto the sub-model dir
+  // by the multi-model loader. Use it directly for the ViT.
+  vit_->load_weight(weight_path);
 
   if (connector_weight_file_.empty())
     throw std::runtime_error(
       "Lfm2VlVisionEncoder: nntr_config must set connector_model_file");
-  connector_->loadWeights(connector_weight_file_);
+  // The loader only rebases model_file_name; resolve a relative connector path
+  // against the same directory as the (rebased) ViT weight path.
+  std::string conn = connector_weight_file_;
+  if (!conn.empty() && conn[0] != '/') {
+    const auto slash = weight_path.find_last_of('/');
+    if (slash != std::string::npos)
+      conn = weight_path.substr(0, slash + 1) + conn;
+  }
+  connector_->loadWeights(conn);
 }
 
 multimodal_pointer Lfm2VlVisionEncoder::run_image(
@@ -88,21 +95,18 @@ multimodal_pointer Lfm2VlVisionEncoder::run_image(
 }
 
 __attribute__((constructor)) static void register_lfm2_vl_vision() {
+  // Register the Factory creator only. The vision encoder is an INTERNAL
+  // sub-model of the lfm2-vl composite (loaded via the multi-model config's
+  // Factory::create), not a user-facing model. We intentionally do NOT register
+  // a catalog ModelDescriptor for it: ModelCatalog.resolve(family,rt,backend)
+  // matches the first descriptor in all() (not just selectable ones), so a
+  // descriptor with family "lfm2" would shadow the real "lfm2-vl" composite in
+  // the picker. Factory registration alone is sufficient for the composite.
   Factory::Instance().registerModel(
     "Lfm2VlVisionEncoder", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<Lfm2VlVisionEncoder>(cfg, generation_cfg,
                                                    nntr_cfg);
     });
-
-  static const ModelDescriptor d = {"lfm2-vl-vision",
-                                     "lfm2",
-                                     "LFM2-VL Vision Encoder",
-                                     QDA_RUNTIME_NATIVE,
-                                     (1u << 0),
-                                     QDA_CAP_VISION_ENCODER,
-                                     "lfm2-vl-vision",
-                                     "Lfm2VlVisionEncoder"};
-  quick_dot_ai::register_model_descriptor(&d);
 }
 
 } // namespace causallm
