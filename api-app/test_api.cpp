@@ -287,6 +287,44 @@ static bool run_vision_smoke(CausalLmHandle handle) {
 }
 #endif // ENABLE_QNN
 
+// Drives the full vjepa -> projector -> lfm2 multimodal path with dummy
+// pixels. Success = no crash + non-empty generated text.
+static bool run_vision_llm_smoke(CausalLmHandle handle, const char *prompt) {
+  print_section("Vision+LLM (dummy)", clr::green);
+
+  const int numPatches = 24; // adjust if encoder token count differs
+  const size_t numFloats = static_cast<size_t>(numPatches) * 3 * 512 * 512;
+  std::vector<float> pixels(numFloats);
+  for (size_t i = 0; i < numFloats; ++i)
+    pixels[i] = static_cast<float>(i % 255) / 255.0f;
+
+  CausalLMChatMessage msg;
+  msg.role = "user";
+  std::string content = std::string("<|image|>") + prompt;
+  msg.content = content.c_str();
+
+  const char *out = nullptr;
+  ErrorCode err = runMultimodalHandleWithMessages(
+    handle, &msg, 1, /*add_generation_prompt=*/true, pixels.data(), numPatches,
+    /*originalHeight=*/512, /*originalWidth=*/512, &out);
+  if (err != CAUSAL_LM_ERROR_NONE) {
+    print_error("runMultimodalHandleWithMessages failed (code " +
+                std::to_string(err) + ")");
+    return false;
+  }
+  const bool ok = (out != nullptr && std::strlen(out) > 0);
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
+            << "Output: " << clr::reset << clr::bold_white
+            << (out ? out : "(null)") << clr::reset << "\n";
+  if (!ok)
+    print_error("empty generation output");
+  else
+    std::cout << clr::green << "│" << clr::reset << "  " << clr::green
+              << "✓ non-empty generation" << clr::reset << "\n";
+  print_section_end(clr::green);
+  return ok;
+}
+
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     print_error("Missing required argument: <model>");
@@ -380,6 +418,7 @@ int main(int argc, char *argv[]) {
   bool use_by_name = false;
   bool is_embedding = false;
   bool is_vision = false;
+  bool is_vision_llm = false;
   // Backend for loadModelHandleByName. Most catalog models accept CPU; QNN-only
   // descriptors (e.g. vjepa2-qnn, backend_mask = B(NPU)) require NPU.
   BackendType load_backend = CAUSAL_LM_BACKEND_CPU;
@@ -444,6 +483,27 @@ int main(int argc, char *argv[]) {
                 "' requires QNN support. Rebuild with -Denable-qnn=true.");
     return 1;
 #endif
+  } else if (model_name_str == "vjepa-lfm2-cpu") {
+    catalog_id = "vjepa-lfm2-cpu";
+    use_by_name = true;
+    is_vision_llm = true;
+    load_backend = CAUSAL_LM_BACKEND_CPU;
+  } else if (model_name_str == "vjepa-lfm2-qnn" ||
+             model_name_str == "vjepa-lfm2") {
+#ifdef ENABLE_QNN
+    catalog_id = "vjepa-lfm2-qnn";
+    use_by_name = true;
+    is_vision_llm = true;
+    load_backend = CAUSAL_LM_BACKEND_NPU;
+#else
+    print_error("vjepa-lfm2-qnn requires QNN. Rebuild with -Denable-qnn=true.");
+    return 1;
+#endif
+  } else if (model_name_str == "lfm2-vl" || model_name_str == "lfm2_vl") {
+    // LFM2-VL composite (vision encoder + LFM2 LM) via the file-based
+    // multi-model config under <model_base_path>/lfm2-vl. CPU/FP32.
+    catalog_id = "lfm2-vl";
+    use_by_name = true;
   } else {
     print_error("Unknown model: " + std::string(model_name));
     return 1;
@@ -531,6 +591,16 @@ int main(int argc, char *argv[]) {
     std::_Exit(ok ? 0 : 1);
   }
 #endif
+
+  if (is_vision_llm) {
+    bool ok = run_vision_llm_smoke(handle, prompt);
+    destroyModelHandle(handle);
+    std::cout << (ok ? clr::bold_green : clr::bold_red)
+              << (ok ? "  Done." : "  Failed.") << clr::reset << "\n\n";
+    std::cout.flush();
+    std::fflush(nullptr);
+    std::_Exit(ok ? 0 : 1);
+  }
 
   if (is_embedding) {
     bool emb_ok = run_embedding_smoke(handle, prompt);
