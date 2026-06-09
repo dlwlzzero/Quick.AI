@@ -38,6 +38,10 @@ __attribute__((constructor)) static void register_public_descriptors() {
      QDA_CAP_STREAMING,
      "GEMMA4_CPU", /* get_model_name_from_type(CAUSAL_LM_MODEL_GEMMA4_CPU) */
      "Gemma4ForCausalLM" /* Factory registration pending */},
+    {"vjepa-lfm2-cpu", "vjepa-lfm2-cpu", "V-JEPA2(CPU)+Projector+LFM2",
+     QDA_RUNTIME_NATIVE, B(0),
+     QDA_CAP_MULTIMODAL | QDA_CAP_MESSAGES_API,
+     "VJEPA-LFM2-CPU", "VJEPA2ViT"},
 #ifdef ENABLE_QNN
     {"gemma4-e2b-qnn", "gemma4", "Gemma4 E2B (QNN)", QDA_RUNTIME_NATIVE, B(2),
      QDA_CAP_MESSAGES_API,
@@ -47,6 +51,10 @@ __attribute__((constructor)) static void register_public_descriptors() {
     {"vjepa2-qnn", "vjepa", "V-JEPA 2 (QNN)", QDA_RUNTIME_NATIVE, B(2),
      QDA_CAP_MULTIMODAL | QDA_CAP_MESSAGES_API | QDA_CAP_MULTI_IMAGE,
      "VJEPA2-QNN", "VJEPA2_QNN"},
+    {"vjepa-lfm2-qnn", "vjepa-lfm2-qnn", "V-JEPA2(QNN)+Projector+LFM2",
+     QDA_RUNTIME_NATIVE, B(2),
+     QDA_CAP_MULTIMODAL | QDA_CAP_MESSAGES_API,
+     "VJEPA-LFM2-QNN", "VJEPA2_QNN"},
 #endif
   };
   for (const auto &d : kPublic)
