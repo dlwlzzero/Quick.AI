@@ -14,6 +14,7 @@ quick_dot_ai_inc_args = [
   '-I' + meson.current_source_dir() / '..' / 'src' / 'xgrammar',
   '-I' + meson.current_source_dir() / '..' / 'src' / 'models',
   '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'gauss-2.5',
+  '-I' + meson.current_source_dir() / '..' / 'src' / 'models' / 'lfm2-vl',
 ]
 
 if enable_qnn

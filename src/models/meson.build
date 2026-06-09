@@ -11,6 +11,9 @@ endif
 if fs.is_dir('ouro')
   subdir('ouro')
 endif
+if fs.is_dir('lfm2-vl')
+  subdir('lfm2-vl')
+endif
 # gauss-3 (CPU Gauss3CausalLM) disabled: still on the old layer-list Transformer
 # interface and not registered in quick_dot_ai_api (only the gauss-3 *QNN*
 # variants are registered). Orphaned by the symbolic-graph merge; excluded
