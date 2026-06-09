@@ -14,9 +14,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <cstdint>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 // ── ANSI color codes ─────────────────────────────────────────────────────────
 namespace clr {
@@ -173,6 +175,56 @@ static bool run_embedding_smoke(CausalLmHandle handle, const char *text) {
   return ok;
 }
 
+#ifdef ENABLE_QNN
+// Builds a format-correct dummy pixel buffer for V-JEPA2 (raw layout
+// B=1,T=24,C=3,H=256,W=256 = 4,718,592 floats, auto-detected by
+// VJEPA2_QNN::run_image) and runs the vision encoder once. Prints the output
+// byte length and the first few raw uint16 values. Returns true on success.
+static bool run_vision_smoke(CausalLmHandle handle) {
+  print_section("Vision Encode (dummy)", clr::green);
+
+  const size_t numFloats = 1ull * 24 * 3 * 256 * 256; // 4,718,592
+  std::vector<float> dummy(numFloats);
+  // Mild deterministic ramp so the buffer isn't all-zero (still valid dummy).
+  for (size_t i = 0; i < numFloats; ++i)
+    dummy[i] = static_cast<float>(i % 255) / 255.0f;
+
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
+            << "Dummy input: " << clr::reset << clr::bold_white << numFloats
+            << " floats (" << (numFloats * sizeof(float)) << " bytes)"
+            << clr::reset << "\n";
+
+  void *out = nullptr;
+  int out_bytes = 0;
+  ErrorCode err =
+    encodeImageModelHandle(handle, dummy.data(), numFloats, /*height=*/256,
+                           /*width=*/256, &out, &out_bytes);
+  if (err != CAUSAL_LM_ERROR_NONE || out == nullptr) {
+    print_error("encodeImageModelHandle failed (code " + std::to_string(err) +
+                ")");
+    return false;
+  }
+
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
+            << "Output: " << clr::reset << clr::bold_white << out_bytes
+            << " bytes" << clr::reset << "\n";
+
+  const uint16_t *u16 = static_cast<const uint16_t *>(out);
+  int n_show = out_bytes / static_cast<int>(sizeof(uint16_t));
+  if (n_show > 8)
+    n_show = 8;
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::dim << "First "
+            << n_show << " u16: " << clr::reset << clr::bold_white;
+  for (int i = 0; i < n_show; ++i)
+    std::cout << u16[i] << " ";
+  std::cout << clr::reset << "\n";
+
+  freeImageEmbedding(out);
+  print_section_end(clr::green);
+  return true;
+}
+#endif // ENABLE_QNN
+
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     print_error("Missing required argument: <model>");
@@ -265,6 +317,7 @@ int main(int argc, char *argv[]) {
   std::string catalog_id;       // non-empty → use loadModelHandleByName
   bool use_by_name = false;
   bool is_embedding = false;
+  bool is_vision = false;
 
   if (model_name_str == "qwen3-0.6b") {
     model_type = CAUSAL_LM_MODEL_QWEN3_0_6B;
@@ -309,6 +362,17 @@ int main(int argc, char *argv[]) {
 #ifdef ENABLE_QNN
     catalog_id = "gauss-3.8-qnn";
     use_by_name = true;
+#else
+    print_error("Model '" + std::string(model_name) +
+                "' requires QNN support. Rebuild with -Denable-qnn=true.");
+    return 1;
+#endif
+  } else if (model_name_str == "vjepa2-qnn" ||
+             model_name_str == "vjepa2_qnn" || model_name_str == "vjepa") {
+#ifdef ENABLE_QNN
+    catalog_id = "vjepa2-qnn";
+    use_by_name = true;
+    is_vision = true;
 #else
     print_error("Model '" + std::string(model_name) +
                 "' requires QNN support. Rebuild with -Denable-qnn=true.");
@@ -384,6 +448,16 @@ int main(int argc, char *argv[]) {
   std::cout << clr::blue << "│" << clr::reset << "  ";
   print_status("Model loaded successfully", ">>", clr::bold_green);
   print_section_end(clr::blue);
+
+#ifdef ENABLE_QNN
+  if (is_vision) {
+    bool ok = run_vision_smoke(handle);
+    destroyModelHandle(handle);
+    std::cout << (ok ? clr::bold_green : clr::bold_red)
+              << (ok ? "  Done." : "  Failed.") << clr::reset << "\n\n";
+    return ok ? 0 : 1;
+  }
+#endif
 
   if (is_embedding) {
     bool emb_ok = run_embedding_smoke(handle, prompt);
