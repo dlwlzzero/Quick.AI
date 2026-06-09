@@ -442,9 +442,9 @@ static std::string apply_chat_template(const std::string &architecture,
 }
 
 static size_t text_generation_model_index(const CausalLmModel &h) {
-  // Convention: a multi-model handle is [vision producer, text LLM, ...];
-  // text generation runs on the LLM at index 1.
-  return (h.models.size() > 1) ? 1 : 0;
+  // Convention: a multi-model handle is [vision, (projector,) text LLM];
+  // the text LLM is always the LAST sub-model.
+  return h.models.empty() ? 0 : h.models.size() - 1;
 }
 
 static std::string trim_wrapping_newlines(std::string value) {
@@ -2549,8 +2549,8 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
   std::string input =
     prepare_input_for_model(h, 1, raw_input, input_already_formatted);
 
-  return execute_multimodal(h, h.models[1].get(), image_embeds, input, callback,
-                            user_data);
+  return execute_multimodal(h, h.models[text_generation_model_index(h)].get(),
+                            image_embeds, input, callback, user_data);
 #else
   LOGE("[DEBUG] runMultimodalHandleStreaming: built without ENABLE_QNN");
   return CAUSAL_LM_ERROR_UNSUPPORTED;
@@ -2606,7 +2606,7 @@ ErrorCode runMultimodalHandleWithMessages(
 
   // Apply chat template
   auto chat_messages = convertMessages(messages, num_messages);
-  const size_t llm_index = h.architectures.size() > 1 ? 1 : 0;
+  const size_t llm_index = text_generation_model_index(h);
   std::string arch = h.architectures.size() > llm_index
                        ? h.architectures[llm_index]
                        : std::string();
@@ -2648,8 +2648,9 @@ ErrorCode runMultimodalHandleWithMessages(
       static_cast<std::string *>(ud)->append(delta);
     return 0;
   };
-  ErrorCode ec = execute_multimodal(h, h.models[1].get(), image_embeds, prompt,
-                                    accumulate_cb, &h.last_output);
+  ErrorCode ec = execute_multimodal(h, h.models[text_generation_model_index(h)].get(),
+                                    image_embeds, prompt, accumulate_cb,
+                                    &h.last_output);
   if (ec != CAUSAL_LM_ERROR_NONE) {
     *outputText = nullptr;
     return ec;
