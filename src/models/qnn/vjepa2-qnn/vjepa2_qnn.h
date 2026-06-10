@@ -65,6 +65,17 @@ public:
                                bool log_output = true) override;
   void set_quant_param(float scale, int offset) override;
 
+  /**
+   * @brief Number of FP32 pixel elements the encoder expects as external input.
+   *
+   * The vjepa graph's pixel_values_video tensor is fixed at [12,256,256,6]
+   * (== raw [1,24,3,256,256]) = 4,718,592 elements; the other graph inputs
+   * (rotation_matrix, rope_cos/sin) are generated internally. Declaring this
+   * lets the multimodal composer size the pixel buffer correctly instead of
+   * the legacy numPatches*3*512*512 fallback.
+   */
+  size_t expectedPixelElems() const override { return 12 * 256 * 256 * 6; }
+
 private:
   // QNN input tensor pointers (cached in initialize())
   uint8_t *rotation_matrix_input_ = nullptr; // UF8  [64,64]

@@ -293,7 +293,9 @@ static bool run_vision_llm_smoke(CausalLmHandle handle, const char *prompt) {
   print_section("Vision+LLM (dummy)", clr::green);
 
   const int numPatches = 24; // adjust if encoder token count differs
-  const size_t numFloats = static_cast<size_t>(numPatches) * 3 * 512 * 512;
+  // vjepa pixel_values_video is fixed at [1,24,3,256,256] == [12,256,256,6]
+  // = 4,718,592 FP32 elements (matches VJEPA2_QNN::expectedPixelElems()).
+  const size_t numFloats = static_cast<size_t>(numPatches) * 3 * 256 * 256;
   std::vector<float> pixels(numFloats);
   for (size_t i = 0; i < numFloats; ++i)
     pixels[i] = static_cast<float>(i % 255) / 255.0f;

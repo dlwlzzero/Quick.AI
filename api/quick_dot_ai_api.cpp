@@ -2421,12 +2421,18 @@ run_vision_encoder(CausalLmModel &h, const char *prompt,
     std::free(raw.first);
     return {nullptr, 0};
   }
-  // Vision output is FP32 (set_quant_param above); token count = bytes/(768*4).
+  // Vision (vjepa QNN) emits requantized UINT16 embeddings in the LLM quant
+  // space — VJEPA2_QNN::requantEmbedding has no FP32 output path. The projector
+  // consumes FP32 (VjepaProjector::run(const float*)), so widen uint16 -> float
+  // here. Token count is therefore bytes/(768 * sizeof(uint16_t)), not /4.
   const size_t vis_dim = 768;
-  const size_t n_tokens = raw.second / (vis_dim * sizeof(float));
+  const size_t n_tokens = raw.second / (vis_dim * sizeof(uint16_t));
+  std::vector<float> vis_fp32(n_tokens * vis_dim);
+  const uint16_t *vsrc = static_cast<const uint16_t *>(raw.first);
+  for (size_t i = 0; i < vis_fp32.size(); ++i)
+    vis_fp32[i] = static_cast<float>(vsrc[i]);
   causallm::multimodal_pointer projected =
-    proj->run(static_cast<const float *>(raw.first),
-              static_cast<unsigned int>(n_tokens), g_verbose);
+    proj->run(vis_fp32.data(), static_cast<unsigned int>(n_tokens), g_verbose);
   std::free(raw.first); // vision output no longer needed
 
   if (projected.first == nullptr || projected.second == 0) {
