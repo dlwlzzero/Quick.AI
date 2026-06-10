@@ -327,6 +327,55 @@ static bool run_vision_llm_smoke(CausalLmHandle handle, const char *prompt) {
   return ok;
 }
 
+// Drives the full LFM2-VL (SigLIP + LFM2) image -> caption path with a REAL
+// preprocessed pixel buffer read from `pixels_path` (raw float32, 3*256*256 CHW,
+// already SigLIP-normalized to match the reference). Prints the caption.
+static bool run_lfm2vl_image_caption(CausalLmHandle handle, const char *prompt,
+                                     const char *pixels_path) {
+  print_section("LFM2-VL image -> caption (CLI)", clr::green);
+
+  const size_t kElems = static_cast<size_t>(3) * 256 * 256; // single 256 tile
+  std::vector<float> pixels(kElems);
+  FILE *fp = std::fopen(pixels_path, "rb");
+  if (fp == nullptr) {
+    print_error(std::string("cannot open pixel buffer: ") + pixels_path);
+    return false;
+  }
+  size_t got = std::fread(pixels.data(), sizeof(float), kElems, fp);
+  std::fclose(fp);
+  if (got != kElems) {
+    print_error("pixel buffer wrong size: read " + std::to_string(got) +
+                " floats, expected " + std::to_string(kElems));
+    return false;
+  }
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::dim
+            << "pixels: " << clr::reset << kElems << " floats (3x256x256), "
+            << clr::dim << "prompt: " << clr::reset << clr::bold_white << prompt
+            << clr::reset << "\n";
+
+  // The lm/ chat template inserts <|image_start|><image><|image_end|> itself, so
+  // the message content is just the user prompt; execute_multimodal splices the
+  // 64 SigLIP embeds at the <image> placeholder.
+  CausalLMChatMessage msg;
+  msg.role = "user";
+  msg.content = prompt;
+
+  const char *out = nullptr;
+  ErrorCode err = runMultimodalHandleWithMessages(
+    handle, &msg, 1, /*add_generation_prompt=*/true, pixels.data(),
+    /*numPatches=*/1, /*originalHeight=*/256, /*originalWidth=*/256, &out);
+  if (err != CAUSAL_LM_ERROR_NONE) {
+    print_error("runMultimodalHandleWithMessages failed (code " +
+                std::to_string(err) + ")");
+    return false;
+  }
+  std::cout << clr::green << "│" << clr::reset << "  " << clr::bold_white
+            << "CAPTION: " << clr::reset << clr::bold_green
+            << (out ? out : "(null)") << clr::reset << "\n";
+  print_section_end(clr::green);
+  return (out != nullptr && std::strlen(out) > 0);
+}
+
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     print_error("Missing required argument: <model>");
@@ -379,6 +428,11 @@ int main(int argc, char *argv[]) {
       model_base_path = model_base_path_storage.c_str();
     }
   }
+
+  // Optional argv[7]: raw float32 pixel buffer (3*256*256 CHW, SigLIP-normalized)
+  // for LFM2-VL multimodal image captioning via the CLI. When present with model
+  // lfm2-vl, drives the full image -> caption path with REFERENCE preprocessing.
+  const char *lfm2vl_pixels_path = (argc >= 8) ? argv[7] : nullptr;
 
   // ── Banner ─────────────────────────────────────────────────────────────
   print_banner();
@@ -577,6 +631,17 @@ int main(int argc, char *argv[]) {
   print_section_end(clr::blue);
 
 #ifdef ENABLE_QNN
+  if ((model_name_str == "lfm2-vl" || model_name_str == "lfm2_vl") &&
+      lfm2vl_pixels_path != nullptr) {
+    bool ok = run_lfm2vl_image_caption(handle, prompt, lfm2vl_pixels_path);
+    destroyModelHandle(handle);
+    std::cout << (ok ? clr::bold_green : clr::bold_red)
+              << (ok ? "  Done." : "  Failed.") << clr::reset << "\n\n";
+    std::cout.flush();
+    std::fflush(nullptr);
+    std::_Exit(ok ? 0 : 1);
+  }
+
   if (is_vision) {
     bool ok = run_vision_smoke(handle);
     destroyModelHandle(handle);

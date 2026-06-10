@@ -37,6 +37,7 @@
 #include "gptoss_causallm.h"
 #include "json.hpp"
 #include "lfm2_causallm.h"
+#include "lfm2-vl/lfm2_vl_model.h"
 #include "model_callbacks.h"
 #include "model_config_internal.h"
 #include "model_descriptor.h"
@@ -99,6 +100,9 @@ struct CausalLmModel {
   std::vector<double> initialization_duration_ms;
   bool initialized = false;
   int kv_len = 0;
+  // Monolithic LFM2-VL (SigLIP+LFM2 in one model). When set, the multimodal
+  // entry points route to this instead of the split composite (models[]).
+  std::unique_ptr<causallm::Lfm2VlForConditionalGeneration> vl_mono;
 };
 
 // Globals shared across all handles — options set via setOptions() apply
@@ -1077,6 +1081,54 @@ static ErrorCode load_into_handle(CausalLmModel &h, BackendType compute,
            top_nntr["architectures"].is_array(),
            top_nntr.contains("model_dirs"), top_nntr["model_dirs"].is_array(),
            top_nntr["architectures"].size(), top_nntr["model_dirs"].size());
+
+      // ------------------------------------------------------------------
+      // Monolithic LFM2-VL branch (SigLIP+LFM2 in ONE model). Detected by
+      // config.json architecture. Loaded directly (not a Transformer in
+      // models[]); the multimodal entry points route to h.vl_mono. This is the
+      // path that works correctly on ARM (the split composite degenerates).
+      // ------------------------------------------------------------------
+      {
+        json mono_cfg = causallm::LoadJsonFile(abs_model_dir + "/config.json");
+        std::string mono_arch;
+        if (mono_cfg.contains("architectures") &&
+            mono_cfg["architectures"].is_array() &&
+            !mono_cfg["architectures"].empty())
+          mono_arch = mono_cfg["architectures"][0].get<std::string>();
+        if (mono_arch == "Lfm2VlForConditionalGeneration") {
+          LOGD("[DEBUG] load_into_handle: MONOLITHIC Lfm2VlForConditionalGeneration");
+          json mono_gen = json::object();
+          if (check_file_exists(abs_model_dir + "/generation_config.json"))
+            mono_gen =
+              causallm::LoadJsonFile(abs_model_dir + "/generation_config.json");
+          json mono_nntr = top_nntr;
+          for (const char *key : {"tokenizer_file", "embedding_bin_path"}) {
+            if (mono_nntr.contains(key) && mono_nntr[key].is_string()) {
+              std::string v = mono_nntr[key].get<std::string>();
+              if (!v.empty() && v[0] != '/')
+                mono_nntr[key] = abs_model_dir + "/" + v;
+            }
+          }
+          auto mono =
+            std::make_unique<causallm::Lfm2VlForConditionalGeneration>(
+              mono_cfg, mono_gen, mono_nntr);
+          mono->initialize();
+          mono->load_weight(abs_model_dir);
+          h.vl_mono = std::move(mono);
+          h.architectures.push_back("Lfm2VlForConditionalGeneration");
+          h.model_dirs.push_back(abs_model_dir);
+          h.initialized = true;
+          if (causallm::ChatTemplate::Exists(abs_model_dir)) {
+            try {
+              g_chat_template = causallm::ChatTemplate::Load(abs_model_dir);
+            } catch (const std::exception &e) {
+              g_chat_template.reset();
+            }
+          }
+          LOGD("[DEBUG] load_into_handle: MONOLITHIC load SUCCESS");
+          return CAUSAL_LM_ERROR_NONE;
+        }
+      }
 
       if (is_multi) {
         // ----------------------------------------------------------------
@@ -2522,6 +2574,52 @@ ErrorCode encodeImageModelHandle(CausalLmHandle handle,
 void freeImageEmbedding(void *embedding) { (void)embedding; }
 #endif // !ENABLE_QNN
 
+// Route the multimodal (image+text) call to the MONOLITHIC LFM2-VL (h.vl_mono)
+// when loaded. The monolithic builds its own chat template internally, so we
+// pass the raw user text; it streams generated tokens via the LM's streamer.
+// Returns false when no monolithic is loaded (caller uses the split path).
+static void run_vl_mono_prompt(CausalLmModel &h, const std::string &user_prompt,
+                               const float *pixelValues,
+                               CausalLmTokenCallback callback,
+                               void *user_data) {
+  CallbackStreamer streamer;
+  callback_streamer_init(&streamer, callback, user_data);
+  causallm::Transformer *lm = h.vl_mono->getLM();
+  lm->setStreamer(&streamer.base);
+  struct Detach {
+    causallm::Transformer *t;
+    ~Detach() { t->setStreamer(nullptr); }
+  } detach_guard{lm};
+
+  const size_t n_elems = static_cast<size_t>(3) * 256 * 256; // single 256 tile
+  LOGD("[MM-mono] runFromPixels: prompt='%s' n_elems=%zu", user_prompt.c_str(),
+       n_elems);
+  try {
+    h.vl_mono->runFromPixels(pixelValues, n_elems, user_prompt,
+                             /*do_sample=*/false, /*log_output=*/false);
+  } catch (const std::exception &e) {
+    LOGE("[MM-mono] runFromPixels threw: %s", e.what());
+  }
+}
+
+static bool run_vl_mono(CausalLmModel &h, const CausalLMChatMessage *messages,
+                        size_t num_messages, const float *pixelValues,
+                        CausalLmTokenCallback callback, void *user_data) {
+  if (!h.vl_mono)
+    return false;
+  std::string user_prompt;
+  for (size_t i = 0; i < num_messages; ++i) {
+    if (messages[i].role && std::string(messages[i].role) == "user" &&
+        messages[i].content)
+      user_prompt = messages[i].content;
+  }
+  if (user_prompt.empty() && num_messages > 0 &&
+      messages[num_messages - 1].content)
+    user_prompt = messages[num_messages - 1].content;
+  run_vl_mono_prompt(h, user_prompt, pixelValues, callback, user_data);
+  return true;
+}
+
 ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
                                        const char *prompt,
                                        const float *pixelValues, int numPatches,
@@ -2548,6 +2646,14 @@ ErrorCode runMultimodalHandleStreaming(CausalLmHandle handle,
 
   auto &h = *handle;
   std::lock_guard<std::mutex> lock(h.mtx);
+
+  // Monolithic LFM2-VL path (SigLIP+LFM2 in one model) — raw-prompt variant.
+  if (h.vl_mono) {
+    run_vl_mono_prompt(h, prompt ? prompt : "", pixelValues, callback,
+                       user_data);
+    return CAUSAL_LM_ERROR_NONE;
+  }
+
   if (!h.initialized || h.models.empty()) {
     LOGE("[DEBUG] runMultimodalHandleStreaming: NOT_INITIALIZED");
     return CAUSAL_LM_ERROR_NOT_INITIALIZED;
@@ -2635,6 +2741,20 @@ ErrorCode runMultimodalHandleWithMessages(
 
   auto &h = *handle;
   std::lock_guard<std::mutex> lock(h.mtx);
+
+  // Monolithic LFM2-VL path (SigLIP+LFM2 in one model) — no split sub-models.
+  if (h.vl_mono) {
+    h.last_output.clear();
+    auto cb = [](const char *delta, void *ud) -> int {
+      if (delta)
+        static_cast<std::string *>(ud)->append(delta);
+      return 0;
+    };
+    run_vl_mono(h, messages, num_messages, pixelValues, cb, &h.last_output);
+    *outputText = h.last_output.c_str();
+    return CAUSAL_LM_ERROR_NONE;
+  }
+
   if (!h.initialized || h.models.empty()) {
     LOGE("[DEBUG] runMultimodalHandleWithMessages: NOT_INITIALIZED");
     *outputText = nullptr;
@@ -2808,6 +2928,14 @@ ErrorCode runMultimodalHandleWithMessagesStreaming(
     {
       auto &h = *handle;
       std::lock_guard<std::mutex> lock(h.mtx);
+
+      // Monolithic LFM2-VL path (SigLIP+LFM2 in one model).
+      if (h.vl_mono) {
+        run_vl_mono(h, messages, num_messages, pixelValues, callback,
+                    user_data);
+        return CAUSAL_LM_ERROR_NONE;
+      }
+
       if (!h.initialized) {
         LOGE("[DEBUG] runMultimodalHandleWithMessagesStreaming: handle is not "
              "initialized for multimodal");

@@ -232,30 +232,45 @@ int QNNContext::init() {
   }
 
   LOGD("init: Creating backend extensions");
-  BackendExtensionsConfigs backend_extensions_config;
-  std::string config_path;
-  if (!m_backendExtConfigPath.empty()) {
-    config_path = m_backendExtConfigPath;
-  } else if (!g_default_backend_ext_config_path.empty()) {
-    config_path = g_default_backend_ext_config_path;
+  // The HTP backend extensions (libQnnHtpNetRunExtensions.so) provide optional
+  // perf tuning (burst profile, rpc latency). On some HTP archs (e.g. V81 /
+  // SM8750) the NetRunExtensions handshake in initialize() SIGSEGVs, and since
+  // CPU models never use the QNN HTP backend at all, allow callers to skip the
+  // extensions entirely via QUICK_DOT_AI_DISABLE_QNN_BACKEND_EXT=1. When skipped,
+  // backendCreate below runs with a null (default) config, which is valid.
+  BackendExtensions *backend_extensions = nullptr;
+  const char *disable_be = std::getenv("QUICK_DOT_AI_DISABLE_QNN_BACKEND_EXT");
+  if (disable_be != nullptr && disable_be[0] == '1') {
+    LOGD("init: QNN backend extensions DISABLED via "
+         "QUICK_DOT_AI_DISABLE_QNN_BACKEND_EXT; skipping (default backend "
+         "config will be used)");
   } else {
-    config_path = resolve_backend_extensions_config_path();
-  }
-  config_path = resolve_backend_extensions_config_value(config_path);
-  LOGD("init: backend_extensions_config.configFilePath = %s",
-       config_path.c_str());
-  backend_extensions_config.configFilePath = config_path;
-  backend_extensions_config.sharedLibraryPath = "libQnnHtpNetRunExtensions.so";
+    BackendExtensionsConfigs backend_extensions_config;
+    std::string config_path;
+    if (!m_backendExtConfigPath.empty()) {
+      config_path = m_backendExtConfigPath;
+    } else if (!g_default_backend_ext_config_path.empty()) {
+      config_path = g_default_backend_ext_config_path;
+    } else {
+      config_path = resolve_backend_extensions_config_path();
+    }
+    config_path = resolve_backend_extensions_config_value(config_path);
+    LOGD("init: backend_extensions_config.configFilePath = %s",
+         config_path.c_str());
+    backend_extensions_config.configFilePath = config_path;
+    backend_extensions_config.sharedLibraryPath =
+      "libQnnHtpNetRunExtensions.so";
 
-  BackendExtensions *backend_extensions = new BackendExtensions(
-    backend_extensions_config, qnn_data->m_backendLibraryHandle, false, nullptr,
-    QNN_LOG_LEVEL_ERROR);
-  qnn_data->m_backendExtensions = backend_extensions;
-  LOGD("init: Backend extensions created");
+    backend_extensions = new BackendExtensions(
+      backend_extensions_config, qnn_data->m_backendLibraryHandle, false,
+      nullptr, QNN_LOG_LEVEL_ERROR);
+    qnn_data->m_backendExtensions = backend_extensions;
+    LOGD("init: Backend extensions created");
+  }
 
   QnnBackend_Config_t **customConfigs{nullptr};
   uint32_t customConfigCount{0};
-  if (backend_extensions->interface()) {
+  if (backend_extensions && backend_extensions->interface()) {
     if (!backend_extensions->interface()->beforeBackendInitialize(
           &customConfigs, &customConfigCount)) {
       LOGE("init: Extensions Failure in beforeBackendInitialize()");
@@ -302,7 +317,7 @@ int QNNContext::init() {
     free(qnn_data->m_backendConfig);
   }
 
-  if (backend_extensions->interface()) {
+  if (backend_extensions && backend_extensions->interface()) {
     if (!backend_extensions->interface()->afterBackendInitialize()) {
       LOGE("init: Extensions Failure in afterBackendInitialize()");
       QNN_ERROR("Extensions Failure in afterBackendInitialize()");

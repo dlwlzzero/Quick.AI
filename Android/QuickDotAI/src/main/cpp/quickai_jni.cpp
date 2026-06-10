@@ -225,6 +225,16 @@ Java_com_example_quickdotai_NativeCausalLm_loadModelHandleByNameNative(
   const char *mbp =
     modelBasePathJ ? env->GetStringUTFChars(modelBasePathJ, nullptr) : nullptr;
 
+  // CPU models never use the QNN HTP backend. The eager QNN HTP backend-extension
+  // init (libQnnHtpNetRunExtensions.so) SIGSEGVs on some HTP archs (e.g. V81 /
+  // SM8750), so disable backend extensions for CPU loads. libqnn_context.so reads
+  // this env var and skips the extensions (backendCreate uses a default config).
+  if (static_cast<BackendType>(backend) == CAUSAL_LM_BACKEND_CPU) {
+    setenv("QUICK_DOT_AI_DISABLE_QNN_BACKEND_EXT", "1", 1);
+  } else {
+    unsetenv("QUICK_DOT_AI_DISABLE_QNN_BACKEND_EXT");
+  }
+
   CausalLmHandle h = nullptr;
   ErrorCode ec = loadModelHandleByName(
     static_cast<BackendType>(backend), id,
