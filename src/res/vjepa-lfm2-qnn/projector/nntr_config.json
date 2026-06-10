@@ -1,0 +1,10 @@
+{
+  "model_file_name": "projector.bin",
+  "model_tensor_type": "FP32-FP32",
+  "fc_layer_dtype": "FP32",
+  "embedding_dtype": "FP32",
+  "batch_size": 1,
+  "init_seq_len": 1152,
+  "max_seq_len": 1152,
+  "num_to_generate": 0
+}

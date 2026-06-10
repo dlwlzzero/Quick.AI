@@ -1,0 +1,16 @@
+{
+  "architectures": ["VjepaProjector"],
+  "vision_hidden_size": 768,
+  "hidden_size": 1024,
+  "downsample_factor": 2,
+  "merger_hidden_1": 3072,
+  "merger_hidden_2": 1536,
+  "num_frames": 24,
+  "tubelet_size": 2,
+  "img_size": 256,
+  "patch_size": 16,
+  "vocab_size": 1,
+  "num_hidden_layers": 0,
+  "num_attention_heads": 1,
+  "max_position_embeddings": 1152
+}

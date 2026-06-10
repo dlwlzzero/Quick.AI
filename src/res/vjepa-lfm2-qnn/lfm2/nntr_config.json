@@ -1,0 +1,16 @@
+{
+  "model_type": "CausalLM",
+  "model_file_name": "lfm2_vl_450m_lm.bin",
+  "embedding_bin_path": "lfm2_vl_450m_embedding.bin",
+  "tokenizer_file": "tokenizer.json",
+  "model_tensor_type": "FP32-FP32",
+  "fc_layer_dtype": "FP32",
+  "embedding_dtype": "FP32",
+  "batch_size": 1,
+  "init_seq_len": 2048,
+  "max_seq_len": 2304,
+  "num_to_generate": 32,
+  "use_embedding": true,
+  "skip_tokenizer": false,
+  "bad_word_ids": []
+}

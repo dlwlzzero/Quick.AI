@@ -1,0 +1,5 @@
+{
+  "architectures": ["VJEPA2_QNN", "VjepaProjector", "Lfm2ForCausalLM_VL"],
+  "model_dirs": ["vision", "projector", "lfm2"],
+  "use_chat_template": true
+}
